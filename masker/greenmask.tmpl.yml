@@ -1,0 +1,41 @@
+# greenmask config template. Rendered by entrypoint.sh (envsubst) with the
+# SOURCE connection + storage path. Transformers mask core Odoo PII.
+# NOTE: whole-database dump (no `table:` filter). Transformers apply only to
+# listed PII columns; every other table/column passes through unchanged.
+# Column coverage mirrors odoo-synth rules/10_core.yml + 40_messaging.yml.
+common:
+  pg_bin_path: "/usr/lib/postgresql/16/bin"
+  tmp_dir: /tmp
+log:
+  level: info
+storage:
+  type: directory
+  directory:
+    path: ${GM_STORAGE}
+dump:
+  pg_dump_options:
+    dbname: "host=${SOURCE_DB_HOST} port=${SOURCE_DB_PORT} user=${SOURCE_DB_USER} password=${SOURCE_DB_PASSWORD} dbname=${SOURCE_DB_NAME}"
+    jobs: 4
+  transformation:
+    - schema: public
+      name: res_partner
+      apply_for_inherited: true
+      transformers:
+        - {name: Replace, params: {column: name, value: "REDACTED NAME", keep_null: true}}
+        - {name: Replace, params: {column: complete_name, value: "REDACTED NAME", keep_null: true}}
+        - {name: RandomEmail, params: {column: email, keep_null: true}}
+        - {name: RandomE164PhoneNumber, params: {column: phone, keep_null: true}}
+        - {name: Hash, params: {column: street}}
+        - {name: Hash, params: {column: street2}}
+        - {name: Hash, params: {column: city}}
+        - {name: Hash, params: {column: vat}}
+        - {name: Hash, params: {column: website}}
+    - schema: public
+      name: res_company
+      transformers:
+        - {name: RandomEmail, params: {column: email, keep_null: true}}
+        - {name: RandomE164PhoneNumber, params: {column: phone, keep_null: true}}
+    - schema: public
+      name: res_users
+      transformers:
+        - {name: Hash, params: {column: login}}
