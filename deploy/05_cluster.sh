@@ -2,11 +2,20 @@
 # 05: ECS cluster + task execution role + log group.
 source "$(dirname "$0")/lib.sh"
 
-aws ecs describe-clusters --clusters "$ECS_CLUSTER" --region "$AWS_REGION" \
-  --query 'clusters[0].status' --output text 2>/dev/null | grep -q ACTIVE \
-  || aws ecs create-cluster --cluster-name "$ECS_CLUSTER" \
-       --capacity-providers FARGATE --region "$AWS_REGION" >/dev/null
-log "cluster: $ECS_CLUSTER"
+# Create if not ACTIVE. A freshly-deleted cluster lingers as INACTIVE, so poll
+# until it reports ACTIVE before any RunTask (avoids ClusterNotFound races).
+for attempt in 1 2 3 4 5 6; do
+  ST="$(aws ecs describe-clusters --clusters "$ECS_CLUSTER" --region "$AWS_REGION" \
+    --query 'clusters[0].status' --output text 2>/dev/null || true)"
+  [ "$ST" = "ACTIVE" ] && break
+  aws ecs create-cluster --cluster-name "$ECS_CLUSTER" \
+    --capacity-providers FARGATE --region "$AWS_REGION" >/dev/null 2>&1 || true
+  sleep 5
+done
+[ "$ST" = "ACTIVE" ] || { ST="$(aws ecs describe-clusters --clusters "$ECS_CLUSTER" \
+  --region "$AWS_REGION" --query 'clusters[0].status' --output text)"; }
+[ "$ST" = "ACTIVE" ] || { log "cluster not ACTIVE (got $ST)"; exit 1; }
+log "cluster: $ECS_CLUSTER ($ST)"
 
 ROLE="$PROJECT-exec"
 if ! aws iam get-role --role-name "$ROLE" >/dev/null 2>&1; then
