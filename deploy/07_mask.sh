@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
 # 07: run the masker task (dump+mask SOURCE -> restore MASKED -> neutralize).
+# SOURCE lives on the independent source stack (deploy/source/*). Falls back to
+# the masked RDS for backward-compat if the source stack isn't present.
 source "$(dirname "$0")/lib.sh"
 : "${RDS_ENDPOINT:?run 04_rds.sh}" "${EXEC_ARN:?run 05_cluster.sh}"
+SRC_HOST="${SRC_RDS_ENDPOINT:-$RDS_ENDPOINT}"
+SRC_USER="${SOURCE_DB_MASTER_USER:-$TARGET_DB_USER}"
+SRC_PW="${SOURCE_DB_MASTER_PASSWORD:-$TARGET_DB_PASSWORD}"
 
 env_kv(){ printf '{"name":"%s","value":"%s"}' "$1" "$2"; }
 ENVJSON="$(paste -sd, <<EOF
-$(env_kv SOURCE_DB_HOST "$RDS_ENDPOINT")
+$(env_kv SOURCE_DB_HOST "$SRC_HOST")
 $(env_kv SOURCE_DB_PORT "5432")
 $(env_kv SOURCE_DB_NAME "$SOURCE_DB_NAME")
-$(env_kv SOURCE_DB_USER "$TARGET_DB_USER")
-$(env_kv SOURCE_DB_PASSWORD "$TARGET_DB_PASSWORD")
+$(env_kv SOURCE_DB_USER "$SRC_USER")
+$(env_kv SOURCE_DB_PASSWORD "$SRC_PW")
 $(env_kv TARGET_DB_HOST "$RDS_ENDPOINT")
 $(env_kv TARGET_DB_PORT "5432")
 $(env_kv TARGET_DB_NAME "$TARGET_DB_NAME")

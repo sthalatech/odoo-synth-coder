@@ -4,12 +4,10 @@ source "$(dirname "$0")/lib.sh"
 R="$AWS_REGION"
 
 log "deleting ECS service ..."
-for svc in "$PROJECT-odoo" "$PROJECT-odoo-src"; do
-  aws ecs update-service --cluster "$ECS_CLUSTER" --service "$svc" \
-    --desired-count 0 --region "$R" >/dev/null 2>&1 || true
-  aws ecs delete-service --cluster "$ECS_CLUSTER" --service "$svc" \
-    --force --region "$R" >/dev/null 2>&1 || true
-done
+aws ecs update-service --cluster "$ECS_CLUSTER" --service "$PROJECT-odoo" \
+  --desired-count 0 --region "$R" >/dev/null 2>&1 || true
+aws ecs delete-service --cluster "$ECS_CLUSTER" --service "$PROJECT-odoo" \
+  --force --region "$R" >/dev/null 2>&1 || true
 
 log "stopping stray tasks ..."
 for t in $(aws ecs list-tasks --cluster "$ECS_CLUSTER" --region "$R" --query 'taskArns' --output text 2>/dev/null); do
@@ -32,10 +30,6 @@ TG_ARN="$(aws elbv2 describe-target-groups --names "$PROJECT-tg" --region "$R" \
   --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || true)"
 [ -n "$TG_ARN" ] && [ "$TG_ARN" != "None" ] && \
   aws elbv2 delete-target-group --target-group-arn "$TG_ARN" --region "$R" >/dev/null 2>&1 || true
-SRC_TG_ARN="$(aws elbv2 describe-target-groups --names "$PROJECT-src-tg" --region "$R" \
-  --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || true)"
-[ -n "$SRC_TG_ARN" ] && [ "$SRC_TG_ARN" != "None" ] && \
-  aws elbv2 delete-target-group --target-group-arn "$SRC_TG_ARN" --region "$R" >/dev/null 2>&1 || true
 
 log "deleting RDS instance ..."
 if aws rds describe-db-instances --db-instance-identifier "$RDS_INSTANCE_ID" --region "$R" >/dev/null 2>&1; then
@@ -47,7 +41,7 @@ fi
 aws rds delete-db-subnet-group --db-subnet-group-name "$PROJECT-subnets" --region "$R" >/dev/null 2>&1 || true
 
 log "deregistering task definitions ..."
-for fam in seed mask odoo odoo-src psql verify users; do
+for fam in seed mask odoo psql verify users; do
   for arn in $(aws ecs list-task-definitions --family-prefix "$PROJECT-$fam" --region "$R" \
       --query 'taskDefinitionArns' --output text 2>/dev/null); do
     aws ecs deregister-task-definition --task-definition "$arn" --region "$R" >/dev/null 2>&1 || true

@@ -38,12 +38,17 @@ net_config(){ local sg="$1"; local subs; subs="$(subnet_ids | tr '[:space:]' ','
 
 # run a one-shot task and wait; echo its exit code. args: family [sg]
 run_task_wait(){ local fam="$1" sg="${2:-$TASK_SG}"
-  local arn; arn="$(aws ecs run-task --cluster "$ECS_CLUSTER" --launch-type FARGATE \
+  run_task_wait_on "$ECS_CLUSTER" "$fam" "$sg"
+}
+
+# generalized: run a one-shot task on a specific cluster. args: cluster family sg
+run_task_wait_on(){ local cl="$1" fam="$2" sg="$3"
+  local arn; arn="$(aws ecs run-task --cluster "$cl" --launch-type FARGATE \
     --task-definition "$fam" --network-configuration "$(net_config "$sg")" \
     --region "$AWS_REGION" --query 'tasks[0].taskArn' --output text)"
-  log "task $fam started: ${arn##*/}"
-  aws ecs wait tasks-stopped --cluster "$ECS_CLUSTER" --tasks "$arn" --region "$AWS_REGION"
-  local code; code="$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$arn" \
+  log "task $fam started on $cl: ${arn##*/}"
+  aws ecs wait tasks-stopped --cluster "$cl" --tasks "$arn" --region "$AWS_REGION"
+  local code; code="$(aws ecs describe-tasks --cluster "$cl" --tasks "$arn" \
     --region "$AWS_REGION" --query 'tasks[0].containers[0].exitCode' --output text)"
   log "task $fam exit code: $code"
   echo "$code"
