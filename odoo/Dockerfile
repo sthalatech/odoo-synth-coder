@@ -9,6 +9,7 @@ FROM ${ODOO_IMAGE}
 ARG ODOO_GIT_URL=https://github.com/odoo/odoo
 ARG ODOO_GIT_REF=19.0
 ARG CUSTOM_ADDONS_GIT_URL=
+ARG CUSTOM_ADDONS_GIT_REF=
 
 USER root
 
@@ -48,10 +49,15 @@ RUN set -eux; \
         pip install --no-cache-dir --break-system-packages -r {} \; 2>/dev/null || true; \
     done
 
-# Optional custom addons from git.
+# Optional custom addons from git (clones CUSTOM_ADDONS_GIT_REF if set).
 RUN mkdir -p /mnt/extra-addons-custom \
  && if [ -n "${CUSTOM_ADDONS_GIT_URL}" ]; then \
-      git clone --depth 1 "${CUSTOM_ADDONS_GIT_URL}" /mnt/extra-addons-custom; \
+      if [ -n "${CUSTOM_ADDONS_GIT_REF}" ]; then \
+        git clone --depth 1 --branch "${CUSTOM_ADDONS_GIT_REF}" "${CUSTOM_ADDONS_GIT_URL}" /mnt/extra-addons-custom; \
+      else \
+        git clone --depth 1 "${CUSTOM_ADDONS_GIT_URL}" /mnt/extra-addons-custom; \
+      fi; \
+      git -C /mnt/extra-addons-custom rev-parse HEAD > /mnt/extra-addons-custom.commit; \
     fi
 
 COPY entrypoint.sh /odoo-entrypoint.sh

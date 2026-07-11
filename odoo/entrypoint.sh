@@ -11,8 +11,17 @@ SRC="/opt/odoo-src"
 #   EXTRA_ADDONS_PATH (EFS live-dev) > git custom > local custom > enterprise
 #   > community > core > legacy /mnt/extra-addons.
 ADDONS=""
-add(){ [ -d "$1" ] && [ -n "$(ls -A "$1" 2>/dev/null)" ] && ADDONS="${ADDONS:+$ADDONS,}$1"; }
-add /mnt/extra-addons-custom      # custom addons from git
+# A directory is an "addons dir" if it directly contains a module
+# (child/__manifest__.py). add() registers DIR if it is one; otherwise it scans
+# one level down and registers each nested addons dir (handles repo layouts like
+# custom_addons/ + third_party_addons/).
+is_addons_dir(){ compgen -G "$1/*/__manifest__.py" >/dev/null 2>&1; }
+add(){ local d="$1"
+  [ -d "$d" ] || return 0
+  if is_addons_dir "$d"; then ADDONS="${ADDONS:+$ADDONS,}$d"; return 0; fi
+  local c; for c in "$d"/*/; do c="${c%/}"; is_addons_dir "$c" && ADDONS="${ADDONS:+$ADDONS,}$c"; done
+}
+add /mnt/extra-addons-custom      # custom addons from git (nested layouts ok)
 add /opt/custom                   # custom modules baked from build context
 add /opt/enterprise               # enterprise modules baked from zip/dir
 add "$SRC/addons"                 # community

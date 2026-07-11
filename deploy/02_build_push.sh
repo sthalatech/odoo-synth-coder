@@ -32,6 +32,7 @@ docker build --platform linux/amd64 \
   --build-arg ODOO_GIT_URL="$ODOO_GIT_URL" \
   --build-arg ODOO_GIT_REF="$ODOO_GIT_REF" \
   --build-arg CUSTOM_ADDONS_GIT_URL="$CUSTOM_ADDONS_GIT_URL" \
+  --build-arg CUSTOM_ADDONS_GIT_REF="${CUSTOM_ADDONS_GIT_REF:-}" \
   -t "$ECR/$PROJECT/odoo:latest" "$HERE/odoo"
 docker push "$ECR/$PROJECT/odoo:latest"
 
