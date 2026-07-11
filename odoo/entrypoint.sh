@@ -20,6 +20,7 @@ add(){ local d="$1"
   [ -d "$d" ] || return 0
   if is_addons_dir "$d"; then ADDONS="${ADDONS:+$ADDONS,}$d"; return 0; fi
   local c; for c in "$d"/*/; do c="${c%/}"; is_addons_dir "$c" && ADDONS="${ADDONS:+$ADDONS,}$c"; done
+  return 0
 }
 add /mnt/extra-addons-custom      # custom addons from git (nested layouts ok)
 add /opt/custom                   # custom modules baked from build context
