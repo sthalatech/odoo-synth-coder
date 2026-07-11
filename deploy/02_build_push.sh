@@ -9,6 +9,22 @@ docker build --platform linux/amd64 \
 docker push "$ECR/$PROJECT/masker:latest"
 
 log "building odoo image (from source ref ${ODOO_GIT_REF}) ..."
+export DOCKER_BUILDKIT=1
+# Resolve a GitHub token for cloning the (possibly private) custom addons repo.
+# Priority: GITHUB_TOKEN/GH_TOKEN env > gh CLI > git credential helper. Written
+# to a temp file passed as a BuildKit secret (never a build-arg / image layer).
+GH_TOKEN_FILE="$(mktemp)"; chmod 600 "$GH_TOKEN_FILE"
+trap 'rm -f "$GH_TOKEN_FILE"' EXIT
+TOK="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
+if [ -z "$TOK" ] && command -v gh >/dev/null 2>&1; then
+  TOK="$(gh auth token 2>/dev/null || true)"
+fi
+if [ -z "$TOK" ]; then
+  TOK="$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill 2>/dev/null | sed -n 's/^password=//p')"
+fi
+printf '%s' "$TOK" > "$GH_TOKEN_FILE"
+if [ -s "$GH_TOKEN_FILE" ]; then log "github token resolved for custom-addons clone"; \
+  else log "WARNING: no github token; private custom-addons clone will fail"; fi
 # Ensure bake-in dirs exist so the Dockerfile COPY steps never fail.
 mkdir -p "$HERE/odoo/enterprise" "$HERE/odoo/custom-addons"
 # Auto-unzip an enterprise bundle if provided as odoo/enterprise.zip. Flatten a
@@ -33,6 +49,7 @@ docker build --platform linux/amd64 \
   --build-arg ODOO_GIT_REF="$ODOO_GIT_REF" \
   --build-arg CUSTOM_ADDONS_GIT_URL="$CUSTOM_ADDONS_GIT_URL" \
   --build-arg CUSTOM_ADDONS_GIT_REF="${CUSTOM_ADDONS_GIT_REF:-}" \
+  --secret id=gh_token,src="$GH_TOKEN_FILE" \
   -t "$ECR/$PROJECT/odoo:latest" "$HERE/odoo"
 docker push "$ECR/$PROJECT/odoo:latest"
 

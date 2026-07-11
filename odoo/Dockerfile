@@ -50,14 +50,23 @@ RUN set -eux; \
     done
 
 # Optional custom addons from git (clones CUSTOM_ADDONS_GIT_REF if set).
-RUN mkdir -p /mnt/extra-addons-custom \
+# A GitHub token is provided via a BuildKit secret (id=gh_token) for private
+# repos. The secret is mounted only for this RUN and never persists in a layer.
+RUN --mount=type=secret,id=gh_token,required=false \
+    mkdir -p /mnt/extra-addons-custom \
  && if [ -n "${CUSTOM_ADDONS_GIT_URL}" ]; then \
+      URL="${CUSTOM_ADDONS_GIT_URL}"; \
+      if [ -f /run/secrets/gh_token ]; then \
+        TOK="$(cat /run/secrets/gh_token)"; \
+        URL="$(printf '%s' "$URL" | sed -E "s#https://#https://x-access-token:${TOK}@#")"; \
+      fi; \
       if [ -n "${CUSTOM_ADDONS_GIT_REF}" ]; then \
-        git clone --depth 1 --branch "${CUSTOM_ADDONS_GIT_REF}" "${CUSTOM_ADDONS_GIT_URL}" /mnt/extra-addons-custom; \
+        git clone --depth 1 --branch "${CUSTOM_ADDONS_GIT_REF}" "$URL" /mnt/extra-addons-custom; \
       else \
-        git clone --depth 1 "${CUSTOM_ADDONS_GIT_URL}" /mnt/extra-addons-custom; \
+        git clone --depth 1 "$URL" /mnt/extra-addons-custom; \
       fi; \
       git -C /mnt/extra-addons-custom rev-parse HEAD > /mnt/extra-addons-custom.commit; \
+      git -C /mnt/extra-addons-custom remote set-url origin "${CUSTOM_ADDONS_GIT_URL}"; \
     fi
 
 COPY entrypoint.sh /odoo-entrypoint.sh
