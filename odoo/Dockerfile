@@ -69,6 +69,49 @@ RUN --mount=type=secret,id=gh_token,required=false \
       git -C /mnt/extra-addons-custom remote set-url origin "${CUSTOM_ADDONS_GIT_URL}"; \
     fi
 
+# Python + system deps required by the baked addons (enterprise + custom +
+# third_party). Derived from each module's __manifest__.py external_dependencies
+# plus a static import scan of the custom repos.
+#
+# CRITICAL: the base image ships ancient system builds of cryptography (3.4.8) /
+# pyOpenSSL (21.0.0) that Odoo core (base -> ir_mail_server) imports. Letting pip
+# upgrade cryptography (pulled transitively by e.g. google-auth) breaks pyOpenSSL
+# with `module 'lib' has no attribute 'GEN_EMAIL'`. We freeze the fragile core
+# libs to their base versions via a constraints file so the extras resolve
+# around them. numpy/pandas are pinned to an ABI-compatible pair (pandas 2.1.x is
+# built against numpy 1.x; mixing with numpy 2.x yields "numpy.dtype size
+# changed" import crashes). Installed per-package so one bad wheel doesn't block
+# the rest.
+RUN set -eux; \
+    printf '%s\n' \
+      'cryptography==3.4.8' 'pyOpenSSL==21.0.0' 'lxml==4.8.0' 'Pillow==9.0.1' \
+      'python-dateutil==2.8.1' 'Werkzeug==2.0.2' 'psycopg2==2.9.2' \
+      'reportlab==3.6.8' 'gevent==21.8.0' 'greenlet==1.1.2' 'zeep==4.1.0' \
+      'requests==2.25.1' 'urllib3==1.26.5' 'numpy==1.26.4' 'pandas==2.1.4' \
+      > /tmp/constraints.txt; \
+    # System libraries for weasyprint (pango/cairo/gdk-pixbuf), placed here so
+    # earlier expensive clone/COPY layers stay cached. Best-effort.
+    apt-get update \
+      && apt-get install -y --no-install-recommends \
+         libpango-1.0-0 libpangocairo-1.0-0 libpangoft2-1.0-0 \
+         libgdk-pixbuf-2.0-0 libcairo2 shared-mime-info \
+      && rm -rf /var/lib/apt/lists/* || true; \
+    # Scientific stack: install numpy+pandas together at ABI-compatible pins.
+    pip install --no-cache-dir "numpy==1.26.4" "pandas==2.1.4" polars; \
+    for base in /mnt/extra-addons-custom; do \
+      find "$base" -maxdepth 3 -name requirements.txt -exec \
+        pip install --no-cache-dir -c /tmp/constraints.txt -r {} \; 2>/dev/null || true; \
+    done; \
+    for pkg in \
+      boto3 confluent-kafka kafka-python geoip2 google-auth dbfread ebaysdk \
+      pyusb pyserial pycryptodome asn1crypto PyJWT \
+      phonenumbers openpyxl qrcode python-ldap xmlsec \
+      Levenshtein fuzzywuzzy python-stdnum xmltodict pdf417gen signxml \
+      pyhanko mock imgkit PyMuPDF weasyprint; do \
+      pip install --no-cache-dir -c /tmp/constraints.txt "$pkg" \
+        || echo "WARN: could not install $pkg"; \
+    done
+
 COPY entrypoint.sh /odoo-entrypoint.sh
 RUN chmod +x /odoo-entrypoint.sh
 

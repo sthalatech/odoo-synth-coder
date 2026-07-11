@@ -48,4 +48,8 @@ CONF
 COMMIT="$(cat /opt/odoo-src.commit 2>/dev/null || echo unknown)"
 echo "[odoo] source commit ${COMMIT}"
 echo "[odoo] launching against ${TARGET_DB_NAME}@${TARGET_DB_HOST}; addons_path=${ADDONS}"
-exec python3 "$SRC/odoo-bin" -c /etc/odoo/odoo.conf
+# Extra args ("$@") are forwarded to odoo-bin. With none, this starts the HTTP
+# server as usual; passing e.g. `-u all --stop-after-init` runs a one-off schema
+# migration/update against the same DB + addons_path (used after restoring an
+# older prod dump into newer source code).
+exec python3 "$SRC/odoo-bin" -c /etc/odoo/odoo.conf "$@"
