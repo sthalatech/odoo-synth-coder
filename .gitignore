@@ -10,3 +10,9 @@ odoo/enterprise/*
 odoo/custom-addons/*
 !odoo/custom-addons/README.md
 !odoo/custom-addons/.gitkeep
+
+# proprietary / large artifacts
+*.zip
+odoo/enterprise/*
+!odoo/enterprise/.gitignore
+!odoo/enterprise/README.md
