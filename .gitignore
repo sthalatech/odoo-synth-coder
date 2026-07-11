@@ -1,3 +1,12 @@
 state.env
 __pycache__/
 *.log
+
+# Proprietary / bulky addon sources — keep folders (README + .gitkeep) but not content.
+odoo/enterprise.zip
+odoo/enterprise/*
+!odoo/enterprise/README.md
+!odoo/enterprise/.gitkeep
+odoo/custom-addons/*
+!odoo/custom-addons/README.md
+!odoo/custom-addons/.gitkeep

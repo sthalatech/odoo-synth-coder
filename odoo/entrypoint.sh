@@ -7,11 +7,19 @@ TARGET_DB_PORT="${TARGET_DB_PORT:-5432}"
 ODOO_MASTER_PASSWORD="${ODOO_MASTER_PASSWORD:-change_me_master}"
 
 SRC="/opt/odoo-src"
-# Source addons: core (odoo/addons) + enterprise-style (addons) from the checkout.
-ADDONS="/mnt/extra-addons-custom"
-for d in "$SRC/odoo/addons" "$SRC/addons" /mnt/extra-addons; do
-  [ -d "$d" ] && ADDONS="${ADDONS},${d}"
-done
+# addons_path priority (Odoo: first match wins, so earlier = overrides later):
+#   EXTRA_ADDONS_PATH (EFS live-dev) > git custom > local custom > enterprise
+#   > community > core > legacy /mnt/extra-addons.
+ADDONS=""
+add(){ [ -d "$1" ] && [ -n "$(ls -A "$1" 2>/dev/null)" ] && ADDONS="${ADDONS:+$ADDONS,}$1"; }
+add /mnt/extra-addons-custom      # custom addons from git
+add /opt/custom                   # custom modules baked from build context
+add /opt/enterprise               # enterprise modules baked from zip/dir
+add "$SRC/addons"                 # community
+add "$SRC/odoo/addons"            # core
+add /mnt/extra-addons             # legacy mount point
+# Live-dev override: an EFS/volume mount takes highest priority when provided.
+[ -n "${EXTRA_ADDONS_PATH:-}" ] && ADDONS="${EXTRA_ADDONS_PATH},${ADDONS}"
 
 cat > /etc/odoo/odoo.conf <<CONF
 [options]

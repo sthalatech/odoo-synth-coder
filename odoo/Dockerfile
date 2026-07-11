@@ -32,7 +32,23 @@ RUN set -eux; \
 # largely present from the base image; this covers version drift). Best-effort.
 RUN pip install --no-cache-dir --break-system-packages -r /opt/odoo-src/requirements.txt || true
 
-# Optional custom addons.
+# Enterprise addons: baked from the build context at odoo/enterprise/ (the
+# 02_build_push.sh script auto-unzips odoo/enterprise.zip into it beforehand).
+# The directory always exists (.gitkeep) so this COPY never fails; it's empty
+# when no enterprise code is provided.
+COPY enterprise/ /opt/enterprise/
+
+# Local custom modules: baked from the build context at odoo/custom-addons/.
+COPY custom-addons/ /opt/custom/
+
+# Install any Python requirements declared by enterprise/custom modules.
+RUN set -eux; \
+    for base in /opt/enterprise /opt/custom; do \
+      find "$base" -maxdepth 2 -name requirements.txt -exec \
+        pip install --no-cache-dir --break-system-packages -r {} \; 2>/dev/null || true; \
+    done
+
+# Optional custom addons from git.
 RUN mkdir -p /mnt/extra-addons-custom \
  && if [ -n "${CUSTOM_ADDONS_GIT_URL}" ]; then \
       git clone --depth 1 "${CUSTOM_ADDONS_GIT_URL}" /mnt/extra-addons-custom; \
