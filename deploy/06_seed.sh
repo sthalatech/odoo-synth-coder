@@ -13,9 +13,11 @@ cat > /tmp/td-seed.json <<JSON
   "containerDefinitions": [{
     "name": "seed",
     "image": "$ECR/$PROJECT/odoo:latest",
-    "entryPoint": ["odoo"],
+    "entryPoint": ["python3","/opt/odoo-src/odoo-bin"],
     "command": ["-d","$SOURCE_DB_NAME","-i","base","--without-demo=False",
-      "--stop-after-init","--db_host","$RDS_ENDPOINT","--db_port","5432",
+      "--stop-after-init",
+      "--addons-path","/opt/odoo-src/odoo/addons,/opt/odoo-src/addons",
+      "--db_host","$RDS_ENDPOINT","--db_port","5432",
       "--db_user","$TARGET_DB_USER","--db_password","$TARGET_DB_PASSWORD"],
     "logConfiguration": {"logDriver":"awslogs","options":{
       "awslogs-group":"/ecs/$PROJECT","awslogs-region":"$AWS_REGION",

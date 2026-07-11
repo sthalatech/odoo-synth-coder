@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# Render odoo.conf from env and launch Odoo against the masked replica DB.
+# Render odoo.conf from env and launch Odoo FROM SOURCE (odoo-bin) against the DB.
 set -euo pipefail
 
 : "${TARGET_DB_HOST:?}" "${TARGET_DB_NAME:?}" "${TARGET_DB_USER:?}" "${TARGET_DB_PASSWORD:?}"
 TARGET_DB_PORT="${TARGET_DB_PORT:-5432}"
 ODOO_MASTER_PASSWORD="${ODOO_MASTER_PASSWORD:-change_me_master}"
 
+SRC="/opt/odoo-src"
+# Source addons: core (odoo/addons) + enterprise-style (addons) from the checkout.
 ADDONS="/mnt/extra-addons-custom"
-# Prepend Odoo's built-in addons if present in the base image.
-for d in /usr/lib/python3/dist-packages/odoo/addons /mnt/extra-addons; do
+for d in "$SRC/odoo/addons" "$SRC/addons" /mnt/extra-addons; do
   [ -d "$d" ] && ADDONS="${ADDONS},${d}"
 done
 
@@ -26,5 +27,7 @@ list_db = False
 proxy_mode = True
 CONF
 
+COMMIT="$(cat /opt/odoo-src.commit 2>/dev/null || echo unknown)"
+echo "[odoo] source commit ${COMMIT}"
 echo "[odoo] launching against ${TARGET_DB_NAME}@${TARGET_DB_HOST}; addons_path=${ADDONS}"
-exec odoo -c /etc/odoo/odoo.conf
+exec python3 "$SRC/odoo-bin" -c /etc/odoo/odoo.conf
