@@ -82,6 +82,20 @@ def parse_dsn(dsn: str) -> dict:
     }
 
 
+def parse_bastion(bastion: str) -> dict:
+    """Parse 'user@host[:port]' into user/host/port."""
+    b = bastion.strip()
+    if "@" not in b:
+        raise ValueError("bastion must be 'user@host[:port]'")
+    user, _, hostpart = b.partition("@")
+    user = user.strip()
+    host, _, port = hostpart.partition(":")
+    host = host.strip()
+    if not user or not host:
+        raise ValueError("bastion must be 'user@host[:port]'")
+    return {"user": user, "host": host, "port": (port.strip() or "22")}
+
+
 # ---------------------------------------------------------------------------
 # masked-dump download staging (presigned PUT for upload, GET for download)
 # ---------------------------------------------------------------------------
@@ -145,6 +159,17 @@ def _register_mask_taskdef(ecs, src: dict, tgt: dict, params: dict,
     ]
     if masked_dump_put_url:
         env.append(kv("MASKED_DUMP_PUT_URL", masked_dump_put_url))
+
+    # optional SSH tunnel to reach the source through a bastion
+    if params.get("ssh_enabled") and params.get("ssh_bastion"):
+        b = parse_bastion(params["ssh_bastion"])
+        env += [
+            kv("SSH_ENABLED", "true"),
+            kv("SSH_BASTION_HOST", b["host"]),
+            kv("SSH_BASTION_USER", b["user"]),
+            kv("SSH_BASTION_PORT", b["port"]),
+            kv("SSH_PRIVATE_KEY", params.get("ssh_key") or ""),
+        ]
 
     ecs.register_task_definition(
         family=family,
@@ -250,7 +275,10 @@ def run_operation(operation: str, params: dict, emit: LogSink) -> dict:
 
     cluster = config.require("ECS_CLUSTER")
     sg = config.require("TASK_SG")
-    emit(f"[panel] mask source={src['user']}@{src['host']}:{src['port']}/{src['dbname']} "
+    via = ""
+    if params.get("ssh_enabled") and params.get("ssh_bastion"):
+        via = f" via ssh {params['ssh_bastion']}"
+    emit(f"[panel] mask source={src['user']}@{src['host']}:{src['port']}/{src['dbname']}{via} "
          f"-> {tgt['dbname']}@{tgt['host']} profile={params.get('mask_profile')}")
 
     family, container, log_group, prefix = _register_mask_taskdef(
@@ -287,6 +315,10 @@ def run_operation(operation: str, params: dict, emit: LogSink) -> dict:
         result["error"] = ("preflight failed: source or destination DB was not "
                             "reachable from the masker task (check the URL, "
                             "credentials, and network/security-group access).")
+    elif exit_code == 4:
+        result["error"] = ("SSH tunnel failed: could not connect to the bastion or "
+                            "forward to the source DB (check bastion host/user/port, "
+                            "the SSH key, and that the bastion can reach the DB).")
     else:
         result["error"] = f"task exited non-zero ({exit_code})"
     return result

@@ -28,7 +28,41 @@ say(){ echo "[masker] $*"; }
 is_true(){ case "${1,,}" in true|1|yes|on) return 0;; *) return 1;; esac; }
 rm -rf "$GM_STORAGE"; mkdir -p "$GM_STORAGE"
 
-# 0. pre-flight reachability checks (fail fast with a clear message instead of a
+# 0a. optional SSH tunnel to reach the SOURCE DB through a bastion.
+#     When SSH_ENABLED=true, open  localhost:LOCAL -> SOURCE_DB_HOST:SOURCE_DB_PORT
+#     via  SSH_BASTION_USER@SSH_BASTION_HOST:SSH_BASTION_PORT  using SSH_PRIVATE_KEY,
+#     then rewrite SOURCE_DB_HOST/PORT to the local end so everything downstream
+#     (preflight, greenmask) connects through the tunnel transparently.
+SSH_ENABLED="${SSH_ENABLED:-false}"
+if is_true "$SSH_ENABLED"; then
+  : "${SSH_BASTION_HOST:?SSH_ENABLED but SSH_BASTION_HOST unset}"
+  : "${SSH_BASTION_USER:?SSH_ENABLED but SSH_BASTION_USER unset}"
+  : "${SSH_PRIVATE_KEY:?SSH_ENABLED but SSH_PRIVATE_KEY unset}"
+  SSH_BASTION_PORT="${SSH_BASTION_PORT:-22}"
+  SSH_LOCAL_PORT="${SSH_LOCAL_PORT:-15432}"
+  REMOTE_HOST="$SOURCE_DB_HOST"; REMOTE_PORT="$SOURCE_DB_PORT"
+  KEY=/tmp/ssh_key
+  # accept keys pasted with literal "\n" as well as real newlines
+  printf '%b\n' "$SSH_PRIVATE_KEY" | sed 's/\\n/\n/g' > "$KEY"
+  chmod 600 "$KEY"
+  say "opening SSH tunnel: localhost:${SSH_LOCAL_PORT} -> ${REMOTE_HOST}:${REMOTE_PORT} via ${SSH_BASTION_USER}@${SSH_BASTION_HOST}:${SSH_BASTION_PORT} ..."
+  if ! ssh -f -N \
+        -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -o ExitOnForwardFailure=yes -o ConnectTimeout=15 \
+        -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+        -i "$KEY" -p "$SSH_BASTION_PORT" \
+        -L "127.0.0.1:${SSH_LOCAL_PORT}:${REMOTE_HOST}:${REMOTE_PORT}" \
+        "${SSH_BASTION_USER}@${SSH_BASTION_HOST}" 2>/tmp/ssh.err; then
+    echo "[masker] SSH TUNNEL FAILED to ${SSH_BASTION_USER}@${SSH_BASTION_HOST}:${SSH_BASTION_PORT}" >&2
+    sed 's/^/[masker]   ssh: /' /tmp/ssh.err >&2 || true
+    echo "[masker] hint: check the bastion host/user/port, the SSH key, and that the bastion can reach ${REMOTE_HOST}:${REMOTE_PORT}." >&2
+    exit 4
+  fi
+  export SOURCE_DB_HOST="127.0.0.1"; export SOURCE_DB_PORT="$SSH_LOCAL_PORT"
+  say "SSH tunnel up; SOURCE now via 127.0.0.1:${SSH_LOCAL_PORT}."
+fi
+
+# 0b. pre-flight reachability checks (fail fast with a clear message instead of a
 #    cryptic pg_dump/greenmask error deep into the run).
 preflight(){ # role host port user pass db
   local role="$1" host="$2" port="$3" user="$4" pass="$5" db="$6"

@@ -5,7 +5,7 @@ ARG GREENMASK_VERSION=v0.2.22
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      curl ca-certificates gettext-base python3 python3-passlib \
+      curl ca-certificates gettext-base python3 python3-passlib openssh-client \
  && rm -rf /var/lib/apt/lists/*
 
 RUN curl -fsSL -o /tmp/gm.tgz \

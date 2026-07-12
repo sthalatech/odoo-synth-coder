@@ -99,6 +99,10 @@ class RunRequest(BaseModel):
     operation: str = "mask"
     # SOURCE: a live Postgres DB the user points at
     source_dsn: Optional[str] = None       # postgresql://user:pass@host:port/db
+    # optional SSH tunnel to reach the source through a bastion
+    ssh_enabled: Optional[bool] = None
+    ssh_bastion: Optional[str] = None      # user@host[:port]
+    ssh_key: Optional[str] = None          # private key material (PEM)
     # masking
     mask_profile: Optional[str] = None
     admin_password: Optional[str] = None
@@ -159,11 +163,22 @@ def api_start_run(req: RunRequest) -> dict:
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(400, f"invalid source URL: {exc}")
 
+    if req.ssh_enabled:
+        if not req.ssh_bastion:
+            raise HTTPException(400, "SSH tunnel enabled but bastion (user@host[:port]) is missing")
+        if not req.ssh_key:
+            raise HTTPException(400, "SSH tunnel enabled but private key is missing")
+        try:
+            pipeline.parse_bastion(req.ssh_bastion)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(400, f"invalid bastion: {exc}")
+
     run_id = uuid.uuid4().hex[:12]
     stored_params = {
         "operation": req.operation,
         "mask_profile": req.mask_profile,
         "source_present": bool(req.source_dsn),
+        "ssh_enabled": bool(req.ssh_enabled),
         "produce_dump": bool(req.produce_dump),
         "admin_password_set": bool(req.admin_password),
     }

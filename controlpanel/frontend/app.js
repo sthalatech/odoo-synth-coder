@@ -149,6 +149,9 @@ function buildPayload() {
   return {
     operation: "mask",
     source_dsn: $("source_dsn").value.trim(),
+    ssh_enabled: $("ssh_enabled").checked,
+    ssh_bastion: $("ssh_bastion").value.trim() || null,
+    ssh_key: $("ssh_key").value || null,
     mask_profile: $("mask_profile").value,
     admin_password: $("admin_password").value || null,
     gm_jobs: parseInt($("gm_jobs").value, 10) || null,
@@ -161,11 +164,20 @@ function buildPayload() {
   };
 }
 
+// SSH toggle shows/hides bastion fields
+$("ssh_enabled").addEventListener("change", () => {
+  $("ssh-fields").classList.toggle("hidden", !$("ssh_enabled").checked);
+});
+
 $("run-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const body = buildPayload();
   if (!body.source_dsn) {
     appendLog("[panel] enter a source database URL (postgresql://…)");
+    return;
+  }
+  if (body.ssh_enabled && (!body.ssh_bastion || !body.ssh_key)) {
+    appendLog("[panel] SSH tunnel on: provide the bastion (user@host[:port]) and the private key");
     return;
   }
   $("start-btn").disabled = true;
