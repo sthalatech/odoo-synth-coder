@@ -283,6 +283,10 @@ def run_operation(operation: str, params: dict, emit: LogSink) -> dict:
             result["target_url"] = f"http://{alb}/web/login"
         if masked_dump_get_url:
             result["masked_dump_url"] = masked_dump_get_url
+    elif exit_code == 3:
+        result["error"] = ("preflight failed: source or destination DB was not "
+                            "reachable from the masker task (check the URL, "
+                            "credentials, and network/security-group access).")
     else:
         result["error"] = f"task exited non-zero ({exit_code})"
     return result

@@ -28,6 +28,24 @@ say(){ echo "[masker] $*"; }
 is_true(){ case "${1,,}" in true|1|yes|on) return 0;; *) return 1;; esac; }
 rm -rf "$GM_STORAGE"; mkdir -p "$GM_STORAGE"
 
+# 0. pre-flight reachability checks (fail fast with a clear message instead of a
+#    cryptic pg_dump/greenmask error deep into the run).
+preflight(){ # role host port user pass db
+  local role="$1" host="$2" port="$3" user="$4" pass="$5" db="$6"
+  say "preflight: checking ${role} ${user}@${host}:${port}/${db} ..."
+  if ! PGCONNECT_TIMEOUT=10 PGPASSWORD="$pass" \
+       psql -h "$host" -p "$port" -U "$user" -d "$db" -tAc 'SELECT 1' >/dev/null 2>/tmp/pf.err; then
+    echo "[masker] PREFLIGHT FAILED for ${role}: cannot connect to ${host}:${port}/${db} as ${user}" >&2
+    sed 's/^/[masker]   psql: /' /tmp/pf.err >&2 || true
+    echo "[masker] hint: verify the URL/credentials and that the DB is reachable from this task's network (security group / VPC egress / firewall)." >&2
+    return 1
+  fi
+  say "preflight: ${role} reachable."
+}
+preflight "SOURCE" "$SOURCE_DB_HOST" "$SOURCE_DB_PORT" "$SOURCE_DB_USER" "$SOURCE_DB_PASSWORD" "$SOURCE_DB_NAME" || exit 3
+# target: connect to the admin 'postgres' db (target DB itself is (re)created later)
+preflight "TARGET" "$TARGET_DB_HOST" "$TARGET_DB_PORT" "$TARGET_DB_USER" "$TARGET_DB_PASSWORD" "postgres" || exit 3
+
 # 1. render greenmask config from the selected profile
 export SOURCE_DB_HOST SOURCE_DB_PORT SOURCE_DB_USER SOURCE_DB_PASSWORD SOURCE_DB_NAME GM_STORAGE
 PROFILE_FILE="/work/profiles/${MASK_PROFILE}.yml"
