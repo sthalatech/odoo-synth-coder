@@ -15,6 +15,8 @@ STATE="$HERE/deploy/state.env"
 touch "$STATE"
 set -a; source "$STATE"; set +a
 put_state(){ # key value
+  # ensure the file ends with a newline so appends never glue onto the last line
+  [ -s "$STATE" ] && [ -n "$(tail -c1 "$STATE")" ] && echo >> "$STATE"
   grep -v "^$1=" "$STATE" > "$STATE.tmp" 2>/dev/null || true
   echo "$1=$2" >> "$STATE.tmp"; mv "$STATE.tmp" "$STATE"
   export "$1=$2"
