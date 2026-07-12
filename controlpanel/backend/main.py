@@ -121,6 +121,8 @@ class EnvironmentRequest(BaseModel):
     source_run_id: Optional[str] = None    # mask run whose dump seeds the env
     issue: Optional[str] = None            # github issue ref (optional)
     dump_s3_uri: Optional[str] = None      # explicit s3:// masked dump (optional)
+    repo_url: Optional[str] = None         # addons repo to clone + live-mount (optional)
+    repo_branch: Optional[str] = None      # branch/ref of the addons repo (optional)
 
 
 # ---------------------------------------------------------------------------
@@ -262,7 +264,10 @@ def api_env_config() -> dict:
         "enabled": s["enabled"],
         "instance_type": s["instance_type"],
         "code_port": s["code_port"],
+        "odoo_port": s["odoo_port"],
         "repo_url": s["repo_url"],
+        "repo_branch": s["repo_branch"],
+        "odoo_image": s["odoo_image"],
     }
 
 
@@ -290,7 +295,8 @@ def api_create_environment(req: EnvironmentRequest) -> dict:
                 "that run has no masked dump to seed from; re-run the mask with "
                 "'produce a downloadable pg_dump' enabled, or pass an explicit dump_s3_uri",
             )
-    env_id = environments.create(req.source_run_id, req.issue, req.dump_s3_uri)
+    env_id = environments.create(req.source_run_id, req.issue, req.dump_s3_uri,
+                                 repo_url=req.repo_url, repo_branch=req.repo_branch)
     return {"environment_id": env_id}
 
 

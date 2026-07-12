@@ -47,7 +47,9 @@ if ! id dev >/dev/null 2>&1; then
   usermod -aG docker dev
 fi
 
-# Pre-pull the postgres image so first boot is fast.
+# Pre-pull the postgres image so first boot is fast. The provenance-baked odoo
+# image is pulled per-environment from ECR at boot (the instance profile needs
+# ecr:GetAuthorizationToken + pull) so the AMI stays thin and never goes stale.
 docker pull postgres:16 || true
 
 # Handy VS Code extensions baked in (Python + Odoo dev).

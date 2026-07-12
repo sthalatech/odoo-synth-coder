@@ -153,9 +153,15 @@
             <label>GitHub issue <span class="muted">(optional, e.g. org/repo#123)</span>
               <input type="text" id="env-issue" placeholder="org/repo#123" />
             </label>
+            <label>Addons repo URL <span class="muted">(optional; defaults to the pipeline's)</span>
+              <input type="text" id="env-repo-url" placeholder="https://github.com/org/addons" />
+            </label>
+            <label>Branch <span class="muted">(optional)</span>
+              <input type="text" id="env-repo-branch" placeholder="main" />
+            </label>
             <button type="submit" id="env-create-btn">Launch environment</button>
           </form>
-          <p class="muted small">Launches an isolated EC2 + code-server seeded from the masked dump. Tear down when the issue is closed.</p>
+          <p class="muted small">Launches an isolated EC2 running <b>code-server</b> + the provenance-baked Odoo image against a local masked DB. The addons repo is cloned into the workspace and live-mounted into Odoo. Tear down when the issue is closed.</p>
         </div>
         <div class="panel">
           <h2>Environments</h2>

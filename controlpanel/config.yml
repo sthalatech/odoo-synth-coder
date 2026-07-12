@@ -52,16 +52,24 @@ gm_jobs: 4
 # set them in config.env / deploy/state.env for your account.
 environments:
   enabled: true
-  ami_id_env: ENV_AMI_ID                      # golden AMI id
+  ami_id_env: ENV_AMI_ID                      # golden AMI id (thin: ubuntu + docker + code-server)
   instance_type: t3.large
   subnet_id_env: ENV_SUBNET_ID                # subnet with route to the masked VPC
-  security_group_id_env: ENV_SG_ID            # SG: inbound code_port from your CIDR, egress to S3/RDS
-  instance_profile_env: ENV_INSTANCE_PROFILE  # IAM profile: read masked-dump S3 + get the env secret
+  security_group_id_env: ENV_SG_ID            # SG: inbound code_port + odoo_port from your CIDR
+  instance_profile_env: ENV_INSTANCE_PROFILE  # IAM profile: S3 dump read + secret read + ECR pull
   key_name_env: ENV_KEY_NAME                  # optional EC2 keypair for break-glass ssh
   assign_public_ip: true
-  code_port: 8443                             # code-server TLS port -> https://<ip>:8443
+  code_port: 8443                             # code-server TLS  -> https://<ip>:8443
+  odoo_port: 8069                             # odoo (masked)    -> http://<ip>:8069
   db_name: odoo                               # local DB name seeded from the masked dump
-  repo_url_env: ENV_REPO_URL                  # addons repo cloned into the workspace
-  repo_branch_env: ENV_REPO_BRANCH
+  # The provenance-baked Odoo image the env runs against the masked DB. Left as
+  # odoo_image_tag so it resolves to <acct>.dkr.ecr.<region>/<project>/odoo:<tag>;
+  # a run seeded-from overrides this with the exact image it used.
+  odoo_image_tag: latest
+  # odoo_image_env: ENV_ODOO_IMAGE            # or pin the full image URI via env
+  repo_url_env: ENV_REPO_URL                  # addons repo cloned + live-mounted (default: CUSTOM_ADDONS_GIT_URL)
+  repo_branch_env: ENV_REPO_BRANCH            # default: CUSTOM_ADDONS_GIT_REF
+  git_token_secret_env: ENV_GIT_TOKEN_SECRET  # optional Secrets Manager arn: GitHub token for private repo clone
   secret_prefix: odoo-synth/env               # Secrets Manager path prefix for per-env passwords
+
 

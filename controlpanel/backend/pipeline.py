@@ -314,6 +314,10 @@ def run_operation(operation: str, params: dict, emit: LogSink) -> dict:
             result["masked_dump_url"] = masked_dump_get_url
         if masked_dump_s3_uri:
             result["masked_dump_s3_uri"] = masked_dump_s3_uri
+        # Provenance: the exact Odoo image this masked dataset pairs with, so a
+        # developer environment seeded from this run runs identical code.
+        proj = config.get("PROJECT")
+        result["odoo_image"] = f"{_ecr()}/{proj}/odoo:latest"
     elif exit_code == 3:
         result["error"] = ("preflight failed: source or destination DB was not "
                             "reachable from the masker task (check the URL, "

@@ -334,9 +334,11 @@ function envColumns() {
       formatter: (c) => (c.getValue() ? `<span class="mono">${c.getValue()}</span>` : "—") },
     { title: "status", field: "status", width: 120,
       formatter: (c) => `<span class="st-${c.getValue()}">${c.getValue()}</span>` },
-    { title: "vscode", field: "vscode_url", hozAlign: "center", width: 110,
+    { title: "vscode", field: "vscode_url", hozAlign: "center", width: 100,
       formatter: (c) => linkCell(c.getValue(), "open") },
-    { title: "created", field: "created_at", width: 180,
+    { title: "odoo", field: "odoo_url", hozAlign: "center", width: 100,
+      formatter: (c) => linkCell(c.getValue(), "open") },
+    { title: "created", field: "created_at", width: 170,
       formatter: (c) => (c.getValue() ? new Date(c.getValue() * 1000).toLocaleString() : "—") },
     { title: "", field: "id", hozAlign: "center", width: 110, headerSort: false,
       formatter: (c) => {
@@ -358,8 +360,14 @@ async function loadEnvironments() {
       "<code>ENV_SG_ID</code> and the other <code>environments.*</code> values.";
     $("env-create-btn").disabled = true;
   } else {
-    note.textContent = `Ready · ${ENV_CONFIG.instance_type} · code-server on :${ENV_CONFIG.code_port}`;
+    note.textContent = `Ready · ${ENV_CONFIG.instance_type} · code-server :${ENV_CONFIG.code_port} · odoo :${ENV_CONFIG.odoo_port}`;
     $("env-create-btn").disabled = false;
+    if (ENV_CONFIG.repo_url && !$("env-repo-url").value) {
+      $("env-repo-url").placeholder = ENV_CONFIG.repo_url;
+    }
+    if (ENV_CONFIG.repo_branch && !$("env-repo-branch").value) {
+      $("env-repo-branch").placeholder = ENV_CONFIG.repo_branch;
+    }
   }
 
   // populate the "seed from run" select with runs that produced a dump
@@ -412,6 +420,8 @@ $("env-form").addEventListener("submit", async (e) => {
   const ok = await createEnvironment({
     source_run_id: $("env-source-run").value || null,
     issue: $("env-issue").value.trim() || null,
+    repo_url: $("env-repo-url").value.trim() || null,
+    repo_branch: $("env-repo-branch").value.trim() || null,
   });
   $("env-create-btn").disabled = false;
   if (ok) { $("env-issue").value = ""; loadEnvironments(); }

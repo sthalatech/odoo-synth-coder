@@ -54,10 +54,14 @@ def init() -> None:
               source_run_id TEXT,               -- mask run whose dump seeds this env
               issue         TEXT,                -- github issue ref (optional)
               dump_s3_uri   TEXT,                -- s3://bucket/key of the masked dump
+              repo_url      TEXT,                -- addons repo cloned + live-mounted
+              repo_branch   TEXT,
+              odoo_image    TEXT,                -- provenance-baked odoo image the env runs
               instance_id   TEXT,
               public_ip     TEXT,
               status        TEXT NOT NULL,       -- pending|provisioning|running|terminated|failed
               vscode_url    TEXT,
+              odoo_url      TEXT,                -- masked odoo (http://<ip>:<odoo_port>)
               secret_arn    TEXT,                -- Secrets Manager arn of the code-server password
               error         TEXT,
               created_at    REAL NOT NULL,
@@ -148,14 +152,17 @@ def get_logs(run_id: str, after_seq: int = 0) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 def create_environment(env_id: str, source_run_id: str | None, issue: str | None,
-                       dump_s3_uri: str | None) -> None:
+                       dump_s3_uri: str | None, repo_url: str | None = None,
+                       repo_branch: str | None = None,
+                       odoo_image: str | None = None) -> None:
     with _write_lock:
         c = _conn()
         c.execute(
-            "INSERT INTO environments (id, source_run_id, issue, dump_s3_uri, status, "
-            "created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
-            (env_id, source_run_id, issue, dump_s3_uri, "pending",
-             time.time(), time.time()),
+            "INSERT INTO environments (id, source_run_id, issue, dump_s3_uri, "
+            "repo_url, repo_branch, odoo_image, status, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (env_id, source_run_id, issue, dump_s3_uri, repo_url, repo_branch,
+             odoo_image, "pending", time.time(), time.time()),
         )
         c.commit()
 

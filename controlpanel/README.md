@@ -93,29 +93,43 @@ logs permissions above, instead of static keys.)
 ## Developer environments (VS Code, per issue)
 
 Ephemeral, isolated **code-server** boxes seeded from a masked `pg_dump`
-artifact — one EC2 instance per environment, from a pre-baked golden AMI. The
-masked data is restored into a **local postgres** on the instance (full
-isolation, disposable with the box). Intended to later be driven by
-GitHub-issue webhooks (open → create, close → tear down).
+artifact — one EC2 instance per environment, from a **thin** golden AMI
+(Ubuntu + docker + code-server; **Odoo is not baked in**). At boot the instance:
+
+1. starts a **local postgres** and restores the masked dump into it;
+2. pulls the **provenance-baked odoo image** from ECR (core pinned to the run's
+   git ref + the discovered `external_dependencies` — the same image the masked
+   instance runs, so dependency discovery never repeats here) and runs it against
+   the local DB;
+3. clones the developer's **addons repo** into the workspace and **bind-mounts it
+   live into Odoo** (`EXTRA_ADDONS_PATH`, highest addons_path priority), so edits
+   reload without a rebuild;
+4. starts code-server behind a per-environment password (Secrets Manager).
+
+The env inherits the exact odoo image from the run it seeds from (captured on the
+run as `odoo_image`), so the code matches the masked data. Developers get a
+running instance fast and never touch infra/provenance setup.
 
 Setup (one-time):
 
 1. Launch a fresh Ubuntu instance, run
    [environments/provision.sh](environments/provision.sh), then bake an AMI
-   from it (`aws ec2 create-image`).
-2. Create a security group allowing inbound `code_port` (8443) from your CIDR
-   and egress to S3 + the masked RDS; an IAM instance profile that can read the
-   masked-dump S3 prefix and `secretsmanager:GetSecretValue` on
-   `odoo-synth/env/*`.
-3. Set these in `config.env` / `deploy/state.env`:
-   `ENV_AMI_ID`, `ENV_SG_ID`, `ENV_SUBNET_ID`, `ENV_INSTANCE_PROFILE`,
-   `ENV_KEY_NAME` (optional), `ENV_REPO_URL`, `ENV_REPO_BRANCH` (optional).
+   from it (`aws ec2 create-image`). Thin AMI — no Odoo baked in.
+2. Security group: inbound `code_port` (8443) and `odoo_port` (8069) from your
+   CIDR; egress to S3 + ECR. Instance profile: read the masked-dump S3 prefix,
+   `secretsmanager:GetSecretValue` on `odoo-synth/env/*` (+ the git-token secret),
+   and **ECR pull** (`ecr:GetAuthorizationToken`, `ecr:BatchGetImage`,
+   `ecr:GetDownloadUrlForLayer`).
+3. Set in `config.env` / `deploy/state.env`: `ENV_AMI_ID`, `ENV_SG_ID`,
+   `ENV_SUBNET_ID`, `ENV_INSTANCE_PROFILE`, `ENV_KEY_NAME` (optional),
+   `ENV_REPO_URL` / `ENV_REPO_BRANCH` (default to `CUSTOM_ADDONS_GIT_URL/REF`),
+   and `ENV_GIT_TOKEN_SECRET` (optional, for a private addons repo).
 
-Then from the **Environments** page (or a run's *create env* action): pick a
-mask run that produced a dump → an instance boots, restores the masked DB, and
-starts code-server behind a per-environment password (stored in Secrets
-Manager). The `vscode` column links to `https://<ip>:<code_port>/`. Tear down
-when the issue closes.
+From the **Environments** page (or a run's *create env* action): pick a mask run
+that produced a dump, optionally override the addons repo/branch → an instance
+boots, restores the masked DB, runs Odoo, and starts code-server. The `vscode`
+column links to the editor, `odoo` to the masked app. Tear down when the issue
+closes.
 
 > Per-env auth is a random Secrets-Manager password today; put an
 > org-restricted `oauth2-proxy` in front for production.

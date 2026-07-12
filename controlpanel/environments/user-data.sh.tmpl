@@ -2,20 +2,19 @@
 # ---------------------------------------------------------------------------
 # Per-environment boot script (EC2 user-data), rendered by the control panel.
 #
-# Placeholders (substituted server-side before launch):
-#   __ENV_ID__          short environment id
-#   __ISSUE__           GitHub issue ref (or empty)
-#   __AWS_REGION__      region
-#   __DUMP_S3_URI__     s3://bucket/key of the masked pg_dump (custom format)
-#   __SECRET_ARN__      Secrets Manager ARN holding the code-server password
-#   __REPO_URL__        addons git repo to clone into the workspace (or empty)
-#   __REPO_BRANCH__     branch to checkout (or empty)
-#   __DB_NAME__         local database name to seed (e.g. odoo)
-#   __CODE_PORT__       code-server TLS port (e.g. 8443)
+# The AMI is THIN (ubuntu + docker + code-server). Odoo itself is NOT baked in:
+# each environment runs the provenance-baked odoo image (built by the pipeline,
+# with core pinned to the run's git ref + the discovered external_dependencies)
+# against a LOCAL postgres seeded from the masked dump. The developer's addons
+# repo is cloned into the code-server workspace and bind-mounted into the odoo
+# container as live-dev addons (highest addons_path priority), so edits reload
+# without any rebuild. Dependency discovery therefore never happens here -- it is
+# inherited from the odoo image.
 #
-# The masked data is loaded into a LOCAL postgres container (full isolation,
-# disposable with the instance). code-server serves the workspace over TLS with
-# a per-environment password.
+# Placeholders (substituted server-side before launch):
+#   __ENV_ID__ __ISSUE__ __AWS_REGION__ __DUMP_S3_URI__ __SECRET_ARN__
+#   __ODOO_IMAGE__ __REPO_URL__ __REPO_BRANCH__ __GIT_TOKEN_SECRET__
+#   __DB_NAME__ __CODE_PORT__ __ODOO_PORT__ __ODOO_MASTER_PASSWORD__
 # ---------------------------------------------------------------------------
 set -euo pipefail
 exec > >(tee -a /var/log/odoo-synth-env.log) 2>&1
@@ -24,18 +23,25 @@ echo "[env __ENV_ID__] boot $(date -u +%FT%TZ) issue=__ISSUE__"
 REGION="__AWS_REGION__"
 DUMP_S3_URI="__DUMP_S3_URI__"
 SECRET_ARN="__SECRET_ARN__"
+ODOO_IMAGE="__ODOO_IMAGE__"
 REPO_URL="__REPO_URL__"
 REPO_BRANCH="__REPO_BRANCH__"
+GIT_TOKEN_SECRET="__GIT_TOKEN_SECRET__"
 DB_NAME="__DB_NAME__"
 CODE_PORT="__CODE_PORT__"
+ODOO_PORT="__ODOO_PORT__"
+ODOO_MASTER_PASSWORD="__ODOO_MASTER_PASSWORD__"
 WORKSPACE="/home/dev/workspace"
+REPO_DIR="$WORKSPACE/repo"
 PGPASS="odoo"
+NET="envnet"
 
 mkdir -p "$WORKSPACE"
+docker network create "$NET" >/dev/null 2>&1 || true
 
 # --- 1. local postgres holding the masked data -----------------------------
 docker rm -f env-db >/dev/null 2>&1 || true
-docker run -d --name env-db \
+docker run -d --name env-db --network "$NET" \
   -e POSTGRES_PASSWORD="$PGPASS" \
   -e POSTGRES_USER=odoo \
   -e POSTGRES_DB="$DB_NAME" \
@@ -60,18 +66,59 @@ if [ -n "$DUMP_S3_URI" ]; then
   echo "[env __ENV_ID__] restore complete"
 fi
 
-# --- 3. clone the addons repo into the workspace ---------------------------
+# --- 3. optional GitHub token (private addons repo clone) ------------------
+GIT_TOKEN=""
+if [ -n "$GIT_TOKEN_SECRET" ]; then
+  GIT_TOKEN="$(aws secretsmanager get-secret-value --secret-id "$GIT_TOKEN_SECRET" \
+      --region "$REGION" --query SecretString --output text 2>/dev/null || echo '')"
+fi
+
+# --- 4. clone the addons repo into the workspace ---------------------------
 if [ -n "$REPO_URL" ]; then
-  sudo -u dev git clone ${REPO_BRANCH:+--branch "$REPO_BRANCH"} "$REPO_URL" \
-      "$WORKSPACE/repo" || echo "[env __ENV_ID__] repo clone skipped/failed"
+  CLONE_URL="$REPO_URL"
+  if [ -n "$GIT_TOKEN" ]; then
+    CLONE_URL="$(printf '%s' "$REPO_URL" | sed -E "s#https://#https://x-access-token:${GIT_TOKEN}@#")"
+  fi
+  sudo -u dev git clone ${REPO_BRANCH:+--branch "$REPO_BRANCH"} "$CLONE_URL" "$REPO_DIR" \
+      || echo "[env __ENV_ID__] repo clone skipped/failed"
+  if [ -n "$GIT_TOKEN" ] && [ -d "$REPO_DIR/.git" ]; then
+    sudo -u dev git -C "$REPO_DIR" remote set-url origin "$REPO_URL" || true
+  fi
 fi
 chown -R dev:dev /home/dev
 
-# --- 4. code-server password (per-env, from Secrets Manager) ---------------
+# --- 5. pull + run the provenance-baked odoo image against the masked DB ----
+if [ -n "$ODOO_IMAGE" ]; then
+  echo "[env __ENV_ID__] ECR login + pulling odoo image $ODOO_IMAGE"
+  REG="${ODOO_IMAGE%%/*}"
+  aws ecr get-login-password --region "$REGION" \
+    | docker login --username AWS --password-stdin "$REG" || true
+  docker pull "$ODOO_IMAGE" || echo "[env __ENV_ID__] odoo image pull failed"
+
+  MOUNT_ARGS=""
+  if [ -d "$REPO_DIR" ]; then
+    MOUNT_ARGS="-v ${REPO_DIR}:/mnt/live:rw -e EXTRA_ADDONS_PATH=/mnt/live"
+  fi
+
+  docker rm -f env-odoo >/dev/null 2>&1 || true
+  docker run -d --name env-odoo --network "$NET" \
+    -p 0.0.0.0:${ODOO_PORT}:8069 \
+    -e TARGET_DB_HOST=env-db \
+    -e TARGET_DB_PORT=5432 \
+    -e TARGET_DB_NAME="$DB_NAME" \
+    -e TARGET_DB_USER=odoo \
+    -e TARGET_DB_PASSWORD="$PGPASS" \
+    -e ODOO_MASTER_PASSWORD="$ODOO_MASTER_PASSWORD" \
+    $MOUNT_ARGS \
+    "$ODOO_IMAGE" || echo "[env __ENV_ID__] odoo container failed to start"
+  echo "[env __ENV_ID__] odoo on :${ODOO_PORT} (masked DB, live addons from repo)"
+fi
+
+# --- 6. code-server password (per-env, from Secrets Manager) ---------------
 CODE_PASS="$(aws secretsmanager get-secret-value --secret-id "$SECRET_ARN" \
     --region "$REGION" --query SecretString --output text 2>/dev/null || echo '')"
 
-# --- 5. self-signed TLS + code-server systemd service ----------------------
+# --- 7. self-signed TLS + code-server systemd service ----------------------
 install -d -o dev -g dev /home/dev/.config/code-server
 cat > /home/dev/.config/code-server/config.yaml <<EOF
 bind-addr: 0.0.0.0:${CODE_PORT}
@@ -102,17 +149,20 @@ EOF
 systemctl daemon-reload
 systemctl enable --now code-server
 
-# A connection cheatsheet the developer sees inside the editor.
 cat > "$WORKSPACE/ENVIRONMENT.md" <<EOF
 # odoo-synth dev environment __ENV_ID__
 
 - Issue: __ISSUE__
-- Masked DB: postgresql://odoo:${PGPASS}@127.0.0.1:5432/${DB_NAME}
-- Repo: __REPO_URL__ (${REPO_BRANCH:-default branch})
+- Masked Odoo: http://<this-host>:${ODOO_PORT}/
+- Masked DB:  postgresql://odoo:${PGPASS}@127.0.0.1:5432/${DB_NAME}
+- Odoo image: __ODOO_IMAGE__
+- Addons repo: __REPO_URL__ (${REPO_BRANCH:-default branch}) -- cloned at ./repo,
+  bind-mounted live into Odoo. Edit here, then reload:
+      docker restart env-odoo
+      docker exec env-odoo python3 /opt/odoo-src/odoo-bin -c /etc/odoo/odoo.conf -u <module> --stop-after-init
 
-The database is a full, masked copy loaded locally on this instance. It is
-disposable — the whole environment is torn down when the issue is closed.
+Everything is local + disposable; torn down when the issue is closed.
 EOF
 chown dev:dev "$WORKSPACE/ENVIRONMENT.md"
 
-echo "[env __ENV_ID__] ready; code-server on :${CODE_PORT}"
+echo "[env __ENV_ID__] ready; code-server on :${CODE_PORT}, odoo on :${ODOO_PORT}"

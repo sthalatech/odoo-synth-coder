@@ -152,12 +152,39 @@ def environments_settings() -> dict:
         "instance_profile": _env_val("instance_profile", "instance_profile_env"),
         "key_name": _env_val("key_name", "key_name_env"),
         "code_port": str(e.get("code_port", 8443)),
+        "odoo_port": str(e.get("odoo_port", 8069)),
         "db_name": e.get("db_name", "odoo"),
-        "repo_url": _env_val("repo_url", "repo_url_env"),
-        "repo_branch": _env_val("repo_branch", "repo_branch_env"),
+        # The provenance-baked Odoo image the env runs against the masked DB. A
+        # run may override this (result.odoo_image); this is the fallback.
+        "odoo_image": odoo_image(),
+        # Developer addons repo cloned into the workspace + bind-mounted into the
+        # odoo container as live-dev addons. Defaults to the pipeline's custom repo.
+        "repo_url": _env_val("repo_url", "repo_url_env") or get("CUSTOM_ADDONS_GIT_URL"),
+        "repo_branch": _env_val("repo_branch", "repo_branch_env") or get("CUSTOM_ADDONS_GIT_REF"),
         "secret_prefix": e.get("secret_prefix", "odoo-synth/env"),
+        # Optional Secrets Manager secret holding a GitHub token for cloning a
+        # private addons repo on the instance.
+        "git_token_secret": _env_val("git_token_secret", "git_token_secret_env"),
         "assign_public_ip": bool(e.get("assign_public_ip", True)),
     }
+
+
+def odoo_image() -> str | None:
+    """The provenance-baked Odoo image (ECR odoo:<tag>) the dev env runs."""
+    e = environments_cfg()
+    if e.get("odoo_image"):
+        return str(e["odoo_image"])
+    name = e.get("odoo_image_env")
+    if name and get(name):
+        return get(name)
+    proj = get("PROJECT")
+    region = get("AWS_REGION")
+    acct = get("AWS_ACCOUNT_ID")
+    tag = e.get("odoo_image_tag", "latest")
+    if proj and region and acct:
+        return f"{acct}.dkr.ecr.{region}.amazonaws.com/{proj}/odoo:{tag}"
+    return None
+
 
 
 def environments_configured() -> bool:

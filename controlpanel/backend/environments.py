@@ -30,7 +30,8 @@ def _gen_password(n: int = 24) -> str:
 
 
 def _render_user_data(env_id: str, issue: str, dump_s3_uri: str,
-                      secret_arn: str, s: dict) -> str:
+                      secret_arn: str, odoo_image: str, repo_url: str,
+                      repo_branch: str, git_token_secret: str, s: dict) -> str:
     tmpl = TEMPLATE.read_text()
     repl = {
         "__ENV_ID__": env_id,
@@ -38,10 +39,14 @@ def _render_user_data(env_id: str, issue: str, dump_s3_uri: str,
         "__AWS_REGION__": _region(),
         "__DUMP_S3_URI__": dump_s3_uri or "",
         "__SECRET_ARN__": secret_arn,
-        "__REPO_URL__": s.get("repo_url") or "",
-        "__REPO_BRANCH__": s.get("repo_branch") or "",
+        "__ODOO_IMAGE__": odoo_image or "",
+        "__REPO_URL__": repo_url or "",
+        "__REPO_BRANCH__": repo_branch or "",
+        "__GIT_TOKEN_SECRET__": git_token_secret or "",
         "__DB_NAME__": s.get("db_name") or "odoo",
         "__CODE_PORT__": s.get("code_port") or "8443",
+        "__ODOO_PORT__": s.get("odoo_port") or "8069",
+        "__ODOO_MASTER_PASSWORD__": config.get("ODOO_MASTER_PASSWORD", "change_me_master"),
     }
     for k, v in repl.items():
         tmpl = tmpl.replace(k, v)
@@ -82,8 +87,34 @@ def _dump_uri_for_run(run_id: Optional[str], explicit: Optional[str]) -> Optiona
     return res.get("masked_dump_s3_uri")
 
 
+def _resolve_odoo_image(source_run_id: Optional[str], s: dict) -> Optional[str]:
+    """The provenance-baked Odoo image the env should run. A run's own image
+    (captured at mask time) wins so the code matches the masked data exactly;
+    otherwise fall back to the configured image, resolving the account id if the
+    config helper could not (no AWS_ACCOUNT_ID in env)."""
+    if source_run_id:
+        run = store.get_run(source_run_id)
+        if run:
+            img = (run.get("result") or {}).get("odoo_image")
+            if img:
+                return img
+    if s.get("odoo_image"):
+        return s["odoo_image"]
+    proj = config.get("PROJECT")
+    e = config.environments_cfg()
+    tag = e.get("odoo_image_tag", "latest")
+    if proj:
+        try:
+            acct = boto3.client("sts", region_name=_region()).get_caller_identity()["Account"]
+            return f"{acct}.dkr.ecr.{_region()}.amazonaws.com/{proj}/odoo:{tag}"
+        except Exception:  # noqa: BLE001
+            return None
+    return None
+
+
 def launch(env_id: str, source_run_id: Optional[str], issue: Optional[str],
-           dump_s3_uri: Optional[str]) -> None:
+           dump_s3_uri: Optional[str], repo_url: Optional[str],
+           repo_branch: Optional[str]) -> None:
     """Background worker: create secret, launch instance, poll until reachable."""
     s = config.environments_settings()
     try:
@@ -93,13 +124,22 @@ def launch(env_id: str, source_run_id: Optional[str], issue: Optional[str],
                 "ENV_SG_ID, and the other environments.* values)")
 
         dump = _dump_uri_for_run(source_run_id, dump_s3_uri)
-        store.update_environment(env_id, status="provisioning", dump_s3_uri=dump)
+        odoo_img = _resolve_odoo_image(source_run_id, s)
+        r_url = repo_url or s.get("repo_url")
+        r_branch = repo_branch or s.get("repo_branch")
+        store.update_environment(
+            env_id, status="provisioning", dump_s3_uri=dump,
+            odoo_image=odoo_img, repo_url=r_url, repo_branch=r_branch,
+        )
 
         password = _gen_password()
         secret_arn = _create_secret(env_id, password, s)
         store.update_environment(env_id, secret_arn=secret_arn)
 
-        user_data = _render_user_data(env_id, issue or "", dump or "", secret_arn, s)
+        user_data = _render_user_data(
+            env_id, issue or "", dump or "", secret_arn, odoo_img or "",
+            r_url or "", r_branch or "", s.get("git_token_secret") or "", s,
+        )
 
         ec2 = boto3.client("ec2", region_name=_region())
         run_kwargs = {
@@ -151,20 +191,26 @@ def launch(env_id: str, source_run_id: Optional[str], issue: Optional[str],
             public_ip = inst.get("PrivateIpAddress")
 
         vscode_url = f"https://{public_ip}:{s['code_port']}/" if public_ip else None
+        odoo_url = f"http://{public_ip}:{s['odoo_port']}/" if public_ip else None
         store.update_environment(
-            env_id, status="running", public_ip=public_ip, vscode_url=vscode_url
+            env_id, status="running", public_ip=public_ip,
+            vscode_url=vscode_url, odoo_url=odoo_url,
         )
     except Exception as exc:  # noqa: BLE001
         store.update_environment(env_id, status="failed", error=str(exc))
 
 
 def create(source_run_id: Optional[str], issue: Optional[str],
-           dump_s3_uri: Optional[str]) -> str:
+           dump_s3_uri: Optional[str], repo_url: Optional[str] = None,
+           repo_branch: Optional[str] = None) -> str:
     env_id = uuid.uuid4().hex[:10]
-    store.create_environment(env_id, source_run_id, issue, dump_s3_uri)
+    store.create_environment(env_id, source_run_id, issue, dump_s3_uri,
+                             repo_url=repo_url, repo_branch=repo_branch)
     import threading
     threading.Thread(
-        target=launch, args=(env_id, source_run_id, issue, dump_s3_uri), daemon=True
+        target=launch,
+        args=(env_id, source_run_id, issue, dump_s3_uri, repo_url, repo_branch),
+        daemon=True,
     ).start()
     return env_id
 
