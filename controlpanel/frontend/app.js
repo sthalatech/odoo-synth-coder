@@ -6,9 +6,11 @@ let PROFILES = null;
 let CONFIG = null;
 let overviewTable = null;
 let runsTable = null;
+let envTable = null;
+let ENV_CONFIG = null;
 
 /* ===== Router ===== */
-const ROUTES = ["overview", "new", "runs"];
+const ROUTES = ["overview", "new", "runs", "environments"];
 function currentRoute() {
   const h = (location.hash || "").replace(/^#\/?/, "").split("/")[0];
   return ROUTES.includes(h) ? h : "overview";
@@ -22,6 +24,7 @@ function navigate() {
     a.classList.toggle("active", a.dataset.route === route));
   if (route === "overview") renderOverview();
   if (route === "runs") loadRuns();
+  if (route === "environments") loadEnvironments();
 }
 window.addEventListener("hashchange", navigate);
 
@@ -67,8 +70,16 @@ function runColumns(withOp) {
       formatter: (c) => linkCell(c.getValue(), "open") },
     { title: "dump", field: "masked_dump_url", hozAlign: "center", width: 100,
       formatter: (c) => linkCell(c.getValue(), "download") },
-    { title: "vscode", field: "vscode_url", hozAlign: "center", width: 100,
-      formatter: (c) => linkCell(c.getValue(), "open") },
+    { title: "vscode", field: "vscode_url", hozAlign: "center", width: 120,
+      formatter: (c) => {
+        const d = c.getRow().getData();
+        if (d.vscode_url) return linkCell(d.vscode_url, "open");
+        if (d.env_status) return `<span class="muted">${d.env_status}…</span>`;
+        if (d.masked_dump_url) {
+          return `<a href="#" class="mk-env" data-run="${d.id}" onclick="event.stopPropagation()">create env</a>`;
+        }
+        return "—";
+      } },
   );
   return cols;
 }
@@ -79,6 +90,8 @@ function runRow(r) {
     id: r.id, operation: r.operation, status: r.status, exit_code: r.exit_code,
     started_at: r.started_at, target_url: res.target_url,
     masked_dump_url: res.masked_dump_url, vscode_url: res.vscode_url,
+    env_status: r.environment && r.environment.status !== "running"
+      ? r.environment.status : null,
   };
 }
 
@@ -312,10 +325,126 @@ $("run-form").addEventListener("submit", async (e) => {
 
 $("runs-refresh").addEventListener("click", loadRuns);
 
+/* ===== Developer environments ===== */
+function envColumns() {
+  return [
+    { title: "id", field: "id", width: 110, formatter: (c) => `<span class="mono">${c.getValue()}</span>` },
+    { title: "issue", field: "issue", widthGrow: 1, formatter: (c) => c.getValue() || "—" },
+    { title: "source run", field: "source_run_id", width: 120,
+      formatter: (c) => (c.getValue() ? `<span class="mono">${c.getValue()}</span>` : "—") },
+    { title: "status", field: "status", width: 120,
+      formatter: (c) => `<span class="st-${c.getValue()}">${c.getValue()}</span>` },
+    { title: "vscode", field: "vscode_url", hozAlign: "center", width: 110,
+      formatter: (c) => linkCell(c.getValue(), "open") },
+    { title: "created", field: "created_at", width: 180,
+      formatter: (c) => (c.getValue() ? new Date(c.getValue() * 1000).toLocaleString() : "—") },
+    { title: "", field: "id", hozAlign: "center", width: 110, headerSort: false,
+      formatter: (c) => {
+        const d = c.getRow().getData();
+        if (d.status === "terminated" || d.status === "failed") return "—";
+        return `<a href="#" class="rm-env" data-env="${d.id}">tear down</a>`;
+      } },
+  ];
+}
+
+async function loadEnvironments() {
+  if (!ENV_CONFIG) {
+    try { ENV_CONFIG = await (await fetch("/api/environments/config")).json(); }
+    catch (e) { ENV_CONFIG = { configured: false }; }
+  }
+  const note = $("env-config-note");
+  if (!ENV_CONFIG.configured) {
+    note.innerHTML = "⚠ Environments are not configured. Set <code>ENV_AMI_ID</code>, " +
+      "<code>ENV_SG_ID</code> and the other <code>environments.*</code> values.";
+    $("env-create-btn").disabled = true;
+  } else {
+    note.textContent = `Ready · ${ENV_CONFIG.instance_type} · code-server on :${ENV_CONFIG.code_port}`;
+    $("env-create-btn").disabled = false;
+  }
+
+  // populate the "seed from run" select with runs that produced a dump
+  try {
+    const { runs } = await (await fetch("/api/runs")).json();
+    const sel = $("env-source-run");
+    const cur = sel.value;
+    sel.innerHTML = "";
+    sel.appendChild(opt("", "— none (empty environment) —"));
+    for (const r of runs) {
+      const res = r.result || {};
+      if (res.masked_dump_url || res.masked_dump_s3_uri) {
+        sel.appendChild(opt(r.id, `${r.id} · ${new Date((r.started_at || 0) * 1000).toLocaleString()}`));
+      }
+    }
+    if (cur) sel.value = cur;
+  } catch (e) {}
+
+  try {
+    const { environments } = await (await fetch("/api/environments")).json();
+    if (!envTable) {
+      envTable = new Tabulator("#environments", {
+        layout: "fitColumns", height: "auto",
+        pagination: true, paginationSize: 10, paginationCounter: "rows",
+        placeholder: "No environments yet", columns: envColumns(),
+      });
+      envTable.on("tableBuilt", () => envTable.setData(environments));
+    } else {
+      envTable.setData(environments);
+    }
+  } catch (e) {}
+}
+
+async function createEnvironment(body) {
+  const resp = await fetch("/api/environments", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    alert(`Could not create environment: ${err.detail || resp.status}`);
+    return false;
+  }
+  return true;
+}
+
+$("env-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  $("env-create-btn").disabled = true;
+  const ok = await createEnvironment({
+    source_run_id: $("env-source-run").value || null,
+    issue: $("env-issue").value.trim() || null,
+  });
+  $("env-create-btn").disabled = false;
+  if (ok) { $("env-issue").value = ""; loadEnvironments(); }
+});
+
+$("envs-refresh").addEventListener("click", loadEnvironments);
+
+// delegated clicks: "create env" (runs table) + "tear down" (env table)
+document.addEventListener("click", async (e) => {
+  const mk = e.target.closest(".mk-env");
+  if (mk) {
+    e.preventDefault();
+    const runId = mk.dataset.run;
+    if (!confirm(`Launch a developer environment seeded from run ${runId}?`)) return;
+    const ok = await createEnvironment({ source_run_id: runId });
+    if (ok) { location.hash = "#/environments"; }
+    return;
+  }
+  const rm = e.target.closest(".rm-env");
+  if (rm) {
+    e.preventDefault();
+    const envId = rm.dataset.env;
+    if (!confirm(`Tear down environment ${envId}? The instance is terminated.`)) return;
+    await fetch(`/api/environments/${envId}`, { method: "DELETE" });
+    loadEnvironments();
+  }
+});
+
 loadConfig().then(navigate);
 loadProfiles();
 loadRuns();
 setInterval(() => {
   loadRuns();
   if (currentRoute() === "overview") renderOverview();
+  if (currentRoute() === "environments") loadEnvironments();
 }, 10000);

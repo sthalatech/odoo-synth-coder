@@ -100,8 +100,8 @@ def parse_bastion(bastion: str) -> dict:
 # masked-dump download staging (presigned PUT for upload, GET for download)
 # ---------------------------------------------------------------------------
 
-def _presign_masked_dump() -> tuple[str, str]:
-    """Return (put_url, get_url) for a fresh masked-dump object, or raise."""
+def _presign_masked_dump() -> tuple[str, str, str]:
+    """Return (put_url, get_url, s3_uri) for a fresh masked-dump object, or raise."""
     bucket = config.dump_s3_bucket()
     if not bucket:
         raise RuntimeError("no S3 bucket configured for masked dumps (set DUMP_S3_BUCKET)")
@@ -114,7 +114,7 @@ def _presign_masked_dump() -> tuple[str, str]:
     get_url = s3.generate_presigned_url(
         "get_object", Params={"Bucket": bucket, "Key": key}, ExpiresIn=7 * 24 * 3600
     )
-    return put_url, get_url
+    return put_url, get_url, f"s3://{bucket}/{key}"
 
 
 # ---------------------------------------------------------------------------
@@ -269,8 +269,9 @@ def run_operation(operation: str, params: dict, emit: LogSink) -> dict:
     # optional downloadable masked dump
     masked_dump_get_url = None
     masked_dump_put_url = None
+    masked_dump_s3_uri = None
     if params.get("produce_dump"):
-        masked_dump_put_url, masked_dump_get_url = _presign_masked_dump()
+        masked_dump_put_url, masked_dump_get_url, masked_dump_s3_uri = _presign_masked_dump()
         emit("[panel] masked dump download requested; will upload pg_dump to S3")
 
     cluster = config.require("ECS_CLUSTER")
@@ -311,6 +312,8 @@ def run_operation(operation: str, params: dict, emit: LogSink) -> dict:
             result["target_url"] = f"http://{alb}/web/login"
         if masked_dump_get_url:
             result["masked_dump_url"] = masked_dump_get_url
+        if masked_dump_s3_uri:
+            result["masked_dump_s3_uri"] = masked_dump_s3_uri
     elif exit_code == 3:
         result["error"] = ("preflight failed: source or destination DB was not "
                             "reachable from the masker task (check the URL, "

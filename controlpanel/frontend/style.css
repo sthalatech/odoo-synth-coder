@@ -139,5 +139,11 @@ td.mono { font-family: ui-monospace, monospace; }
 .st-succeeded { color: var(--ok); }
 .st-failed { color: var(--err); }
 .st-running { color: var(--run); }
+.st-running, .st-pending, .st-provisioning { color: var(--run); }
+.st-terminated { color: var(--muted); }
 tr.clickable { cursor: pointer; }
 tr.clickable:hover td { background: rgba(74,158,255,.06); }
+
+.env-form { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+.env-form label { flex: 1 1 240px; display: flex; flex-direction: column; gap: 4px; }
+.env-form button { flex: 0 0 auto; }

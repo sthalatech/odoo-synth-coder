@@ -24,6 +24,7 @@
         <a class="nav-item" data-route="overview" href="#/overview"><span class="nav-ico">▤</span> Overview</a>
         <a class="nav-item" data-route="new" href="#/new"><span class="nav-ico">＋</span> New mask</a>
         <a class="nav-item" data-route="runs" href="#/runs"><span class="nav-ico">≣</span> Runs</a>
+        <a class="nav-item" data-route="environments" href="#/environments"><span class="nav-ico">▢</span> Environments</a>
       </nav>
 
       <div class="sidebar-foot">
@@ -133,6 +134,32 @@
             <pre id="detail-log" class="log">Select a run to view its log.</pre>
             <div id="detail-result" class="result hidden"></div>
           </div>
+        </div>
+      </section>
+
+      <!-- Environments -->
+      <section id="page-environments" class="page">
+        <header class="page-head">
+          <h1>Developer environments</h1>
+          <button class="secondary" id="envs-refresh" type="button">Refresh</button>
+        </header>
+        <p id="env-config-note" class="muted small"></p>
+        <div class="panel">
+          <h2>Create environment</h2>
+          <form id="env-form" class="env-form">
+            <label>Seed from run <span class="muted">(a mask run that produced a dump)</span>
+              <select id="env-source-run"></select>
+            </label>
+            <label>GitHub issue <span class="muted">(optional, e.g. org/repo#123)</span>
+              <input type="text" id="env-issue" placeholder="org/repo#123" />
+            </label>
+            <button type="submit" id="env-create-btn">Launch environment</button>
+          </form>
+          <p class="muted small">Launches an isolated EC2 + code-server seeded from the masked dump. Tear down when the issue is closed.</p>
+        </div>
+        <div class="panel">
+          <h2>Environments</h2>
+          <div id="environments"></div>
         </div>
       </section>
     </main>

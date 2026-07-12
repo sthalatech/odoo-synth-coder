@@ -84,6 +84,41 @@ logs permissions above, instead of static keys.)
 | GET  | `/api/runs` | recent runs |
 | GET  | `/api/runs/{id}` | run detail (status, result, urls, masked-dump link) |
 | GET  | `/api/runs/{id}/logs` | SSE log stream |
+| GET  | `/api/environments/config` | whether developer environments are configured |
+| GET  | `/api/environments` | list developer environments |
+| POST | `/api/environments` | launch an environment (seed from a run's masked dump) |
+| GET  | `/api/environments/{id}` | environment detail |
+| DELETE | `/api/environments/{id}` | tear down (terminate instance + delete secret) |
+
+## Developer environments (VS Code, per issue)
+
+Ephemeral, isolated **code-server** boxes seeded from a masked `pg_dump`
+artifact — one EC2 instance per environment, from a pre-baked golden AMI. The
+masked data is restored into a **local postgres** on the instance (full
+isolation, disposable with the box). Intended to later be driven by
+GitHub-issue webhooks (open → create, close → tear down).
+
+Setup (one-time):
+
+1. Launch a fresh Ubuntu instance, run
+   [environments/provision.sh](environments/provision.sh), then bake an AMI
+   from it (`aws ec2 create-image`).
+2. Create a security group allowing inbound `code_port` (8443) from your CIDR
+   and egress to S3 + the masked RDS; an IAM instance profile that can read the
+   masked-dump S3 prefix and `secretsmanager:GetSecretValue` on
+   `odoo-synth/env/*`.
+3. Set these in `config.env` / `deploy/state.env`:
+   `ENV_AMI_ID`, `ENV_SG_ID`, `ENV_SUBNET_ID`, `ENV_INSTANCE_PROFILE`,
+   `ENV_KEY_NAME` (optional), `ENV_REPO_URL`, `ENV_REPO_BRANCH` (optional).
+
+Then from the **Environments** page (or a run's *create env* action): pick a
+mask run that produced a dump → an instance boots, restores the masked DB, and
+starts code-server behind a per-environment password (stored in Secrets
+Manager). The `vscode` column links to `https://<ip>:<code_port>/`. Tear down
+when the issue closes.
+
+> Per-env auth is a random Secrets-Manager password today; put an
+> org-restricted `oauth2-proxy` in front for production.
 
 ## Masker knobs (env, honored by `masker/entrypoint.sh`)
 

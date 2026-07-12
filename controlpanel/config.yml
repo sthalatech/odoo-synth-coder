@@ -42,3 +42,26 @@ neutralize_defaults:
   smtp_param: true
 reset_admin_login: true
 gm_jobs: 4
+
+# ---- developer environments ------------------------------------------------
+# Ephemeral, isolated VS Code (code-server) instances launched per GitHub issue,
+# seeded from a masked pg_dump artifact. One EC2 instance per environment from a
+# pre-baked golden AMI (see environments/provision.sh). Torn down on teardown.
+#
+# Infra values are referenced by env-var name (*_env) so nothing is hardcoded;
+# set them in config.env / deploy/state.env for your account.
+environments:
+  enabled: true
+  ami_id_env: ENV_AMI_ID                      # golden AMI id
+  instance_type: t3.large
+  subnet_id_env: ENV_SUBNET_ID                # subnet with route to the masked VPC
+  security_group_id_env: ENV_SG_ID            # SG: inbound code_port from your CIDR, egress to S3/RDS
+  instance_profile_env: ENV_INSTANCE_PROFILE  # IAM profile: read masked-dump S3 + get the env secret
+  key_name_env: ENV_KEY_NAME                  # optional EC2 keypair for break-glass ssh
+  assign_public_ip: true
+  code_port: 8443                             # code-server TLS port -> https://<ip>:8443
+  db_name: odoo                               # local DB name seeded from the masked dump
+  repo_url_env: ENV_REPO_URL                  # addons repo cloned into the workspace
+  repo_branch_env: ENV_REPO_BRANCH
+  secret_prefix: odoo-synth/env               # Secrets Manager path prefix for per-env passwords
+

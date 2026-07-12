@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# ---------------------------------------------------------------------------
+# Per-environment boot script (EC2 user-data), rendered by the control panel.
+#
+# Placeholders (substituted server-side before launch):
+#   __ENV_ID__          short environment id
+#   __ISSUE__           GitHub issue ref (or empty)
+#   __AWS_REGION__      region
+#   __DUMP_S3_URI__     s3://bucket/key of the masked pg_dump (custom format)
+#   __SECRET_ARN__      Secrets Manager ARN holding the code-server password
+#   __REPO_URL__        addons git repo to clone into the workspace (or empty)
+#   __REPO_BRANCH__     branch to checkout (or empty)
+#   __DB_NAME__         local database name to seed (e.g. odoo)
+#   __CODE_PORT__       code-server TLS port (e.g. 8443)
+#
+# The masked data is loaded into a LOCAL postgres container (full isolation,
+# disposable with the instance). code-server serves the workspace over TLS with
+# a per-environment password.
+# ---------------------------------------------------------------------------
+set -euo pipefail
+exec > >(tee -a /var/log/odoo-synth-env.log) 2>&1
+echo "[env __ENV_ID__] boot $(date -u +%FT%TZ) issue=__ISSUE__"
+
+REGION="__AWS_REGION__"
+DUMP_S3_URI="__DUMP_S3_URI__"
+SECRET_ARN="__SECRET_ARN__"
+REPO_URL="__REPO_URL__"
+REPO_BRANCH="__REPO_BRANCH__"
+DB_NAME="__DB_NAME__"
+CODE_PORT="__CODE_PORT__"
+WORKSPACE="/home/dev/workspace"
+PGPASS="odoo"
+
+mkdir -p "$WORKSPACE"
+
+# --- 1. local postgres holding the masked data -----------------------------
+docker rm -f env-db >/dev/null 2>&1 || true
+docker run -d --name env-db \
+  -e POSTGRES_PASSWORD="$PGPASS" \
+  -e POSTGRES_USER=odoo \
+  -e POSTGRES_DB="$DB_NAME" \
+  -p 127.0.0.1:5432:5432 \
+  -v /var/lib/env-db:/var/lib/postgresql/data \
+  postgres:16
+
+echo "[env __ENV_ID__] waiting for postgres ..."
+for _ in $(seq 1 60); do
+  if docker exec env-db pg_isready -U odoo -d "$DB_NAME" >/dev/null 2>&1; then break; fi
+  sleep 2
+done
+
+# --- 2. seed from the masked dump ------------------------------------------
+if [ -n "$DUMP_S3_URI" ]; then
+  echo "[env __ENV_ID__] downloading masked dump $DUMP_S3_URI"
+  aws s3 cp "$DUMP_S3_URI" /tmp/masked.dump --region "$REGION"
+  echo "[env __ENV_ID__] restoring masked dump into $DB_NAME"
+  docker exec -i env-db pg_restore -U odoo -d "$DB_NAME" \
+      --no-owner --no-privileges --clean --if-exists < /tmp/masked.dump || true
+  rm -f /tmp/masked.dump
+  echo "[env __ENV_ID__] restore complete"
+fi
+
+# --- 3. clone the addons repo into the workspace ---------------------------
+if [ -n "$REPO_URL" ]; then
+  sudo -u dev git clone ${REPO_BRANCH:+--branch "$REPO_BRANCH"} "$REPO_URL" \
+      "$WORKSPACE/repo" || echo "[env __ENV_ID__] repo clone skipped/failed"
+fi
+chown -R dev:dev /home/dev
+
+# --- 4. code-server password (per-env, from Secrets Manager) ---------------
+CODE_PASS="$(aws secretsmanager get-secret-value --secret-id "$SECRET_ARN" \
+    --region "$REGION" --query SecretString --output text 2>/dev/null || echo '')"
+
+# --- 5. self-signed TLS + code-server systemd service ----------------------
+install -d -o dev -g dev /home/dev/.config/code-server
+cat > /home/dev/.config/code-server/config.yaml <<EOF
+bind-addr: 0.0.0.0:${CODE_PORT}
+auth: password
+password: ${CODE_PASS}
+cert: true
+EOF
+chown dev:dev /home/dev/.config/code-server/config.yaml
+chmod 600 /home/dev/.config/code-server/config.yaml
+
+cat > /etc/systemd/system/code-server.service <<EOF
+[Unit]
+Description=code-server (odoo-synth env __ENV_ID__)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dev
+Environment=HOME=/home/dev
+ExecStart=/usr/bin/code-server ${WORKSPACE}
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now code-server
+
+# A connection cheatsheet the developer sees inside the editor.
+cat > "$WORKSPACE/ENVIRONMENT.md" <<EOF
+# odoo-synth dev environment __ENV_ID__
+
+- Issue: __ISSUE__
+- Masked DB: postgresql://odoo:${PGPASS}@127.0.0.1:5432/${DB_NAME}
+- Repo: __REPO_URL__ (${REPO_BRANCH:-default branch})
+
+The database is a full, masked copy loaded locally on this instance. It is
+disposable — the whole environment is torn down when the issue is closed.
+EOF
+chown dev:dev "$WORKSPACE/ENVIRONMENT.md"
+
+echo "[env __ENV_ID__] ready; code-server on :${CODE_PORT}"

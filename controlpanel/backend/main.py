@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import config, pipeline, store
+from . import config, pipeline, store, environments
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
@@ -117,6 +117,12 @@ class RunRequest(BaseModel):
     produce_dump: Optional[bool] = None    # also produce a downloadable pg_dump
 
 
+class EnvironmentRequest(BaseModel):
+    source_run_id: Optional[str] = None    # mask run whose dump seeds the env
+    issue: Optional[str] = None            # github issue ref (optional)
+    dump_s3_uri: Optional[str] = None      # explicit s3:// masked dump (optional)
+
+
 # ---------------------------------------------------------------------------
 # API
 # ---------------------------------------------------------------------------
@@ -190,7 +196,18 @@ def api_start_run(req: RunRequest) -> dict:
 
 @app.get("/api/runs")
 def api_list_runs() -> dict:
-    return {"runs": store.list_runs()}
+    runs = store.list_runs()
+    # attach the developer-environment vscode url (if any) for each run
+    by_run = store.environments_by_run()
+    for r in runs:
+        env = by_run.get(r["id"])
+        if env and env.get("vscode_url"):
+            res = r.get("result") or {}
+            res["vscode_url"] = env["vscode_url"]
+            r["result"] = res
+        if env:
+            r["environment"] = {"id": env["id"], "status": env["status"]}
+    return {"runs": runs}
 
 
 @app.get("/api/runs/{run_id}")
@@ -231,6 +248,66 @@ async def api_stream_logs(run_id: str):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# ---------------------------------------------------------------------------
+# developer environments
+# ---------------------------------------------------------------------------
+
+@app.get("/api/environments/config")
+def api_env_config() -> dict:
+    s = config.environments_settings()
+    return {
+        "configured": config.environments_configured(),
+        "enabled": s["enabled"],
+        "instance_type": s["instance_type"],
+        "code_port": s["code_port"],
+        "repo_url": s["repo_url"],
+    }
+
+
+@app.get("/api/environments")
+def api_list_environments() -> dict:
+    return {"environments": store.list_environments()}
+
+
+@app.post("/api/environments")
+def api_create_environment(req: EnvironmentRequest) -> dict:
+    if not config.environments_configured():
+        raise HTTPException(
+            400,
+            "developer environments are not configured (set ENV_AMI_ID, ENV_SG_ID "
+            "and the other environments.* values in config.env / state.env)",
+        )
+    if req.source_run_id:
+        run = store.get_run(req.source_run_id)
+        if not run:
+            raise HTTPException(404, "source run not found")
+        res = run.get("result") or {}
+        if not req.dump_s3_uri and not res.get("masked_dump_s3_uri"):
+            raise HTTPException(
+                400,
+                "that run has no masked dump to seed from; re-run the mask with "
+                "'produce a downloadable pg_dump' enabled, or pass an explicit dump_s3_uri",
+            )
+    env_id = environments.create(req.source_run_id, req.issue, req.dump_s3_uri)
+    return {"environment_id": env_id}
+
+
+@app.get("/api/environments/{env_id}")
+def api_get_environment(env_id: str) -> dict:
+    env = store.get_environment(env_id)
+    if not env:
+        raise HTTPException(404, "environment not found")
+    return env
+
+
+@app.delete("/api/environments/{env_id}")
+def api_teardown_environment(env_id: str) -> dict:
+    if not store.get_environment(env_id):
+        raise HTTPException(404, "environment not found")
+    environments.teardown(env_id)
+    return {"status": "terminated"}
 
 
 # ---------------------------------------------------------------------------

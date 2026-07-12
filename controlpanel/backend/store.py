@@ -49,6 +49,20 @@ def init() -> None:
               line     TEXT NOT NULL,
               PRIMARY KEY (run_id, seq)
             );
+            CREATE TABLE IF NOT EXISTS environments (
+              id            TEXT PRIMARY KEY,
+              source_run_id TEXT,               -- mask run whose dump seeds this env
+              issue         TEXT,                -- github issue ref (optional)
+              dump_s3_uri   TEXT,                -- s3://bucket/key of the masked dump
+              instance_id   TEXT,
+              public_ip     TEXT,
+              status        TEXT NOT NULL,       -- pending|provisioning|running|terminated|failed
+              vscode_url    TEXT,
+              secret_arn    TEXT,                -- Secrets Manager arn of the code-server password
+              error         TEXT,
+              created_at    REAL NOT NULL,
+              updated_at    REAL
+            );
             """
         )
         c.commit()
@@ -127,3 +141,55 @@ def get_logs(run_id: str, after_seq: int = 0) -> list[dict[str, Any]]:
         (run_id, after_seq),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# environments (developer VS Code environments seeded from a masked dump)
+# ---------------------------------------------------------------------------
+
+def create_environment(env_id: str, source_run_id: str | None, issue: str | None,
+                       dump_s3_uri: str | None) -> None:
+    with _write_lock:
+        c = _conn()
+        c.execute(
+            "INSERT INTO environments (id, source_run_id, issue, dump_s3_uri, status, "
+            "created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+            (env_id, source_run_id, issue, dump_s3_uri, "pending",
+             time.time(), time.time()),
+        )
+        c.commit()
+
+
+def update_environment(env_id: str, **fields: Any) -> None:
+    if not fields:
+        return
+    fields["updated_at"] = time.time()
+    cols = ", ".join(f"{k}=?" for k in fields)
+    vals = list(fields.values())
+    with _write_lock:
+        c = _conn()
+        c.execute(f"UPDATE environments SET {cols} WHERE id=?", (*vals, env_id))
+        c.commit()
+
+
+def get_environment(env_id: str) -> dict[str, Any] | None:
+    row = _conn().execute("SELECT * FROM environments WHERE id=?", (env_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_environments(limit: int = 100) -> list[dict[str, Any]]:
+    rows = _conn().execute(
+        "SELECT * FROM environments ORDER BY created_at DESC LIMIT ?", (limit,)
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def environments_by_run() -> dict[str, dict[str, Any]]:
+    """Map source_run_id -> latest non-terminated environment for that run."""
+    out: dict[str, dict[str, Any]] = {}
+    for e in list_environments():
+        rid = e.get("source_run_id")
+        if not rid or e.get("status") == "terminated":
+            continue
+        out.setdefault(rid, e)
+    return out

@@ -119,3 +119,48 @@ def dump_s3_bucket() -> str | None:
 def dump_s3_prefix() -> str:
     aws = panel().get("aws", {}) or {}
     return aws.get("dump_s3_prefix", "masked-dumps")
+
+
+# ---------------------------------------------------------------------------
+# developer environments (EC2 + code-server, seeded from a masked dump)
+# ---------------------------------------------------------------------------
+
+def environments_cfg() -> dict:
+    return panel().get("environments", {}) or {}
+
+
+def _env_val(key: str, env_key: str, default: str | None = None) -> str | None:
+    """Resolve environments.<key> or environments.<env_key> (an env-var name)."""
+    e = environments_cfg()
+    if e.get(key) is not None:
+        return str(e[key])
+    name = e.get(env_key)
+    if name:
+        return get(name, default)
+    return default
+
+
+def environments_settings() -> dict:
+    """Concrete launch settings for developer environments, resolved from env."""
+    e = environments_cfg()
+    return {
+        "enabled": bool(e.get("enabled", True)),
+        "ami_id": _env_val("ami_id", "ami_id_env"),
+        "instance_type": e.get("instance_type", "t3.large"),
+        "subnet_id": _env_val("subnet_id", "subnet_id_env"),
+        "security_group_id": _env_val("security_group_id", "security_group_id_env"),
+        "instance_profile": _env_val("instance_profile", "instance_profile_env"),
+        "key_name": _env_val("key_name", "key_name_env"),
+        "code_port": str(e.get("code_port", 8443)),
+        "db_name": e.get("db_name", "odoo"),
+        "repo_url": _env_val("repo_url", "repo_url_env"),
+        "repo_branch": _env_val("repo_branch", "repo_branch_env"),
+        "secret_prefix": e.get("secret_prefix", "odoo-synth/env"),
+        "assign_public_ip": bool(e.get("assign_public_ip", True)),
+    }
+
+
+def environments_configured() -> bool:
+    s = environments_settings()
+    return bool(s["enabled"] and s["ami_id"] and s["security_group_id"])
+
