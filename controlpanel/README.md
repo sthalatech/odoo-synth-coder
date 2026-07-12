@@ -7,20 +7,22 @@ the browser, and shows the source/target Odoo URLs when a run finishes.
 
 ## What it does
 
-- **restore** — load a dump into a target database. The dump source is
-  **selectable**:
-  - `dump.sql` via URL
-  - Odoo backup `.zip` via URL (dump.sql extracted from it)
-  - upload a `dump.sql` (staged to S3, then streamed in)
-  - upload an Odoo backup `.zip` (staged to S3, extracted, streamed in)
-  - a **live database DSN** (`postgresql://…`) — `pg_dump`'d straight into the target
-- **mask** — run greenmask `source → target` using a selectable **masking
-  profile**, then neutralize (per-step **toggles**) and set the admin password.
+One operation: **mask**.
 
-All inputs are driven by [config.yml](config.yml): named **connection profiles**
-(secrets resolved server-side from env vars — never sent to the browser),
-**mask profiles** (map to `masker/profiles/<id>.yml`), restore **source types**,
-and neutralize **toggle defaults**. Infra values come from the repo's
+- **Source** = a live Postgres database you point at with a connection URL
+  (`postgresql://user:pass@host:5432/dbname`), entered per run. greenmask dumps
+  and masks it directly.
+- **Destination** = always created by us on the configured RDS (resolved
+  server-side from env) and dropped + recreated on each run. You are **not**
+  asked where it goes.
+- **Output** = the masked DB is served by the managed Odoo (target URL). You can
+  optionally tick "produce a downloadable pg_dump of the masked DB" to get a
+  presigned download link in the result.
+
+All non-infra options are driven by [config.yml](config.yml): the managed
+**destination** (secrets resolved server-side from env vars — never sent to the
+browser), selectable **mask profiles** (map to `masker/profiles/<id>.yml`), and
+neutralize **toggle defaults**. Infra values come from the repo's
 [config.env](../config.env) and [deploy/state.env](../deploy/state.env), so there
 is **no config duplication and nothing hardcoded**.
 
@@ -77,11 +79,10 @@ logs permissions above, instead of static keys.)
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET  | `/api/config` | non-secret infra summary |
-| GET  | `/api/profiles` | connection profiles, mask profiles, restore source types, toggle defaults |
-| POST | `/api/upload` | stage an uploaded `.sql`/`.zip` to S3 → returns a presigned URL |
-| POST | `/api/runs` | start a run (restore/mask) with the selected inputs |
+| GET  | `/api/profiles` | mask profiles + toggle defaults + destination info (drives the form) |
+| POST | `/api/runs` | start a mask run with the selected inputs |
 | GET  | `/api/runs` | recent runs |
-| GET  | `/api/runs/{id}` | run detail (status, result, urls) |
+| GET  | `/api/runs/{id}` | run detail (status, result, urls, masked-dump link) |
 | GET  | `/api/runs/{id}/logs` | SSE log stream |
 
 ## Masker knobs (env, honored by `masker/entrypoint.sh`)
@@ -89,9 +90,11 @@ logs permissions above, instead of static keys.)
 The panel passes these to the masker task; they're all overridable and default
 safely, so the masker also stays fully configurable when run outside the panel:
 
-`MASK_PROFILE` (which `profiles/<id>.yml`), `GM_JOBS`, `NEUTRALIZE_MAIL`,
-`NEUTRALIZE_FETCHMAIL`, `NEUTRALIZE_PAYMENT`, `NEUTRALIZE_SMTP_PARAM`,
-`RESET_ADMIN_LOGIN`.
+`SOURCE_DB_*` (the live source, parsed from the URL), `MASK_PROFILE`, `GM_JOBS`,
+`NEUTRALIZE_MAIL`, `NEUTRALIZE_FETCHMAIL`, `NEUTRALIZE_PAYMENT`,
+`NEUTRALIZE_SMTP_PARAM`, `RESET_ADMIN_LOGIN`, and `MASKED_DUMP_PUT_URL`
+(presigned S3 PUT; when set, the masker `pg_dump`s the masked DB and uploads it
+for download).
 
 > Note: changes to `masker/entrypoint.sh` / `masker/profiles/` require
 > rebuilding + pushing the masker image (`deploy/02_build_push.sh`) to take

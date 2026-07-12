@@ -1,34 +1,30 @@
 # ---- odoo-synth control panel configuration ----
-# Community-release config. Nothing is hardcoded in code: connection secrets are
-# referenced by env-var name (resolved from config.env / deploy/state.env / the
-# process environment), and the selectable options below drive the UI.
+# Community-release config. Nothing hardcoded in code.
+#
+# Model:
+#   * SOURCE  = a live Postgres database the user points at (a connection URL/DSN
+#               entered per run). greenmask dumps + masks it directly.
+#   * DESTINATION = always (re)created by us on the configured RDS (resolved
+#               server-side from env). The user is NOT asked where it goes.
+#   * OUTPUT  = optionally also produce a downloadable pg_dump of the masked DB.
 
 aws:
-  # S3 bucket used to stage uploaded dump files before a restore task streams
-  # them in. Referenced by name so each deployment points at its own bucket.
-  dump_s3_bucket_env: DUMP_S3_BUCKET      # env var holding the bucket name
-  dump_s3_prefix: controlpanel-uploads    # key prefix for staged uploads
+  # S3 bucket used to store the optional downloadable masked dump. Referenced by
+  # env-var name so each deployment points at its own bucket.
+  dump_s3_bucket_env: DUMP_S3_BUCKET
+  dump_s3_prefix: masked-dumps
 
-# Named database connection profiles. The UI shows only the label + id; the
-# actual host/user/password are resolved server-side from these env vars, so no
-# secret ever reaches the browser and nothing is hardcoded.
-connections:
-  - id: source
-    label: "Source RDS (odoo-synth-source)"
-    host_env: SRC_RDS_ENDPOINT
-    port: 5432
-    dbname_env: SOURCE_DB_NAME
-    user_env: SOURCE_DB_MASTER_USER
-    password_env: SOURCE_DB_MASTER_PASSWORD
-  - id: masked
-    label: "Masked RDS (odoo-synth-masked)"
-    host_env: RDS_ENDPOINT
-    port: 5432
-    dbname_env: TARGET_DB_NAME
-    user_env: TARGET_DB_USER
-    password_env: TARGET_DB_PASSWORD
+# The masked destination DB (created on RDS). Host/creds resolved server-side
+# from these env vars; never shown to or entered by the user.
+destination:
+  label: "Masked RDS (managed)"
+  host_env: RDS_ENDPOINT
+  port: 5432
+  dbname_env: TARGET_DB_NAME
+  user_env: TARGET_DB_USER
+  password_env: TARGET_DB_PASSWORD
 
-# Masking profiles map 1:1 to /work/profiles/<id>.yml baked into the masker
+# Masking profiles map 1:1 to masker/profiles/<id>.yml baked into the masker
 # image. Selectable now; UI-editable later.
 mask_profiles:
   - id: odoo-core-pii
@@ -37,29 +33,6 @@ mask_profiles:
   - id: minimal-demo
     label: "Minimal (demo/smoke)"
     description: "res_partner name + email only. Fast, for demos."
-
-# Restore source types the user can choose from.
-restore_source_types:
-  - id: sql_url
-    label: "dump.sql via URL"
-    hint: "Presigned S3 / HTTPS URL to a plain SQL dump."
-    needs: [url]
-  - id: zip_url
-    label: "Odoo backup .zip via URL"
-    hint: "URL to an Odoo backup zip; dump.sql is extracted from it."
-    needs: [url]
-  - id: sql_upload
-    label: "Upload dump.sql"
-    hint: "Upload a plain SQL dump; staged to S3 then streamed in."
-    needs: [file]
-  - id: zip_upload
-    label: "Upload Odoo backup .zip"
-    hint: "Upload an Odoo backup zip; dump.sql is extracted then streamed in."
-    needs: [file]
-  - id: db_dsn
-    label: "Live database (pg_dump via DSN)"
-    hint: "postgresql://user:pass@host:port/dbname — dumped live into the target."
-    needs: [dsn]
 
 # Default post-mask neutralize toggles + admin reset (exposed in the UI).
 neutralize_defaults:

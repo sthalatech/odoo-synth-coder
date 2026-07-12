@@ -3,17 +3,14 @@
 const $ = (id) => document.getElementById(id);
 let evtSource = null;
 let PROFILES = null;
-let stagedUrl = null; // presigned URL from an upload
 
 async function loadConfig() {
   try {
     const c = await (await fetch("/api/config")).json();
     const parts = [];
     if (c.region) parts.push(`region <b>${c.region}</b>`);
-    if (c.source_db) parts.push(`source db <b>${c.source_db}</b>`);
-    if (c.target_db) parts.push(`target db <b>${c.target_db}</b>`);
-    if (c.source_url) parts.push(`<a href="${c.source_url}" target="_blank">source&nbsp;UI</a>`);
-    if (c.target_url) parts.push(`<a href="${c.target_url}" target="_blank">target&nbsp;UI</a>`);
+    if (c.destination_db) parts.push(`destination db <b>${c.destination_db}</b>`);
+    if (c.target_url) parts.push(`<a href="${c.target_url}" target="_blank">masked&nbsp;UI</a>`);
     $("infobar").innerHTML = parts.join(" &nbsp;·&nbsp; ");
   } catch (e) {
     $("infobar").textContent = "config unavailable";
@@ -29,36 +26,12 @@ function opt(value, label) {
 async function loadProfiles() {
   PROFILES = await (await fetch("/api/profiles")).json();
 
-  // connection selects
-  const conns = PROFILES.connections || [];
-  for (const sel of document.querySelectorAll(".conn-select")) {
-    sel.innerHTML = "";
-    conns.forEach((c) => sel.appendChild(opt(c.id, c.label)));
-  }
-  // sensible defaults
-  if (conns.find((c) => c.id === "source")) $("mask_source_conn").value = "source";
-  if (conns.find((c) => c.id === "masked")) $("mask_target_conn").value = "masked";
-  if (conns.find((c) => c.id === "source")) $("restore_target_conn").value = "source";
-
-  // restore source types
-  const st = $("source_type");
-  st.innerHTML = "";
-  (PROFILES.restore_source_types || []).forEach((s) => {
-    const isUpload = (s.needs || []).includes("file");
-    if (isUpload && !PROFILES.upload_enabled) return; // hide uploads if no bucket
-    st.appendChild(opt(s.id, s.label));
-  });
-  st.addEventListener("change", renderSourceFields);
-  renderSourceFields();
-
-  // mask profiles
   const mp = $("mask_profile");
   mp.innerHTML = "";
   (PROFILES.mask_profiles || []).forEach((p) => mp.appendChild(opt(p.id, p.label)));
   mp.addEventListener("change", renderMaskProfileHint);
   renderMaskProfileHint();
 
-  // toggle defaults
   const nd = PROFILES.neutralize_defaults || {};
   $("neutralize_mail").checked = nd.mail !== false;
   $("neutralize_fetchmail").checked = nd.fetchmail !== false;
@@ -66,21 +39,18 @@ async function loadProfiles() {
   $("neutralize_smtp_param").checked = nd.smtp_param !== false;
   $("reset_admin_login").checked = PROFILES.reset_admin_login !== false;
   $("gm_jobs").value = PROFILES.gm_jobs || 4;
-}
 
-function currentSourceType() {
-  return (PROFILES.restore_source_types || []).find((s) => s.id === $("source_type").value);
-}
+  // dump download availability
+  if (!PROFILES.dump_download_enabled) {
+    $("produce_dump").checked = false;
+    $("produce_dump").disabled = true;
+    $("dump-note").classList.remove("hidden");
+  }
 
-function renderSourceFields() {
-  const s = currentSourceType();
-  $("source_hint").textContent = s ? (s.hint || "") : "";
-  const needs = s ? (s.needs || []) : [];
-  $("field-url").classList.toggle("hidden", !needs.includes("url"));
-  $("field-file").classList.toggle("hidden", !needs.includes("file"));
-  $("field-dsn").classList.toggle("hidden", !needs.includes("dsn"));
-  stagedUrl = null;
-  $("upload-status").textContent = "";
+  const dbl = PROFILES.destination_label || "managed";
+  const ddb = PROFILES.destination_db || "";
+  $("dest-note").innerHTML =
+    `Destination is created automatically: <b>${dbl}</b>${ddb ? ` (db <b>${ddb}</b>)` : ""}. It is dropped &amp; recreated on each run.`;
 }
 
 function renderMaskProfileHint() {
@@ -105,8 +75,8 @@ function showResult(run) {
   const r = run.result || {};
   const el = $("result");
   const lines = [];
-  if (r.source_url) lines.push(`Source: <a href="${r.source_url}" target="_blank">${r.source_url}</a>`);
-  if (r.target_url) lines.push(`Target: <a href="${r.target_url}" target="_blank">${r.target_url}</a>`);
+  if (r.target_url) lines.push(`Masked UI: <a href="${r.target_url}" target="_blank">${r.target_url}</a>`);
+  if (r.masked_dump_url) lines.push(`Masked dump: <a href="${r.masked_dump_url}" target="_blank">download pg_dump</a>`);
   if (r.error) lines.push(`<span class="st-failed">Error: ${r.error}</span>`);
   if (typeof r.exit_code === "number") lines.push(`Exit code: <b>${r.exit_code}</b>`);
   if (lines.length) { el.innerHTML = lines.join("<br>"); el.classList.remove("hidden"); }
@@ -175,53 +145,10 @@ async function openRun(runId) {
   }
 }
 
-// ---- operation switch ----
-$("operation").addEventListener("change", () => {
-  const op = $("operation").value;
-  $("restore-fields").classList.toggle("hidden", op !== "restore");
-  $("mask-fields").classList.toggle("hidden", op !== "mask");
-});
-
-// ---- upload ----
-$("upload-btn").addEventListener("click", async () => {
-  const f = $("file").files[0];
-  if (!f) { $("upload-status").textContent = "pick a file first"; return; }
-  $("upload-status").textContent = `uploading ${f.name} ...`;
-  const fd = new FormData();
-  fd.append("file", f);
-  try {
-    const resp = await fetch("/api/upload", { method: "POST", body: fd });
-    if (!resp.ok) throw new Error((await resp.json()).detail || resp.status);
-    const j = await resp.json();
-    stagedUrl = j.url;
-    $("upload-status").textContent = `staged ✓ (${f.name})`;
-  } catch (e) {
-    $("upload-status").textContent = `upload failed: ${e.message}`;
-  }
-});
-
-// ---- submit ----
 function buildPayload() {
-  const op = $("operation").value;
-  if (op === "restore") {
-    const s = currentSourceType();
-    const needs = s ? (s.needs || []) : [];
-    const body = {
-      operation: "restore",
-      source_type: $("source_type").value,
-      target_conn: $("restore_target_conn").value,
-      target_db: $("restore_target_db").value || null,
-    };
-    if (needs.includes("url")) body.url = $("url").value || null;
-    if (needs.includes("file")) body.url = stagedUrl;
-    if (needs.includes("dsn")) body.dsn = $("dsn").value || null;
-    return body;
-  }
   return {
     operation: "mask",
-    source_conn: $("mask_source_conn").value,
-    target_conn: $("mask_target_conn").value,
-    target_db: $("mask_target_db").value || null,
+    source_dsn: $("source_dsn").value.trim(),
     mask_profile: $("mask_profile").value,
     admin_password: $("admin_password").value || null,
     gm_jobs: parseInt($("gm_jobs").value, 10) || null,
@@ -230,19 +157,16 @@ function buildPayload() {
     neutralize_payment: $("neutralize_payment").checked,
     neutralize_smtp_param: $("neutralize_smtp_param").checked,
     reset_admin_login: $("reset_admin_login").checked,
+    produce_dump: $("produce_dump").checked,
   };
 }
 
 $("run-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const body = buildPayload();
-  if (body.operation === "restore") {
-    const s = currentSourceType();
-    const needs = s ? (s.needs || []) : [];
-    if (needs.includes("file") && !stagedUrl) {
-      appendLog("[panel] upload & stage the file first");
-      return;
-    }
+  if (!body.source_dsn) {
+    appendLog("[panel] enter a source database URL (postgresql://…)");
+    return;
   }
   $("start-btn").disabled = true;
   $("log").textContent = "";
@@ -267,8 +191,6 @@ $("run-form").addEventListener("submit", async (e) => {
   loadRuns();
 });
 
-// init
-$("operation").dispatchEvent(new Event("change"));
 loadConfig();
 loadProfiles();
 loadRuns();

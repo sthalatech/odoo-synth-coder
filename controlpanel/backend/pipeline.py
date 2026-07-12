@@ -1,16 +1,20 @@
-"""ECS/Fargate orchestration via boto3 — mirrors deploy/07_mask.sh and
-deploy/source/restore_dump.sh, but runs in-process so we can tail the container's
-CloudWatch logs live and stream them to the browser.
+"""ECS/Fargate orchestration via boto3.
 
-Operations
-  * restore  -> load a dump into a target DB. Source of the dump is selectable:
-                sql_url | zip_url | sql_upload | zip_upload | db_dsn.
-  * mask     -> greenmask SOURCE -> TARGET, neutralize (toggleable), set admin
-                password. Connections, profile, jobs and toggles are all inputs.
+Single operation: **mask**.
+  * SOURCE      = a live Postgres DB the user points at (a connection URL/DSN).
+                  greenmask dumps + masks it directly.
+  * DESTINATION = the managed masked DB on RDS (from config, resolved server-side).
+                  Always dropped + recreated by the masker.
+  * OUTPUT      = optionally a downloadable pg_dump of the masked DB (uploaded to
+                  S3 via a presigned PUT; a presigned GET is returned to the UI).
+
+Runs the masker Fargate task in-process so we can tail its CloudWatch logs live.
 """
 from __future__ import annotations
 import time
+import uuid
 from typing import Callable, Optional
+from urllib.parse import urlparse, unquote
 
 import boto3
 
@@ -59,111 +63,52 @@ def _ecr() -> str:
     return f"{acct}.dkr.ecr.{_region()}.amazonaws.com"
 
 
-def _resolve_conn(conn_id: str) -> dict:
-    c = config.get_connection(conn_id)
-    if not c:
-        raise ValueError(f"unknown connection profile: {conn_id}")
-    if not c.get("host"):
-        raise ValueError(f"connection '{conn_id}' has no host (check env vars)")
-    return c
+def parse_dsn(dsn: str) -> dict:
+    """Parse a postgresql:// URL into host/port/user/password/dbname parts."""
+    u = urlparse(dsn)
+    if u.scheme not in ("postgres", "postgresql"):
+        raise ValueError("source URL must start with postgresql://")
+    if not u.hostname:
+        raise ValueError("source URL is missing a host")
+    dbname = (u.path or "/").lstrip("/")
+    if not dbname:
+        raise ValueError("source URL is missing a database name (…/dbname)")
+    return {
+        "host": u.hostname,
+        "port": str(u.port or 5432),
+        "user": unquote(u.username) if u.username else "postgres",
+        "password": unquote(u.password) if u.password else "",
+        "dbname": dbname,
+    }
 
 
 # ---------------------------------------------------------------------------
-# RESTORE
+# masked-dump download staging (presigned PUT for upload, GET for download)
 # ---------------------------------------------------------------------------
 
-def _restore_command(target: dict, db_name: str, source_type: str,
-                     url: Optional[str], dsn: Optional[str]) -> str:
-    """Build the restore shell script for the chosen source type. Runs inside the
-    masker image (curl + psql16 + pg_dump16 + python3). Recreates db_name on the
-    target connection, loads the dump, prints row counts."""
-    host, port, user, pw = target["host"], target["port"], target["user"], target["password"]
-
-    header = f'''set -o pipefail
-export PGPASSWORD="{pw}"
-H="{host}"; PORT="{port}"; U="{user}"; DB="{db_name}"
-ADM="psql -v ON_ERROR_STOP=1 -h $H -p $PORT -U $U -d postgres"
-echo "[restore] recreating database $DB on $H ..."
-$ADM -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$DB' AND pid<>pg_backend_pid();" >/dev/null 2>&1 || true
-$ADM -c "DROP DATABASE IF EXISTS \\"$DB\\";"
-$ADM -c "CREATE DATABASE \\"$DB\\" ENCODING 'UTF8' TEMPLATE template0;"'''
-
-    if source_type in ("sql_url", "sql_upload"):
-        body = f'''
-echo "[restore] streaming SQL dump into $DB ..."
-curl -fsSL "{url}" | psql -h "$H" -p "$PORT" -U "$U" -d "$DB" >/tmp/restore.log 2>&1
-echo "[restore] psql stream exit=$? (non-fatal errors tolerated); tail:"
-tail -5 /tmp/restore.log || true'''
-    elif source_type in ("zip_url", "zip_upload"):
-        body = f'''
-echo "[restore] downloading backup zip ..."
-curl -fsSL "{url}" -o /tmp/backup.zip
-echo "[restore] extracting dump.sql from zip ..."
-python3 - <<'PY' > /tmp/dump.sql
-import zipfile,sys
-z=zipfile.ZipFile("/tmp/backup.zip")
-names=[n for n in z.namelist() if n.endswith("dump.sql") or n=="dump.sql"]
-if not names:
-    sys.stderr.write("no dump.sql in zip: %r\\n"%z.namelist()); sys.exit(2)
-sys.stdout.buffer.write(z.read(names[0]))
-PY
-echo "[restore] streaming extracted dump.sql into $DB ..."
-psql -h "$H" -p "$PORT" -U "$U" -d "$DB" -f /tmp/dump.sql >/tmp/restore.log 2>&1
-echo "[restore] psql exit=$? (non-fatal errors tolerated); tail:"
-tail -5 /tmp/restore.log || true'''
-    elif source_type == "db_dsn":
-        body = f'''
-echo "[restore] pg_dump from live source DSN -> $DB (streaming) ..."
-pg_dump --no-owner --no-privileges "{dsn}" | psql -h "$H" -p "$PORT" -U "$U" -d "$DB" >/tmp/restore.log 2>&1
-echo "[restore] stream exit=$? (non-fatal errors tolerated); tail:"
-tail -5 /tmp/restore.log || true'''
-    else:
-        raise ValueError(f"unknown restore source_type: {source_type}")
-
-    footer = '''
-P=$(psql -tA -h "$H" -p "$PORT" -U "$U" -d "$DB" -c "SELECT count(*) FROM res_partner;" 2>/dev/null || echo "?")
-US=$(psql -tA -h "$H" -p "$PORT" -U "$U" -d "$DB" -c "SELECT count(*) FROM res_users;" 2>/dev/null || echo "?")
-echo "[restore] DONE: res_partner=$P res_users=$US in $DB"'''
-    return header + body + footer
-
-
-def _register_restore_taskdef(ecs, command: str) -> tuple[str, str, str, str]:
-    proj = config.require("PROJECT")
-    family = f"{proj}-src-restore"
-    log_group = f"/ecs/{proj}-source"
-    prefix, container = "restore", "restore"
-    ecs.register_task_definition(
-        family=family,
-        networkMode="awsvpc",
-        requiresCompatibilities=["FARGATE"],
-        cpu="1024",
-        memory="2048",
-        executionRoleArn=config.require("EXEC_ARN"),
-        containerDefinitions=[
-            {
-                "name": container,
-                "image": f"{_ecr()}/{proj}/masker:latest",
-                "entryPoint": ["bash", "-lc"],
-                "command": [command],
-                "logConfiguration": {
-                    "logDriver": "awslogs",
-                    "options": {
-                        "awslogs-group": log_group,
-                        "awslogs-region": _region(),
-                        "awslogs-stream-prefix": prefix,
-                    },
-                },
-            }
-        ],
+def _presign_masked_dump() -> tuple[str, str]:
+    """Return (put_url, get_url) for a fresh masked-dump object, or raise."""
+    bucket = config.dump_s3_bucket()
+    if not bucket:
+        raise RuntimeError("no S3 bucket configured for masked dumps (set DUMP_S3_BUCKET)")
+    prefix = config.dump_s3_prefix().rstrip("/")
+    key = f"{prefix}/{uuid.uuid4().hex[:12]}/masked.dump"
+    s3 = boto3.client("s3", region_name=_region())
+    put_url = s3.generate_presigned_url(
+        "put_object", Params={"Bucket": bucket, "Key": key}, ExpiresIn=12 * 3600
     )
-    return family, container, log_group, prefix
+    get_url = s3.generate_presigned_url(
+        "get_object", Params={"Bucket": bucket, "Key": key}, ExpiresIn=7 * 24 * 3600
+    )
+    return put_url, get_url
 
 
 # ---------------------------------------------------------------------------
-# MASK
+# mask task definition
 # ---------------------------------------------------------------------------
 
-def _register_mask_taskdef(ecs, src: dict, tgt: dict, params: dict) -> tuple[str, str, str, str]:
+def _register_mask_taskdef(ecs, src: dict, tgt: dict, params: dict,
+                           masked_dump_put_url: Optional[str]) -> tuple[str, str, str, str]:
     proj = config.require("PROJECT")
     family = f"{proj}-mask"
     log_group = f"/ecs/{proj}"
@@ -181,12 +126,12 @@ def _register_mask_taskdef(ecs, src: dict, tgt: dict, params: dict) -> tuple[str
     env = [
         kv("SOURCE_DB_HOST", src["host"]),
         kv("SOURCE_DB_PORT", src["port"]),
-        kv("SOURCE_DB_NAME", params.get("source_db") or src["dbname"]),
+        kv("SOURCE_DB_NAME", src["dbname"]),
         kv("SOURCE_DB_USER", src["user"]),
         kv("SOURCE_DB_PASSWORD", src["password"]),
         kv("TARGET_DB_HOST", tgt["host"]),
         kv("TARGET_DB_PORT", tgt["port"]),
-        kv("TARGET_DB_NAME", params.get("target_db") or tgt["dbname"]),
+        kv("TARGET_DB_NAME", tgt["dbname"]),
         kv("TARGET_DB_USER", tgt["user"]),
         kv("TARGET_DB_PASSWORD", tgt["password"]),
         kv("ODOO_ADMIN_PASSWORD", params.get("admin_password") or config.get("ODOO_ADMIN_PASSWORD", "admin")),
@@ -198,6 +143,9 @@ def _register_mask_taskdef(ecs, src: dict, tgt: dict, params: dict) -> tuple[str
         kv("NEUTRALIZE_SMTP_PARAM", flag("neutralize_smtp_param", nd.get("smtp_param", True))),
         kv("RESET_ADMIN_LOGIN", flag("reset_admin_login", config.panel().get("reset_admin_login", True))),
     ]
+    if masked_dump_put_url:
+        env.append(kv("MASKED_DUMP_PUT_URL", masked_dump_put_url))
+
     ecs.register_task_definition(
         family=family,
         networkMode="awsvpc",
@@ -277,34 +225,37 @@ def _tail_until_stopped(ecs, logs, cluster, task_arn, log_group, log_stream, emi
 # ---------------------------------------------------------------------------
 
 def run_operation(operation: str, params: dict, emit: LogSink) -> dict:
+    if operation != "mask":
+        raise ValueError(f"unknown operation: {operation}")
+
     ecs, ec2, logs = _clients()
 
-    if operation == "restore":
-        target = _resolve_conn(params.get("target_conn") or "source")
-        db_name = params.get("target_db") or target["dbname"]
-        source_type = params.get("source_type")
-        url = params.get("url")
-        dsn = params.get("dsn")
-        if source_type in ("sql_url", "zip_url", "sql_upload", "zip_upload") and not url:
-            raise ValueError(f"{source_type} requires a resolved URL")
-        if source_type == "db_dsn" and not dsn:
-            raise ValueError("db_dsn requires a source DSN")
-        cluster = config.require("SOURCE_ECS_CLUSTER")
-        sg = config.require("SRC_TASK_SG")
-        emit(f"[panel] restore source={source_type} target-conn={target['id']} db={db_name}")
-        cmd = _restore_command(target, db_name, source_type, url, dsn)
-        family, container, log_group, prefix = _register_restore_taskdef(ecs, cmd)
+    # SOURCE: a live DB the user pointed at (DSN)
+    dsn = params.get("source_dsn")
+    if not dsn:
+        raise ValueError("source database URL (postgresql://…) is required")
+    src = parse_dsn(dsn)
 
-    elif operation == "mask":
-        src = _resolve_conn(params.get("source_conn") or "source")
-        tgt = _resolve_conn(params.get("target_conn") or "masked")
-        cluster = config.require("ECS_CLUSTER")
-        sg = config.require("TASK_SG")
-        tdb = params.get("target_db") or tgt["dbname"]
-        emit(f"[panel] mask {src['id']}({src['dbname']}) -> {tgt['id']}({tdb}) profile={params.get('mask_profile')}")
-        family, container, log_group, prefix = _register_mask_taskdef(ecs, src, tgt, params)
-    else:
-        raise ValueError(f"unknown operation: {operation}")
+    # DESTINATION: managed masked DB on RDS (from config)
+    tgt = config.destination()
+    if not tgt.get("host"):
+        raise RuntimeError("destination not configured (check RDS_ENDPOINT / config.yml)")
+
+    # optional downloadable masked dump
+    masked_dump_get_url = None
+    masked_dump_put_url = None
+    if params.get("produce_dump"):
+        masked_dump_put_url, masked_dump_get_url = _presign_masked_dump()
+        emit("[panel] masked dump download requested; will upload pg_dump to S3")
+
+    cluster = config.require("ECS_CLUSTER")
+    sg = config.require("TASK_SG")
+    emit(f"[panel] mask source={src['user']}@{src['host']}:{src['port']}/{src['dbname']} "
+         f"-> {tgt['dbname']}@{tgt['host']} profile={params.get('mask_profile')}")
+
+    family, container, log_group, prefix = _register_mask_taskdef(
+        ecs, src, tgt, params, masked_dump_put_url
+    )
 
     emit(f"[panel] launching Fargate task ({family}) on cluster {cluster} ...")
     resp = ecs.run_task(
@@ -326,14 +277,12 @@ def run_operation(operation: str, params: dict, emit: LogSink) -> dict:
     emit(f"[panel] task exited with code {exit_code}")
 
     result: dict = {"task_arn": task_arn, "exit_code": exit_code}
-    if operation == "mask" and exit_code == 0:
+    if exit_code == 0:
         alb = config.get("ALB_DNS")
         if alb:
             result["target_url"] = f"http://{alb}/web/login"
-    if operation == "restore" and exit_code == 0:
-        src_alb = config.get("SRC_ALB_DNS")
-        if src_alb:
-            result["source_url"] = f"http://{src_alb}/web/login"
-    if exit_code != 0:
+        if masked_dump_get_url:
+            result["masked_dump_url"] = masked_dump_get_url
+    else:
         result["error"] = f"task exited non-zero ({exit_code})"
     return result

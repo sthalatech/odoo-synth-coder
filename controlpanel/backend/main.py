@@ -3,7 +3,8 @@
 Endpoints
   GET  /                     -> static UI
   GET  /api/config           -> non-secret infra summary for the UI
-  POST /api/runs             -> start a run (restore | mask); returns run_id
+  GET  /api/profiles         -> mask profiles + toggle defaults (drives the form)
+  POST /api/runs             -> start a mask run; returns run_id
   GET  /api/runs             -> recent runs
   GET  /api/runs/{id}        -> run detail (status, result, urls)
   GET  /api/runs/{id}/logs   -> Server-Sent Events stream of log lines
@@ -16,12 +17,12 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import config, pipeline, store, uploads
+from . import config, pipeline, store
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
@@ -95,24 +96,21 @@ def _worker(run_id: str, operation: str, params: dict) -> None:
 # ---------------------------------------------------------------------------
 
 class RunRequest(BaseModel):
-    operation: str  # "restore" | "mask"
-    # restore inputs
-    source_type: Optional[str] = None      # sql_url|zip_url|sql_upload|zip_upload|db_dsn
-    url: Optional[str] = None              # resolved URL (direct, or from an upload)
-    dsn: Optional[str] = None              # for db_dsn
-    target_conn: Optional[str] = None      # connection profile id
-    source_conn: Optional[str] = None      # connection profile id (mask)
-    source_db: Optional[str] = None        # override db name on the source conn
-    target_db: Optional[str] = None        # override db name on the target conn
-    # mask inputs
+    operation: str = "mask"
+    # SOURCE: a live Postgres DB the user points at
+    source_dsn: Optional[str] = None       # postgresql://user:pass@host:port/db
+    # masking
     mask_profile: Optional[str] = None
     admin_password: Optional[str] = None
     gm_jobs: Optional[int] = None
+    # neutralize toggles
     neutralize_mail: Optional[bool] = None
     neutralize_fetchmail: Optional[bool] = None
     neutralize_payment: Optional[bool] = None
     neutralize_smtp_param: Optional[bool] = None
     reset_admin_login: Optional[bool] = None
+    # output
+    produce_dump: Optional[bool] = None    # also produce a downloadable pg_dump
 
 
 # ---------------------------------------------------------------------------
@@ -121,17 +119,13 @@ class RunRequest(BaseModel):
 
 @app.get("/api/config")
 def api_config() -> dict:
+    dest = config.destination()
     return {
         "project": config.get("PROJECT"),
         "region": config.get("AWS_REGION"),
-        "source_db": config.get("SOURCE_DB_NAME"),
-        "target_db": config.get("TARGET_DB_NAME"),
-        "source_cluster": config.get("SOURCE_ECS_CLUSTER"),
+        "destination_db": dest.get("dbname"),
+        "destination_host": dest.get("host"),
         "masked_cluster": config.get("ECS_CLUSTER"),
-        "source_url": (
-            f"http://{config.get('SRC_ALB_DNS')}/web/login"
-            if config.get("SRC_ALB_DNS") else None
-        ),
         "target_url": (
             f"http://{config.get('ALB_DNS')}/web/login"
             if config.get("ALB_DNS") else None
@@ -141,57 +135,36 @@ def api_config() -> dict:
 
 @app.get("/api/profiles")
 def api_profiles() -> dict:
-    """Non-secret metadata that drives the form: connection profiles (id+label
-    only), mask profiles, restore source types, and toggle defaults."""
-    conns = [{"id": c["id"], "label": c.get("label", c["id"]),
-              "dbname": config.get(c["dbname_env"]) if c.get("dbname_env") else c.get("dbname")}
-             for c in config.connection_profiles()]
+    """Non-secret metadata that drives the form."""
+    dest = config.destination()
     return {
-        "connections": conns,
         "mask_profiles": config.mask_profiles(),
-        "restore_source_types": config.restore_source_types(),
         "neutralize_defaults": config.neutralize_defaults(),
         "reset_admin_login": config.panel().get("reset_admin_login", True),
         "gm_jobs": config.neutralize_defaults().get("gm_jobs", 4),
-        "upload_enabled": bool(config.dump_s3_bucket()),
+        "dump_download_enabled": bool(config.dump_s3_bucket()),
+        "destination_label": config.panel().get("destination", {}).get("label", "managed"),
+        "destination_db": dest.get("dbname"),
     }
-
-
-@app.post("/api/upload")
-async def api_upload(file: UploadFile = File(...)) -> dict:
-    """Stage an uploaded .sql/.zip to S3 and return a presigned URL the caller
-    passes back into POST /api/runs as `url`."""
-    try:
-        url = uploads.stage_upload(file.file, file.filename or "upload.bin")
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(400, f"upload failed: {exc}")
-    return {"url": url, "filename": file.filename}
 
 
 @app.post("/api/runs")
 def api_start_run(req: RunRequest) -> dict:
-    if req.operation not in ("restore", "mask"):
-        raise HTTPException(400, "operation must be 'restore' or 'mask'")
-
-    if req.operation == "restore":
-        if not req.source_type:
-            raise HTTPException(400, "restore requires source_type")
-        needs_url = req.source_type in ("sql_url", "zip_url", "sql_upload", "zip_upload")
-        if needs_url and not req.url:
-            raise HTTPException(400, f"{req.source_type} requires a url")
-        if req.source_type == "db_dsn" and not req.dsn:
-            raise HTTPException(400, "db_dsn requires a dsn")
+    if req.operation != "mask":
+        raise HTTPException(400, "operation must be 'mask'")
+    if not req.source_dsn:
+        raise HTTPException(400, "source database URL (postgresql://…) is required")
+    try:
+        pipeline.parse_dsn(req.source_dsn)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, f"invalid source URL: {exc}")
 
     run_id = uuid.uuid4().hex[:12]
     stored_params = {
         "operation": req.operation,
-        "source_type": req.source_type,
-        "source_conn": req.source_conn,
-        "target_conn": req.target_conn,
-        "target_db": req.target_db,
         "mask_profile": req.mask_profile,
-        "url_present": bool(req.url),
-        "dsn_present": bool(req.dsn),
+        "source_present": bool(req.source_dsn),
+        "produce_dump": bool(req.produce_dump),
         "admin_password_set": bool(req.admin_password),
     }
     store.create_run(run_id, req.operation, stored_params)

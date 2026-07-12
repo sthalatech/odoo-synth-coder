@@ -105,4 +105,20 @@ else
   say "admin uid ${UID_ADMIN} password set (login unchanged)."
 fi
 
+# 7. (optional) produce a downloadable pg_dump of the masked DB and upload it to
+#    the presigned S3 URL provided by the control panel (MASKED_DUMP_PUT_URL).
+if [ -n "${MASKED_DUMP_PUT_URL:-}" ]; then
+  say "producing downloadable pg_dump of masked DB ${TARGET_DB_NAME} ..."
+  DUMP_FILE="/tmp/masked.dump"
+  pg_dump -Fc --no-owner --no-privileges \
+    -h "${TARGET_DB_HOST}" -p "${TARGET_DB_PORT}" -U "${TARGET_DB_USER}" \
+    -d "${TARGET_DB_NAME}" -f "$DUMP_FILE"
+  SZ="$(stat -c%s "$DUMP_FILE" 2>/dev/null || echo '?')"
+  say "uploading masked dump (${SZ} bytes) to S3 ..."
+  curl -fsS -X PUT -T "$DUMP_FILE" "${MASKED_DUMP_PUT_URL}" \
+    && say "masked dump uploaded; download link is available in the control panel." \
+    || { echo "[masker] ERROR masked dump upload failed"; exit 1; }
+  rm -f "$DUMP_FILE"
+fi
+
 say "DONE: masked replica ready in ${TARGET_DB_NAME}@${TARGET_DB_HOST}"

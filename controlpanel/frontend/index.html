@@ -14,86 +14,44 @@
 
   <main>
     <section class="panel">
-      <h2>Start a run</h2>
+      <h2>Mask a database</h2>
       <form id="run-form">
-        <label>Operation
-          <select id="operation" name="operation">
-            <option value="mask">mask &mdash; source &rarr; masked target</option>
-            <option value="restore">restore &mdash; load a dump into a database</option>
-          </select>
+        <label>Source database URL
+          <input type="text" id="source_dsn"
+                 placeholder="postgresql://user:password@host:5432/dbname" />
+        </label>
+        <p class="muted small">A live Postgres DB to read &amp; mask. It is dumped, masked, and loaded into the managed destination below.</p>
+
+        <label>Masking profile
+          <select id="mask_profile"></select>
+        </label>
+        <p id="mask_profile_hint" class="muted small"></p>
+
+        <label>Admin password <span class="muted">(optional; default from config)</span>
+          <input type="password" id="admin_password" placeholder="leave blank for configured default" />
+        </label>
+        <label>greenmask jobs
+          <input type="number" id="gm_jobs" min="1" max="16" />
         </label>
 
-        <!-- ===== RESTORE fields ===== -->
-        <fieldset id="restore-fields" class="hidden">
-          <legend>Restore</legend>
-          <label>Dump source
-            <select id="source_type"></select>
-          </label>
-          <p id="source_hint" class="muted small"></p>
+        <div class="toggles">
+          <span class="toggles-title">Neutralize (post-mask)</span>
+          <label class="chk"><input type="checkbox" id="neutralize_mail" /> Mail servers</label>
+          <label class="chk"><input type="checkbox" id="neutralize_fetchmail" /> Fetchmail</label>
+          <label class="chk"><input type="checkbox" id="neutralize_payment" /> Payment providers</label>
+          <label class="chk"><input type="checkbox" id="neutralize_smtp_param" /> SMTP force param</label>
+          <label class="chk"><input type="checkbox" id="reset_admin_login" /> Reset admin login to 'admin'</label>
+        </div>
 
-          <div id="field-url" class="src-field hidden">
-            <label>URL
-              <input type="text" id="url" placeholder="https://...dump.sql or backup.zip" />
-            </label>
-          </div>
+        <div class="toggles">
+          <span class="toggles-title">Output</span>
+          <label class="chk"><input type="checkbox" id="produce_dump" /> Also produce a downloadable pg_dump of the masked DB</label>
+          <span id="dump-note" class="muted small hidden">S3 not configured — download unavailable.</span>
+        </div>
 
-          <div id="field-file" class="src-field hidden">
-            <label>File
-              <input type="file" id="file" accept=".sql,.zip" />
-            </label>
-            <button type="button" id="upload-btn" class="secondary">Upload &amp; stage</button>
-            <span id="upload-status" class="muted small"></span>
-          </div>
+        <p id="dest-note" class="muted small"></p>
 
-          <div id="field-dsn" class="src-field hidden">
-            <label>Source DSN
-              <input type="text" id="dsn" placeholder="postgresql://user:pass@host:5432/dbname" />
-            </label>
-          </div>
-
-          <label>Target connection
-            <select id="restore_target_conn" class="conn-select"></select>
-          </label>
-          <label>Target DB name <span class="muted">(blank = profile default)</span>
-            <input type="text" id="restore_target_db" placeholder="e.g. source" />
-          </label>
-        </fieldset>
-
-        <!-- ===== MASK fields ===== -->
-        <fieldset id="mask-fields" class="hidden">
-          <legend>Mask</legend>
-          <label>Source connection
-            <select id="mask_source_conn" class="conn-select"></select>
-          </label>
-          <label>Target connection
-            <select id="mask_target_conn" class="conn-select"></select>
-          </label>
-          <label>Target DB name <span class="muted">(blank = profile default)</span>
-            <input type="text" id="mask_target_db" placeholder="e.g. masked" />
-          </label>
-          <label>Masking profile
-            <select id="mask_profile"></select>
-          </label>
-          <p id="mask_profile_hint" class="muted small"></p>
-
-          <label>Admin password <span class="muted">(optional; default from config)</span>
-            <input type="password" id="admin_password" placeholder="leave blank for configured default" />
-          </label>
-          <label>greenmask jobs
-            <input type="number" id="gm_jobs" min="1" max="16" />
-          </label>
-
-          <div class="toggles">
-            <span class="toggles-title">Neutralize (post-mask)</span>
-            <label class="chk"><input type="checkbox" id="neutralize_mail" /> Mail servers</label>
-            <label class="chk"><input type="checkbox" id="neutralize_fetchmail" /> Fetchmail</label>
-            <label class="chk"><input type="checkbox" id="neutralize_payment" /> Payment providers</label>
-            <label class="chk"><input type="checkbox" id="neutralize_smtp_param" /> SMTP force param</label>
-            <label class="chk"><input type="checkbox" id="reset_admin_login" /> Reset admin login to 'admin'</label>
-          </div>
-        </fieldset>
-
-        <button type="submit" id="start-btn">Start</button>
+        <button type="submit" id="start-btn">Start mask</button>
       </form>
     </section>
 

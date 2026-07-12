@@ -64,7 +64,7 @@ def require(key: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# panel config.yml (connection profiles, mask profiles, restore source types)
+# panel config.yml (destination, mask profiles, neutralize defaults)
 # ---------------------------------------------------------------------------
 
 @lru_cache(maxsize=1)
@@ -74,20 +74,8 @@ def panel() -> dict:
     return yaml.safe_load(PANEL_CONFIG.read_text()) or {}
 
 
-def connection_profiles() -> list[dict]:
-    return panel().get("connections", []) or []
-
-
-def get_connection(conn_id: str) -> dict | None:
-    """Return a connection profile with secrets resolved from env, or None."""
-    for c in connection_profiles():
-        if c.get("id") == conn_id:
-            return _resolve_connection(c)
-    return None
-
-
-def _resolve_connection(c: dict) -> dict:
-    """Resolve *_env references into concrete host/dbname/user/password values."""
+def _resolve_conn(c: dict) -> dict:
+    """Resolve *_env references in a connection block into concrete values."""
     def val(direct_key: str, env_key: str, default: str | None = None) -> str | None:
         if c.get(direct_key) is not None:
             return str(c[direct_key])
@@ -97,8 +85,7 @@ def _resolve_connection(c: dict) -> dict:
         return default
 
     return {
-        "id": c.get("id"),
-        "label": c.get("label", c.get("id")),
+        "label": c.get("label"),
         "host": val("host", "host_env"),
         "port": str(c.get("port", 5432)),
         "dbname": val("dbname", "dbname_env"),
@@ -107,12 +94,14 @@ def _resolve_connection(c: dict) -> dict:
     }
 
 
+def destination() -> dict:
+    """The managed masked destination DB (created on RDS), resolved from env."""
+    d = panel().get("destination", {}) or {}
+    return _resolve_conn(d)
+
+
 def mask_profiles() -> list[dict]:
     return panel().get("mask_profiles", []) or []
-
-
-def restore_source_types() -> list[dict]:
-    return panel().get("restore_source_types", []) or []
 
 
 def neutralize_defaults() -> dict:
@@ -129,4 +118,4 @@ def dump_s3_bucket() -> str | None:
 
 def dump_s3_prefix() -> str:
     aws = panel().get("aws", {}) or {}
-    return aws.get("dump_s3_prefix", "controlpanel-uploads")
+    return aws.get("dump_s3_prefix", "masked-dumps")
