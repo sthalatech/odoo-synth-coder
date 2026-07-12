@@ -18,16 +18,28 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends git ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
-# Clone Odoo source at the pinned ref into /opt/odoo-src. Try a shallow
-# branch/tag clone first; fall back to a full clone + checkout for bare commits.
+# Clone Odoo source at the pinned ref into /opt/odoo-src. A shallow branch/tag
+# clone works for named refs; for a bare commit SHA we shallow-fetch just that
+# commit (GitHub allows fetch-by-SHA) so we never pull the multi-GB full history.
 RUN set -eux; \
     if git clone --depth 1 --branch "${ODOO_GIT_REF}" "${ODOO_GIT_URL}" /opt/odoo-src 2>/dev/null; then \
       :; \
     else \
-      git clone "${ODOO_GIT_URL}" /opt/odoo-src \
-      && git -C /opt/odoo-src checkout "${ODOO_GIT_REF}"; \
+      mkdir -p /opt/odoo-src \
+      && git -C /opt/odoo-src init -q \
+      && git -C /opt/odoo-src remote add origin "${ODOO_GIT_URL}" \
+      && git -C /opt/odoo-src fetch -q --depth 1 origin "${ODOO_GIT_REF}" \
+      && git -C /opt/odoo-src checkout -q FETCH_HEAD; \
     fi; \
-    git -C /opt/odoo-src rev-parse HEAD > /opt/odoo-src.commit
+    (git -C /opt/odoo-src rev-parse HEAD 2>/dev/null || echo "${ODOO_GIT_REF}") > /opt/odoo-src.commit; \
+    rm -rf /opt/odoo-src/.git; \
+    # The base odoo image bundles a full (rolling, newer) Odoo under
+    # dist-packages. `odoo.addons` is a namespace package, so that copy's addons
+    # dir leaks into odoo.addons.__path__ at runtime and can shadow our pinned
+    # source (e.g. a newer base_vat importing tools.verify_hash_signed that our
+    # pinned odoo.tools lacks). Remove it so ONLY /opt/odoo-src provides core +
+    # its bundled addons. System/python deps from the base image are unaffected.
+    rm -rf /usr/lib/python3/dist-packages/odoo /usr/lib/python3/dist-packages/odoo-*.egg-info
 
 # Install any extra Python requirements the pinned source declares (deps already
 # largely present from the base image; this covers version drift). Best-effort.
@@ -98,6 +110,13 @@ RUN set -eux; \
       && rm -rf /var/lib/apt/lists/* || true; \
     # Scientific stack: install numpy+pandas together at ABI-compatible pins.
     pip install --no-cache-dir "numpy==1.26.4" "pandas==2.1.4" polars; \
+    # Relax exact-version external_dependencies pins in custom manifests that
+    # have no prebuilt wheel for this Python and no compiler in the image (e.g.
+    # pycryptodome==3.9.8). Odoo enforces the pin as an exact string match; the
+    # underlying crypto API is stable, so dropping the pin lets the module load
+    # against the newer pycryptodome we install below.
+    find /mnt/extra-addons-custom -name __manifest__.py -exec \
+      sed -i -E 's/pycryptodome[[:space:]]*==[[:space:]]*3\.9\.8/pycryptodome/g' {} + 2>/dev/null || true; \
     for base in /mnt/extra-addons-custom; do \
       find "$base" -maxdepth 3 -name requirements.txt -exec \
         pip install --no-cache-dir -c /tmp/constraints.txt -r {} \; 2>/dev/null || true; \
