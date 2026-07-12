@@ -3,19 +3,79 @@
 const $ = (id) => document.getElementById(id);
 let evtSource = null;
 let PROFILES = null;
+let CONFIG = null;
+
+/* ===== Router ===== */
+const ROUTES = ["overview", "new", "runs"];
+function currentRoute() {
+  const h = (location.hash || "").replace(/^#\/?/, "").split("/")[0];
+  return ROUTES.includes(h) ? h : "overview";
+}
+function navigate() {
+  const route = currentRoute();
+  document.querySelectorAll(".page").forEach((p) => p.classList.remove("active"));
+  const page = $("page-" + route);
+  if (page) page.classList.add("active");
+  document.querySelectorAll(".nav-item").forEach((a) =>
+    a.classList.toggle("active", a.dataset.route === route));
+  if (route === "overview") renderOverview();
+  if (route === "runs") loadRuns();
+}
+window.addEventListener("hashchange", navigate);
+
+/* ===== Panes: 'new' (live) and 'detail' (runs page) ===== */
+const PANE = {
+  new: { log: "log", badge: "status-badge", result: "result" },
+  detail: { log: "detail-log", badge: "detail-badge", result: "detail-result" },
+};
 
 async function loadConfig() {
   try {
-    const c = await (await fetch("/api/config")).json();
+    CONFIG = await (await fetch("/api/config")).json();
+    const c = CONFIG;
     const parts = [];
     if (c.region) parts.push(`region <b>${c.region}</b>`);
-    if (c.destination_db) parts.push(`destination db <b>${c.destination_db}</b>`);
-    if (c.target_url) parts.push(`<a href="${c.target_url}" target="_blank">masked&nbsp;UI</a>`);
-    $("infobar").innerHTML = parts.join(" &nbsp;·&nbsp; ");
+    if (c.destination_db) parts.push(`destination <b>${c.destination_db}</b>`);
+    if (c.target_url) parts.push(`<a href="${c.target_url}" target="_blank">masked&nbsp;UI ↗</a>`);
+    $("infobar").innerHTML = parts.join("<br>");
   } catch (e) {
     $("infobar").textContent = "config unavailable";
   }
 }
+
+function card(k, v) {
+  return `<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`;
+}
+async function renderOverview() {
+  const c = CONFIG || {};
+  let running = 0, total = 0, lastOk = "—";
+  try {
+    const { runs } = await (await fetch("/api/runs")).json();
+    total = runs.length;
+    running = runs.filter((r) => r.status === "running" || r.status === "queued").length;
+    const ok = runs.find((r) => r.status === "succeeded");
+    if (ok && ok.started_at) lastOk = new Date(ok.started_at * 1000).toLocaleString();
+    const tb = document.querySelector("#overview-runs tbody");
+    tb.innerHTML = "";
+    for (const r of runs.slice(0, 6)) {
+      const started = r.started_at ? new Date(r.started_at * 1000).toLocaleString() : "—";
+      const tr = document.createElement("tr");
+      tr.className = "clickable";
+      tr.innerHTML = `<td class="mono">${r.id}</td><td class="st-${r.status}">${r.status}</td>` +
+        `<td>${r.exit_code ?? "—"}</td><td>${started}</td>`;
+      tr.onclick = () => { location.hash = "#/runs"; setTimeout(() => openRun(r.id), 0); };
+      tb.appendChild(tr);
+    }
+  } catch (e) {}
+  $("overview-cards").innerHTML =
+    card("Region", c.region || "—") +
+    card("Destination db", c.destination_db || "—") +
+    card("Total runs", total) +
+    card("Running", running) +
+    card("Last success", lastOk) +
+    card("Masked UI", c.target_url ? `<a href="${c.target_url}" target="_blank">open ↗</a>` : "—");
+}
+
 
 function opt(value, label) {
   const o = document.createElement("option");
@@ -58,40 +118,41 @@ function renderMaskProfileHint() {
   $("mask_profile_hint").textContent = p ? (p.description || "") : "";
 }
 
-function setBadge(status) {
-  const b = $("status-badge");
+function setBadge(status, pane = "new") {
+  const b = $(PANE[pane].badge);
   b.className = "badge " + status;
   b.textContent = status;
 }
 
-function appendLog(text) {
-  const el = $("log");
+function appendLog(text, pane = "new") {
+  const el = $(PANE[pane].log);
   const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
   el.textContent += text + "\n";
   if (atBottom) el.scrollTop = el.scrollHeight;
 }
 
-function showResult(run) {
+function showResult(run, pane = "new") {
   const r = run.result || {};
-  const el = $("result");
+  const el = $(PANE[pane].result);
   const lines = [];
   if (r.target_url) lines.push(`Masked UI: <a href="${r.target_url}" target="_blank">${r.target_url}</a>`);
   if (r.masked_dump_url) lines.push(`Masked dump: <a href="${r.masked_dump_url}" target="_blank">download pg_dump</a>`);
   if (r.error) lines.push(`<span class="st-failed">Error: ${r.error}</span>`);
   if (typeof r.exit_code === "number") lines.push(`Exit code: <b>${r.exit_code}</b>`);
   if (lines.length) { el.innerHTML = lines.join("<br>"); el.classList.remove("hidden"); }
+  else el.classList.add("hidden");
 }
 
-function streamLogs(runId) {
+function streamLogs(runId, pane = "new") {
   if (evtSource) evtSource.close();
   evtSource = new EventSource(`/api/runs/${runId}/logs`);
-  evtSource.onmessage = (e) => appendLog(e.data);
+  evtSource.onmessage = (e) => appendLog(e.data, pane);
   evtSource.addEventListener("end", async (e) => {
-    setBadge(e.data);
+    setBadge(e.data, pane);
     evtSource.close(); evtSource = null;
     const run = await (await fetch(`/api/runs/${runId}`)).json();
-    showResult(run);
-    $("start-btn").disabled = false;
+    showResult(run, pane);
+    if (pane === "new") $("start-btn").disabled = false;
     loadRuns();
   });
   evtSource.onerror = () => {};
@@ -117,12 +178,13 @@ async function loadRuns() {
 }
 
 async function openRun(runId) {
-  $("log").textContent = "";
-  $("result").classList.add("hidden");
+  $("detail-title").textContent = `Run ${runId}`;
+  $("detail-log").textContent = "";
+  $("detail-result").classList.add("hidden");
   const run = await (await fetch(`/api/runs/${runId}`)).json();
-  setBadge(run.status);
+  setBadge(run.status, "detail");
   if (run.status === "running" || run.status === "queued") {
-    streamLogs(runId);
+    streamLogs(runId, "detail");
   } else {
     const res = await fetch(`/api/runs/${runId}/logs`);
     const reader = res.body.getReader();
@@ -136,12 +198,12 @@ async function openRun(runId) {
       while ((idx = buf.indexOf("\n\n")) >= 0) {
         const frame = buf.slice(0, idx); buf = buf.slice(idx + 2);
         for (const ln of frame.split("\n")) {
-          if (ln.startsWith("data: ")) appendLog(ln.slice(6));
+          if (ln.startsWith("data: ")) appendLog(ln.slice(6), "detail");
           if (ln.startsWith("event: end")) { reader.cancel(); break; }
         }
       }
     }
-    showResult(run);
+    showResult(run, "detail");
   }
 }
 
@@ -203,7 +265,12 @@ $("run-form").addEventListener("submit", async (e) => {
   loadRuns();
 });
 
-loadConfig();
+$("runs-refresh").addEventListener("click", loadRuns);
+
+loadConfig().then(navigate);
 loadProfiles();
 loadRuns();
-setInterval(loadRuns, 10000);
+setInterval(() => {
+  loadRuns();
+  if (currentRoute() === "overview") renderOverview();
+}, 10000);

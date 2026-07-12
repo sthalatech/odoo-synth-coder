@@ -7,87 +7,140 @@
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
-  <header>
-    <h1>odoo-synth <span class="muted">masking control panel</span></h1>
-    <div id="infobar" class="infobar"></div>
-  </header>
-
-  <main>
-    <section class="panel">
-      <h2>Mask a database</h2>
-      <form id="run-form">
-        <label>Source database URL
-          <input type="text" id="source_dsn"
-                 placeholder="postgresql://user:password@host:5432/dbname" />
-        </label>
-        <p class="muted small">A live Postgres DB to read &amp; mask. It is dumped, masked, and loaded into the managed destination below.</p>
-
-        <div class="toggles">
-          <span class="toggles-title">Connectivity</span>
-          <label class="chk"><input type="checkbox" id="ssh_enabled" /> Reach the source through an SSH bastion (tunnel)</label>
+  <div class="app">
+    <!-- ===== Sidebar ===== -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">◐</div>
+        <div class="brand-text">
+          <div class="brand-title">odoo-synth</div>
+          <div class="brand-sub">control panel</div>
         </div>
-        <div id="ssh-fields" class="hidden">
-          <p class="muted small">With SSH on, the <b>Source database URL</b> above should use the DB host/port as seen <b>from the bastion</b> (e.g. <code>postgresql://user:pass@52.66.186.162:5432/db</code>). The task forwards it through the bastion automatically.</p>
-          <label>Bastion <span class="muted">(user@host[:port])</span>
-            <input type="text" id="ssh_bastion" placeholder="sutharson@3.6.155.204" />
-          </label>
-          <label>SSH private key <span class="muted">(PEM; used only for this run)</span>
-            <textarea id="ssh_key" rows="4" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----&#10;...&#10;-----END OPENSSH PRIVATE KEY-----"></textarea>
-          </label>
-        </div>
-
-        <label>Masking profile
-          <select id="mask_profile"></select>
-        </label>
-        <p id="mask_profile_hint" class="muted small"></p>
-
-        <label>Admin password <span class="muted">(optional; default from config)</span>
-          <input type="password" id="admin_password" placeholder="leave blank for configured default" />
-        </label>
-        <label>greenmask jobs
-          <input type="number" id="gm_jobs" min="1" max="16" />
-        </label>
-
-        <div class="toggles">
-          <span class="toggles-title">Neutralize (post-mask)</span>
-          <label class="chk"><input type="checkbox" id="neutralize_mail" /> Mail servers</label>
-          <label class="chk"><input type="checkbox" id="neutralize_fetchmail" /> Fetchmail</label>
-          <label class="chk"><input type="checkbox" id="neutralize_payment" /> Payment providers</label>
-          <label class="chk"><input type="checkbox" id="neutralize_smtp_param" /> SMTP force param</label>
-          <label class="chk"><input type="checkbox" id="reset_admin_login" /> Reset admin login to 'admin'</label>
-        </div>
-
-        <div class="toggles">
-          <span class="toggles-title">Output</span>
-          <label class="chk"><input type="checkbox" id="produce_dump" /> Also produce a downloadable pg_dump of the masked DB</label>
-          <span id="dump-note" class="muted small hidden">S3 not configured — download unavailable.</span>
-        </div>
-
-        <p id="dest-note" class="muted small"></p>
-
-        <button type="submit" id="start-btn">Start mask</button>
-      </form>
-    </section>
-
-    <section class="panel">
-      <div class="row-between">
-        <h2>Live log</h2>
-        <span id="status-badge" class="badge idle">idle</span>
       </div>
-      <pre id="log" class="log"></pre>
-      <div id="result" class="result hidden"></div>
-    </section>
 
-    <section class="panel">
-      <h2>Recent runs</h2>
-      <table id="runs">
-        <thead>
-          <tr><th>id</th><th>op</th><th>status</th><th>exit</th><th>started</th></tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-    </section>
-  </main>
+      <nav class="nav">
+        <a class="nav-item" data-route="overview" href="#/overview"><span class="nav-ico">▤</span> Overview</a>
+        <a class="nav-item" data-route="new" href="#/new"><span class="nav-ico">＋</span> New mask</a>
+        <a class="nav-item" data-route="runs" href="#/runs"><span class="nav-ico">≣</span> Runs</a>
+      </nav>
+
+      <div class="sidebar-foot">
+        <div id="infobar" class="infobar"></div>
+      </div>
+    </aside>
+
+    <!-- ===== Content ===== -->
+    <main class="content">
+      <!-- Overview -->
+      <section id="page-overview" class="page">
+        <header class="page-head"><h1>Overview</h1></header>
+        <div class="cards" id="overview-cards"></div>
+        <div class="panel">
+          <h2>Latest runs</h2>
+          <table class="runs-table" id="overview-runs">
+            <thead><tr><th>id</th><th>status</th><th>exit</th><th>started</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- New mask -->
+      <section id="page-new" class="page">
+        <header class="page-head"><h1>New mask</h1></header>
+        <div class="two-col">
+          <div class="panel">
+            <h2>Configure</h2>
+            <form id="run-form">
+              <label>Source database URL
+                <input type="text" id="source_dsn"
+                       placeholder="postgresql://user:password@host:5432/dbname" />
+              </label>
+              <p class="muted small">A live Postgres DB to read &amp; mask. It is dumped, masked, and loaded into the managed destination.</p>
+
+              <div class="toggles">
+                <span class="toggles-title">Connectivity</span>
+                <label class="chk"><input type="checkbox" id="ssh_enabled" /> Reach the source through an SSH bastion (tunnel)</label>
+              </div>
+              <div id="ssh-fields" class="hidden">
+                <p class="muted small">With SSH on, the <b>Source database URL</b> should use the DB host/port as seen <b>from the bastion</b> (e.g. <code>postgresql://user:pass@52.66.186.162:5432/db</code>). The task forwards it through the bastion automatically.</p>
+                <label>Bastion <span class="muted">(user@host[:port])</span>
+                  <input type="text" id="ssh_bastion" placeholder="sutharson@3.6.155.204" />
+                </label>
+                <label>SSH private key <span class="muted">(PEM; used only for this run)</span>
+                  <textarea id="ssh_key" rows="4" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----&#10;...&#10;-----END OPENSSH PRIVATE KEY-----"></textarea>
+                </label>
+              </div>
+
+              <label>Masking profile
+                <select id="mask_profile"></select>
+              </label>
+              <p id="mask_profile_hint" class="muted small"></p>
+
+              <label>Admin password <span class="muted">(optional; default from config)</span>
+                <input type="password" id="admin_password" placeholder="leave blank for configured default" />
+              </label>
+              <label>greenmask jobs
+                <input type="number" id="gm_jobs" min="1" max="16" />
+              </label>
+
+              <div class="toggles">
+                <span class="toggles-title">Neutralize (post-mask)</span>
+                <label class="chk"><input type="checkbox" id="neutralize_mail" /> Mail servers</label>
+                <label class="chk"><input type="checkbox" id="neutralize_fetchmail" /> Fetchmail</label>
+                <label class="chk"><input type="checkbox" id="neutralize_payment" /> Payment providers</label>
+                <label class="chk"><input type="checkbox" id="neutralize_smtp_param" /> SMTP force param</label>
+                <label class="chk"><input type="checkbox" id="reset_admin_login" /> Reset admin login to 'admin'</label>
+              </div>
+
+              <div class="toggles">
+                <span class="toggles-title">Output</span>
+                <label class="chk"><input type="checkbox" id="produce_dump" /> Also produce a downloadable pg_dump of the masked DB</label>
+                <span id="dump-note" class="muted small hidden">S3 not configured — download unavailable.</span>
+              </div>
+
+              <p id="dest-note" class="muted small"></p>
+
+              <button type="submit" id="start-btn">Start mask</button>
+            </form>
+          </div>
+
+          <div class="panel">
+            <div class="row-between">
+              <h2>Live log</h2>
+              <span id="status-badge" class="badge idle">idle</span>
+            </div>
+            <pre id="log" class="log"></pre>
+            <div id="result" class="result hidden"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Runs -->
+      <section id="page-runs" class="page">
+        <header class="page-head">
+          <h1>Runs</h1>
+          <button class="secondary" id="runs-refresh" type="button">Refresh</button>
+        </header>
+        <div class="two-col">
+          <div class="panel">
+            <h2>History</h2>
+            <table class="runs-table" id="runs">
+              <thead><tr><th>id</th><th>op</th><th>status</th><th>exit</th><th>started</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div class="panel">
+            <div class="row-between">
+              <h2 id="detail-title">Run detail</h2>
+              <span id="detail-badge" class="badge idle">—</span>
+            </div>
+            <pre id="detail-log" class="log">Select a run to view its log.</pre>
+            <div id="detail-result" class="result hidden"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
 
   <script src="/static/app.js"></script>
 </body>
