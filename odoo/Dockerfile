@@ -73,7 +73,14 @@ RUN --mount=type=secret,id=gh_token,required=false \
         URL="$(printf '%s' "$URL" | sed -E "s#https://#https://x-access-token:${TOK}@#")"; \
       fi; \
       if [ -n "${CUSTOM_ADDONS_GIT_REF}" ]; then \
-        git clone --depth 1 --branch "${CUSTOM_ADDONS_GIT_REF}" "$URL" /mnt/extra-addons-custom; \
+        if git clone --depth 1 --branch "${CUSTOM_ADDONS_GIT_REF}" "$URL" /mnt/extra-addons-custom 2>/dev/null; then \
+          :; \
+        else \
+          git init -q /mnt/extra-addons-custom \
+          && git -C /mnt/extra-addons-custom remote add origin "$URL" \
+          && git -C /mnt/extra-addons-custom fetch -q --depth 1 origin "${CUSTOM_ADDONS_GIT_REF}" \
+          && git -C /mnt/extra-addons-custom checkout -q FETCH_HEAD; \
+        fi; \
       else \
         git clone --depth 1 "$URL" /mnt/extra-addons-custom; \
       fi; \
