@@ -37,6 +37,9 @@ PGPASS="odoo"
 NET="envnet"
 
 mkdir -p "$WORKSPACE"
+# workspace must be owned by the dev user before we clone into it as that user
+# (the clone + code-server run as dev).
+chown -R dev:dev /home/dev
 docker network create "$NET" >/dev/null 2>&1 || true
 
 # --- 1. local postgres holding the masked data -----------------------------
@@ -79,8 +82,19 @@ if [ -n "$REPO_URL" ]; then
   if [ -n "$GIT_TOKEN" ]; then
     CLONE_URL="$(printf '%s' "$REPO_URL" | sed -E "s#https://#https://x-access-token:${GIT_TOKEN}@#")"
   fi
-  sudo -u dev git clone ${REPO_BRANCH:+--branch "$REPO_BRANCH"} "$CLONE_URL" "$REPO_DIR" \
-      || echo "[env __ENV_ID__] repo clone skipped/failed"
+  # REPO_BRANCH may be a branch, tag, OR a bare commit SHA. `git clone --branch`
+  # only accepts branch/tag names, so: clone default, then check out the ref --
+  # fetching it explicitly if it isn't already present (bare SHA case).
+  if sudo -u dev git clone "$CLONE_URL" "$REPO_DIR"; then
+    if [ -n "$REPO_BRANCH" ]; then
+      sudo -u dev git -C "$REPO_DIR" checkout "$REPO_BRANCH" 2>/dev/null \
+        || { sudo -u dev git -C "$REPO_DIR" fetch --depth 1 origin "$REPO_BRANCH" \
+             && sudo -u dev git -C "$REPO_DIR" checkout FETCH_HEAD; } \
+        || echo "[env __ENV_ID__] could not check out ref $REPO_BRANCH"
+    fi
+  else
+    echo "[env __ENV_ID__] repo clone skipped/failed"
+  fi
   if [ -n "$GIT_TOKEN" ] && [ -d "$REPO_DIR/.git" ]; then
     sudo -u dev git -C "$REPO_DIR" remote set-url origin "$REPO_URL" || true
   fi
