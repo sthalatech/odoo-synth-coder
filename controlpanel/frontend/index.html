@@ -4,6 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>odoo-synth · masking control panel</title>
+  <link href="https://unpkg.com/tabulator-tables@6.3.0/dist/css/tabulator_midnight.min.css" rel="stylesheet" />
+  <script src="https://unpkg.com/tabulator-tables@6.3.0/dist/js/tabulator.min.js"></script>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
@@ -37,10 +39,7 @@
         <div class="cards" id="overview-cards"></div>
         <div class="panel">
           <h2>Latest runs</h2>
-          <table class="runs-table" id="overview-runs">
-            <thead><tr><th>id</th><th>status</th><th>exit</th><th>started</th><th>masked UI</th></tr></thead>
-            <tbody></tbody>
-          </table>
+          <div id="overview-runs"></div>
         </div>
       </section>
 
@@ -124,10 +123,7 @@
         <div class="two-col">
           <div class="panel">
             <h2>History</h2>
-            <table class="runs-table" id="runs">
-              <thead><tr><th>id</th><th>op</th><th>status</th><th>exit</th><th>started</th><th>masked UI</th></tr></thead>
-              <tbody></tbody>
-            </table>
+            <div id="runs"></div>
           </div>
           <div class="panel">
             <div class="row-between">

@@ -4,6 +4,8 @@ const $ = (id) => document.getElementById(id);
 let evtSource = null;
 let PROFILES = null;
 let CONFIG = null;
+let overviewTable = null;
+let runsTable = null;
 
 /* ===== Router ===== */
 const ROUTES = ["overview", "new", "runs"];
@@ -45,29 +47,74 @@ async function loadConfig() {
 function card(k, v) {
   return `<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`;
 }
+function linkCell(url, label) {
+  return url
+    ? `<a href="${url}" target="_blank" onclick="event.stopPropagation()">${label} ↗</a>`
+    : "—";
+}
+
+function runColumns(withOp) {
+  const cols = [
+    { title: "id", field: "id", width: 120, formatter: (c) => `<span class="mono">${c.getValue()}</span>` },
+  ];
+  if (withOp) cols.push({ title: "op", field: "operation", width: 90 });
+  cols.push(
+    { title: "status", field: "status", width: 110, formatter: (c) => `<span class="st-${c.getValue()}">${c.getValue()}</span>` },
+    { title: "exit", field: "exit_code", width: 70, formatter: (c) => (c.getValue() ?? "—") },
+    { title: "started", field: "started_at", widthGrow: 2,
+      formatter: (c) => (c.getValue() ? new Date(c.getValue() * 1000).toLocaleString() : "—") },
+    { title: "masked UI", field: "target_url", hozAlign: "center", width: 110,
+      formatter: (c) => linkCell(c.getValue(), "open") },
+    { title: "dump", field: "masked_dump_url", hozAlign: "center", width: 100,
+      formatter: (c) => linkCell(c.getValue(), "download") },
+    { title: "vscode", field: "vscode_url", hozAlign: "center", width: 100,
+      formatter: (c) => linkCell(c.getValue(), "open") },
+  );
+  return cols;
+}
+
+function runRow(r) {
+  const res = r.result || {};
+  return {
+    id: r.id, operation: r.operation, status: r.status, exit_code: r.exit_code,
+    started_at: r.started_at, target_url: res.target_url,
+    masked_dump_url: res.masked_dump_url, vscode_url: res.vscode_url,
+  };
+}
+
+function makeRunsTable(el, withOp, pageSize) {
+  return new Tabulator(el, {
+    layout: "fitColumns",
+    height: "auto",
+    pagination: true,
+    paginationSize: pageSize,
+    paginationCounter: "rows",
+    placeholder: "No runs yet",
+    columns: runColumns(withOp),
+    rowFormatter: (row) => { row.getElement().style.cursor = "pointer"; },
+  });
+}
+
 async function renderOverview() {
   const c = CONFIG || {};
-  let running = 0, total = 0, lastOk = "—", lastMaskedUi = "—";
+  let running = 0, total = 0, lastOk = "—";
   try {
     const { runs } = await (await fetch("/api/runs")).json();
     total = runs.length;
     running = runs.filter((r) => r.status === "running" || r.status === "queued").length;
     const ok = runs.find((r) => r.status === "succeeded");
     if (ok && ok.started_at) lastOk = new Date(ok.started_at * 1000).toLocaleString();
-    const okUrl = ok && ok.result && ok.result.target_url;
-    if (okUrl) lastMaskedUi = `<a href="${okUrl}" target="_blank">open ↗</a>`;
-    const tb = document.querySelector("#overview-runs tbody");
-    tb.innerHTML = "";
-    for (const r of runs.slice(0, 6)) {
-      const started = r.started_at ? new Date(r.started_at * 1000).toLocaleString() : "—";
-      const url = r.result && r.result.target_url;
-      const tr = document.createElement("tr");
-      tr.className = "clickable";
-      tr.innerHTML = `<td class="mono">${r.id}</td><td class="st-${r.status}">${r.status}</td>` +
-        `<td>${r.exit_code ?? "—"}</td><td>${started}</td>` +
-        `<td>${url ? `<a href="${url}" target="_blank" onclick="event.stopPropagation()">open ↗</a>` : "—"}</td>`;
-      tr.onclick = () => { location.hash = "#/runs"; setTimeout(() => openRun(r.id), 0); };
-      tb.appendChild(tr);
+
+    const rows = runs.map(runRow);
+    if (!overviewTable) {
+      overviewTable = makeRunsTable("#overview-runs", false, 5);
+      overviewTable.on("rowClick", (e, row) => {
+        location.hash = "#/runs";
+        setTimeout(() => openRun(row.getData().id), 0);
+      });
+      overviewTable.on("tableBuilt", () => overviewTable.setData(rows));
+    } else {
+      overviewTable.setData(rows);
     }
   } catch (e) {}
   $("overview-cards").innerHTML =
@@ -75,8 +122,7 @@ async function renderOverview() {
     card("Destination db", c.destination_db || "—") +
     card("Total runs", total) +
     card("Running", running) +
-    card("Last success", lastOk) +
-    card("Latest masked UI", lastMaskedUi);
+    card("Last success", lastOk);
 }
 
 
@@ -140,6 +186,7 @@ function showResult(run, pane = "new") {
   const lines = [];
   if (r.target_url) lines.push(`Masked UI: <a href="${r.target_url}" target="_blank">${r.target_url}</a>`);
   if (r.masked_dump_url) lines.push(`Masked dump: <a href="${r.masked_dump_url}" target="_blank">download pg_dump</a>`);
+  if (r.vscode_url) lines.push(`VS Code: <a href="${r.vscode_url}" target="_blank">open editor</a>`);
   if (r.error) lines.push(`<span class="st-failed">Error: ${r.error}</span>`);
   if (typeof r.exit_code === "number") lines.push(`Exit code: <b>${r.exit_code}</b>`);
   if (lines.length) { el.innerHTML = lines.join("<br>"); el.classList.remove("hidden"); }
@@ -164,20 +211,13 @@ function streamLogs(runId, pane = "new") {
 async function loadRuns() {
   try {
     const { runs } = await (await fetch("/api/runs")).json();
-    const tb = document.querySelector("#runs tbody");
-    tb.innerHTML = "";
-    for (const r of runs) {
-      const tr = document.createElement("tr");
-      tr.className = "clickable";
-      const started = r.started_at ? new Date(r.started_at * 1000).toLocaleString() : "—";
-      const url = r.result && r.result.target_url;
-      tr.innerHTML =
-        `<td class="mono">${r.id}</td><td>${r.operation}</td>` +
-        `<td class="st-${r.status}">${r.status}</td>` +
-        `<td>${r.exit_code ?? "—"}</td><td>${started}</td>` +
-        `<td>${url ? `<a href="${url}" target="_blank" onclick="event.stopPropagation()">open ↗</a>` : "—"}</td>`;
-      tr.onclick = () => openRun(r.id);
-      tb.appendChild(tr);
+    const rows = runs.map(runRow);
+    if (!runsTable) {
+      runsTable = makeRunsTable("#runs", true, 10);
+      runsTable.on("rowClick", (e, row) => openRun(row.getData().id));
+      runsTable.on("tableBuilt", () => runsTable.setData(rows));
+    } else {
+      runsTable.setData(rows);
     }
   } catch (e) {}
 }
