@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>odoo-synth · masking control panel</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <h1>odoo-synth <span class="muted">masking control panel</span></h1>
+    <div id="infobar" class="infobar"></div>
+  </header>
+
+  <main>
+    <section class="panel">
+      <h2>Start a run</h2>
+      <form id="run-form">
+        <label>Operation
+          <select id="operation" name="operation">
+            <option value="mask">mask &mdash; source &rarr; masked target</option>
+            <option value="restore">restore &mdash; load prod dump into source</option>
+          </select>
+        </label>
+
+        <div id="dump-field" class="hidden">
+          <label>Dump URL <span class="muted">(presigned S3 URL to dump.sql)</span>
+            <input type="text" id="dump_url" name="dump_url"
+                   placeholder="https://...s3...dump.sql?X-Amz-..." />
+          </label>
+        </div>
+
+        <label>Admin password <span class="muted">(optional; default from config)</span>
+          <input type="password" id="admin_password" name="admin_password"
+                 placeholder="leave blank to use configured default" />
+        </label>
+
+        <button type="submit" id="start-btn">Start</button>
+      </form>
+    </section>
+
+    <section class="panel">
+      <div class="row-between">
+        <h2>Live log</h2>
+        <span id="status-badge" class="badge idle">idle</span>
+      </div>
+      <pre id="log" class="log"></pre>
+      <div id="result" class="result hidden"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Recent runs</h2>
+      <table id="runs">
+        <thead>
+          <tr><th>id</th><th>op</th><th>status</th><th>exit</th><th>started</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
