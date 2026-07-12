@@ -46,6 +46,23 @@ button {
 }
 button:disabled { opacity: .5; cursor: not-allowed; }
 .hidden { display: none; }
+.small { font-size: 12px; margin: -4px 0 0; }
+fieldset {
+  border: 1px solid var(--border); border-radius: 8px; padding: 16px;
+  display: grid; gap: 14px; margin: 0;
+}
+legend { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; padding: 0 6px; }
+button.secondary {
+  background: transparent; color: var(--accent);
+  border: 1px solid var(--border); justify-self: start; padding: 6px 12px;
+}
+.toggles {
+  display: grid; gap: 8px; padding: 12px; border: 1px solid var(--border);
+  border-radius: 6px; background: var(--bg);
+}
+.toggles-title { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+label.chk { display: flex; flex-direction: row; align-items: center; gap: 8px; font-size: 13px; }
+label.chk input { width: auto; }
 .row-between { display: flex; align-items: center; justify-content: space-between; }
 .log {
   background: #0a0e13; border: 1px solid var(--border); border-radius: 6px;

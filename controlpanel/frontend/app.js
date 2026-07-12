@@ -2,6 +2,8 @@
 
 const $ = (id) => document.getElementById(id);
 let evtSource = null;
+let PROFILES = null;
+let stagedUrl = null; // presigned URL from an upload
 
 async function loadConfig() {
   try {
@@ -16,6 +18,74 @@ async function loadConfig() {
   } catch (e) {
     $("infobar").textContent = "config unavailable";
   }
+}
+
+function opt(value, label) {
+  const o = document.createElement("option");
+  o.value = value; o.textContent = label;
+  return o;
+}
+
+async function loadProfiles() {
+  PROFILES = await (await fetch("/api/profiles")).json();
+
+  // connection selects
+  const conns = PROFILES.connections || [];
+  for (const sel of document.querySelectorAll(".conn-select")) {
+    sel.innerHTML = "";
+    conns.forEach((c) => sel.appendChild(opt(c.id, c.label)));
+  }
+  // sensible defaults
+  if (conns.find((c) => c.id === "source")) $("mask_source_conn").value = "source";
+  if (conns.find((c) => c.id === "masked")) $("mask_target_conn").value = "masked";
+  if (conns.find((c) => c.id === "source")) $("restore_target_conn").value = "source";
+
+  // restore source types
+  const st = $("source_type");
+  st.innerHTML = "";
+  (PROFILES.restore_source_types || []).forEach((s) => {
+    const isUpload = (s.needs || []).includes("file");
+    if (isUpload && !PROFILES.upload_enabled) return; // hide uploads if no bucket
+    st.appendChild(opt(s.id, s.label));
+  });
+  st.addEventListener("change", renderSourceFields);
+  renderSourceFields();
+
+  // mask profiles
+  const mp = $("mask_profile");
+  mp.innerHTML = "";
+  (PROFILES.mask_profiles || []).forEach((p) => mp.appendChild(opt(p.id, p.label)));
+  mp.addEventListener("change", renderMaskProfileHint);
+  renderMaskProfileHint();
+
+  // toggle defaults
+  const nd = PROFILES.neutralize_defaults || {};
+  $("neutralize_mail").checked = nd.mail !== false;
+  $("neutralize_fetchmail").checked = nd.fetchmail !== false;
+  $("neutralize_payment").checked = nd.payment !== false;
+  $("neutralize_smtp_param").checked = nd.smtp_param !== false;
+  $("reset_admin_login").checked = PROFILES.reset_admin_login !== false;
+  $("gm_jobs").value = PROFILES.gm_jobs || 4;
+}
+
+function currentSourceType() {
+  return (PROFILES.restore_source_types || []).find((s) => s.id === $("source_type").value);
+}
+
+function renderSourceFields() {
+  const s = currentSourceType();
+  $("source_hint").textContent = s ? (s.hint || "") : "";
+  const needs = s ? (s.needs || []) : [];
+  $("field-url").classList.toggle("hidden", !needs.includes("url"));
+  $("field-file").classList.toggle("hidden", !needs.includes("file"));
+  $("field-dsn").classList.toggle("hidden", !needs.includes("dsn"));
+  stagedUrl = null;
+  $("upload-status").textContent = "";
+}
+
+function renderMaskProfileHint() {
+  const p = (PROFILES.mask_profiles || []).find((x) => x.id === $("mask_profile").value);
+  $("mask_profile_hint").textContent = p ? (p.description || "") : "";
 }
 
 function setBadge(status) {
@@ -39,10 +109,7 @@ function showResult(run) {
   if (r.target_url) lines.push(`Target: <a href="${r.target_url}" target="_blank">${r.target_url}</a>`);
   if (r.error) lines.push(`<span class="st-failed">Error: ${r.error}</span>`);
   if (typeof r.exit_code === "number") lines.push(`Exit code: <b>${r.exit_code}</b>`);
-  if (lines.length) {
-    el.innerHTML = lines.join("<br>");
-    el.classList.remove("hidden");
-  }
+  if (lines.length) { el.innerHTML = lines.join("<br>"); el.classList.remove("hidden"); }
 }
 
 function streamLogs(runId) {
@@ -51,14 +118,13 @@ function streamLogs(runId) {
   evtSource.onmessage = (e) => appendLog(e.data);
   evtSource.addEventListener("end", async (e) => {
     setBadge(e.data);
-    evtSource.close();
-    evtSource = null;
+    evtSource.close(); evtSource = null;
     const run = await (await fetch(`/api/runs/${runId}`)).json();
     showResult(run);
     $("start-btn").disabled = false;
     loadRuns();
   });
-  evtSource.onerror = () => { /* keep the last state; browser auto-retries */ };
+  evtSource.onerror = () => {};
 }
 
 async function loadRuns() {
@@ -77,7 +143,7 @@ async function loadRuns() {
       tr.onclick = () => openRun(r.id);
       tb.appendChild(tr);
     }
-  } catch (e) { /* ignore */ }
+  } catch (e) {}
 }
 
 async function openRun(runId) {
@@ -88,7 +154,6 @@ async function openRun(runId) {
   if (run.status === "running" || run.status === "queued") {
     streamLogs(runId);
   } else {
-    // replay stored logs once
     const res = await fetch(`/api/runs/${runId}/logs`);
     const reader = res.body.getReader();
     const dec = new TextDecoder();
@@ -110,21 +175,80 @@ async function openRun(runId) {
   }
 }
 
-$("operation").addEventListener("change", (e) => {
-  $("dump-field").classList.toggle("hidden", e.target.value !== "restore");
+// ---- operation switch ----
+$("operation").addEventListener("change", () => {
+  const op = $("operation").value;
+  $("restore-fields").classList.toggle("hidden", op !== "restore");
+  $("mask-fields").classList.toggle("hidden", op !== "mask");
 });
+
+// ---- upload ----
+$("upload-btn").addEventListener("click", async () => {
+  const f = $("file").files[0];
+  if (!f) { $("upload-status").textContent = "pick a file first"; return; }
+  $("upload-status").textContent = `uploading ${f.name} ...`;
+  const fd = new FormData();
+  fd.append("file", f);
+  try {
+    const resp = await fetch("/api/upload", { method: "POST", body: fd });
+    if (!resp.ok) throw new Error((await resp.json()).detail || resp.status);
+    const j = await resp.json();
+    stagedUrl = j.url;
+    $("upload-status").textContent = `staged ✓ (${f.name})`;
+  } catch (e) {
+    $("upload-status").textContent = `upload failed: ${e.message}`;
+  }
+});
+
+// ---- submit ----
+function buildPayload() {
+  const op = $("operation").value;
+  if (op === "restore") {
+    const s = currentSourceType();
+    const needs = s ? (s.needs || []) : [];
+    const body = {
+      operation: "restore",
+      source_type: $("source_type").value,
+      target_conn: $("restore_target_conn").value,
+      target_db: $("restore_target_db").value || null,
+    };
+    if (needs.includes("url")) body.url = $("url").value || null;
+    if (needs.includes("file")) body.url = stagedUrl;
+    if (needs.includes("dsn")) body.dsn = $("dsn").value || null;
+    return body;
+  }
+  return {
+    operation: "mask",
+    source_conn: $("mask_source_conn").value,
+    target_conn: $("mask_target_conn").value,
+    target_db: $("mask_target_db").value || null,
+    mask_profile: $("mask_profile").value,
+    admin_password: $("admin_password").value || null,
+    gm_jobs: parseInt($("gm_jobs").value, 10) || null,
+    neutralize_mail: $("neutralize_mail").checked,
+    neutralize_fetchmail: $("neutralize_fetchmail").checked,
+    neutralize_payment: $("neutralize_payment").checked,
+    neutralize_smtp_param: $("neutralize_smtp_param").checked,
+    reset_admin_login: $("reset_admin_login").checked,
+  };
+}
 
 $("run-form").addEventListener("submit", async (e) => {
   e.preventDefault();
+  const body = buildPayload();
+  if (body.operation === "restore") {
+    const s = currentSourceType();
+    const needs = s ? (s.needs || []) : [];
+    if (needs.includes("file") && !stagedUrl) {
+      appendLog("[panel] upload & stage the file first");
+      return;
+    }
+  }
   $("start-btn").disabled = true;
   $("log").textContent = "";
   $("result").classList.add("hidden");
   setBadge("running");
-  const body = {
-    operation: $("operation").value,
-    dump_url: $("dump_url").value || null,
-    admin_password: $("admin_password").value || null,
-  };
+
   const resp = await fetch("/api/runs", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -143,6 +267,9 @@ $("run-form").addEventListener("submit", async (e) => {
   loadRuns();
 });
 
+// init
+$("operation").dispatchEvent(new Event("change"));
 loadConfig();
+loadProfiles();
 loadRuns();
 setInterval(loadRuns, 10000);

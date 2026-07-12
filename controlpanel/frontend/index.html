@@ -19,21 +19,79 @@
         <label>Operation
           <select id="operation" name="operation">
             <option value="mask">mask &mdash; source &rarr; masked target</option>
-            <option value="restore">restore &mdash; load prod dump into source</option>
+            <option value="restore">restore &mdash; load a dump into a database</option>
           </select>
         </label>
 
-        <div id="dump-field" class="hidden">
-          <label>Dump URL <span class="muted">(presigned S3 URL to dump.sql)</span>
-            <input type="text" id="dump_url" name="dump_url"
-                   placeholder="https://...s3...dump.sql?X-Amz-..." />
+        <!-- ===== RESTORE fields ===== -->
+        <fieldset id="restore-fields" class="hidden">
+          <legend>Restore</legend>
+          <label>Dump source
+            <select id="source_type"></select>
           </label>
-        </div>
+          <p id="source_hint" class="muted small"></p>
 
-        <label>Admin password <span class="muted">(optional; default from config)</span>
-          <input type="password" id="admin_password" name="admin_password"
-                 placeholder="leave blank to use configured default" />
-        </label>
+          <div id="field-url" class="src-field hidden">
+            <label>URL
+              <input type="text" id="url" placeholder="https://...dump.sql or backup.zip" />
+            </label>
+          </div>
+
+          <div id="field-file" class="src-field hidden">
+            <label>File
+              <input type="file" id="file" accept=".sql,.zip" />
+            </label>
+            <button type="button" id="upload-btn" class="secondary">Upload &amp; stage</button>
+            <span id="upload-status" class="muted small"></span>
+          </div>
+
+          <div id="field-dsn" class="src-field hidden">
+            <label>Source DSN
+              <input type="text" id="dsn" placeholder="postgresql://user:pass@host:5432/dbname" />
+            </label>
+          </div>
+
+          <label>Target connection
+            <select id="restore_target_conn" class="conn-select"></select>
+          </label>
+          <label>Target DB name <span class="muted">(blank = profile default)</span>
+            <input type="text" id="restore_target_db" placeholder="e.g. source" />
+          </label>
+        </fieldset>
+
+        <!-- ===== MASK fields ===== -->
+        <fieldset id="mask-fields" class="hidden">
+          <legend>Mask</legend>
+          <label>Source connection
+            <select id="mask_source_conn" class="conn-select"></select>
+          </label>
+          <label>Target connection
+            <select id="mask_target_conn" class="conn-select"></select>
+          </label>
+          <label>Target DB name <span class="muted">(blank = profile default)</span>
+            <input type="text" id="mask_target_db" placeholder="e.g. masked" />
+          </label>
+          <label>Masking profile
+            <select id="mask_profile"></select>
+          </label>
+          <p id="mask_profile_hint" class="muted small"></p>
+
+          <label>Admin password <span class="muted">(optional; default from config)</span>
+            <input type="password" id="admin_password" placeholder="leave blank for configured default" />
+          </label>
+          <label>greenmask jobs
+            <input type="number" id="gm_jobs" min="1" max="16" />
+          </label>
+
+          <div class="toggles">
+            <span class="toggles-title">Neutralize (post-mask)</span>
+            <label class="chk"><input type="checkbox" id="neutralize_mail" /> Mail servers</label>
+            <label class="chk"><input type="checkbox" id="neutralize_fetchmail" /> Fetchmail</label>
+            <label class="chk"><input type="checkbox" id="neutralize_payment" /> Payment providers</label>
+            <label class="chk"><input type="checkbox" id="neutralize_smtp_param" /> SMTP force param</label>
+            <label class="chk"><input type="checkbox" id="reset_admin_login" /> Reset admin login to 'admin'</label>
+          </div>
+        </fieldset>
 
         <button type="submit" id="start-btn">Start</button>
       </form>

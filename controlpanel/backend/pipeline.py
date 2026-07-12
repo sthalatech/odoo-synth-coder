@@ -2,9 +2,11 @@
 deploy/source/restore_dump.sh, but runs in-process so we can tail the container's
 CloudWatch logs live and stream them to the browser.
 
-Two operations:
-  * restore  -> stream a presigned dump.sql into the SOURCE db (masker image)
-  * mask     -> greenmask SOURCE -> MASKED, neutralize, set admin password
+Operations
+  * restore  -> load a dump into a target DB. Source of the dump is selectable:
+                sql_url | zip_url | sql_upload | zip_upload | db_dsn.
+  * mask     -> greenmask SOURCE -> TARGET, neutralize (toggleable), set admin
+                password. Connections, profile, jobs and toggles are all inputs.
 """
 from __future__ import annotations
 import time
@@ -57,41 +59,79 @@ def _ecr() -> str:
     return f"{acct}.dkr.ecr.{_region()}.amazonaws.com"
 
 
+def _resolve_conn(conn_id: str) -> dict:
+    c = config.get_connection(conn_id)
+    if not c:
+        raise ValueError(f"unknown connection profile: {conn_id}")
+    if not c.get("host"):
+        raise ValueError(f"connection '{conn_id}' has no host (check env vars)")
+    return c
+
+
 # ---------------------------------------------------------------------------
-# task-definition builders
+# RESTORE
 # ---------------------------------------------------------------------------
 
-def _restore_command() -> str:
-    """Identical restore logic to deploy/source/restore_dump.sh, parameterised by
-    the DUMP_URL env var so the same task def can be reused across runs."""
-    host = config.require("SRC_RDS_ENDPOINT")
-    user = config.require("SOURCE_DB_MASTER_USER")
-    db = config.require("SOURCE_DB_NAME")
-    pw = config.require("SOURCE_DB_MASTER_PASSWORD")
-    return f'''set -o pipefail
+def _restore_command(target: dict, db_name: str, source_type: str,
+                     url: Optional[str], dsn: Optional[str]) -> str:
+    """Build the restore shell script for the chosen source type. Runs inside the
+    masker image (curl + psql16 + pg_dump16 + python3). Recreates db_name on the
+    target connection, loads the dump, prints row counts."""
+    host, port, user, pw = target["host"], target["port"], target["user"], target["password"]
+
+    header = f'''set -o pipefail
 export PGPASSWORD="{pw}"
-H="{host}"; U="{user}"; DB="{db}"
-ADM="psql -v ON_ERROR_STOP=1 -h $H -U $U -d postgres"
-echo "[restore] recreating database $DB ..."
+H="{host}"; PORT="{port}"; U="{user}"; DB="{db_name}"
+ADM="psql -v ON_ERROR_STOP=1 -h $H -p $PORT -U $U -d postgres"
+echo "[restore] recreating database $DB on $H ..."
 $ADM -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$DB' AND pid<>pg_backend_pid();" >/dev/null 2>&1 || true
 $ADM -c "DROP DATABASE IF EXISTS \\"$DB\\";"
-$ADM -c "CREATE DATABASE \\"$DB\\" ENCODING 'UTF8' TEMPLATE template0;"
-echo "[restore] streaming dump into $DB (this takes a few minutes) ..."
-curl -fsSL "$DUMP_URL" | psql -h "$H" -U "$U" -d "$DB" >/tmp/restore.log 2>&1
+$ADM -c "CREATE DATABASE \\"$DB\\" ENCODING 'UTF8' TEMPLATE template0;"'''
+
+    if source_type in ("sql_url", "sql_upload"):
+        body = f'''
+echo "[restore] streaming SQL dump into $DB ..."
+curl -fsSL "{url}" | psql -h "$H" -p "$PORT" -U "$U" -d "$DB" >/tmp/restore.log 2>&1
 echo "[restore] psql stream exit=$? (non-fatal errors tolerated); tail:"
-tail -5 /tmp/restore.log || true
-P=$(psql -tA -h "$H" -U "$U" -d "$DB" -c "SELECT count(*) FROM res_partner;" 2>/dev/null || echo "?")
-US=$(psql -tA -h "$H" -U "$U" -d "$DB" -c "SELECT count(*) FROM res_users;" 2>/dev/null || echo "?")
+tail -5 /tmp/restore.log || true'''
+    elif source_type in ("zip_url", "zip_upload"):
+        body = f'''
+echo "[restore] downloading backup zip ..."
+curl -fsSL "{url}" -o /tmp/backup.zip
+echo "[restore] extracting dump.sql from zip ..."
+python3 - <<'PY' > /tmp/dump.sql
+import zipfile,sys
+z=zipfile.ZipFile("/tmp/backup.zip")
+names=[n for n in z.namelist() if n.endswith("dump.sql") or n=="dump.sql"]
+if not names:
+    sys.stderr.write("no dump.sql in zip: %r\\n"%z.namelist()); sys.exit(2)
+sys.stdout.buffer.write(z.read(names[0]))
+PY
+echo "[restore] streaming extracted dump.sql into $DB ..."
+psql -h "$H" -p "$PORT" -U "$U" -d "$DB" -f /tmp/dump.sql >/tmp/restore.log 2>&1
+echo "[restore] psql exit=$? (non-fatal errors tolerated); tail:"
+tail -5 /tmp/restore.log || true'''
+    elif source_type == "db_dsn":
+        body = f'''
+echo "[restore] pg_dump from live source DSN -> $DB (streaming) ..."
+pg_dump --no-owner --no-privileges "{dsn}" | psql -h "$H" -p "$PORT" -U "$U" -d "$DB" >/tmp/restore.log 2>&1
+echo "[restore] stream exit=$? (non-fatal errors tolerated); tail:"
+tail -5 /tmp/restore.log || true'''
+    else:
+        raise ValueError(f"unknown restore source_type: {source_type}")
+
+    footer = '''
+P=$(psql -tA -h "$H" -p "$PORT" -U "$U" -d "$DB" -c "SELECT count(*) FROM res_partner;" 2>/dev/null || echo "?")
+US=$(psql -tA -h "$H" -p "$PORT" -U "$U" -d "$DB" -c "SELECT count(*) FROM res_users;" 2>/dev/null || echo "?")
 echo "[restore] DONE: res_partner=$P res_users=$US in $DB"'''
+    return header + body + footer
 
 
-def _register_restore_taskdef(ecs, dump_url: str) -> tuple[str, str, str, str]:
-    """Returns (family, container, log_group, stream_prefix)."""
+def _register_restore_taskdef(ecs, command: str) -> tuple[str, str, str, str]:
     proj = config.require("PROJECT")
     family = f"{proj}-src-restore"
     log_group = f"/ecs/{proj}-source"
-    prefix = "restore"
-    container = "restore"
+    prefix, container = "restore", "restore"
     ecs.register_task_definition(
         family=family,
         networkMode="awsvpc",
@@ -104,8 +144,7 @@ def _register_restore_taskdef(ecs, dump_url: str) -> tuple[str, str, str, str]:
                 "name": container,
                 "image": f"{_ecr()}/{proj}/masker:latest",
                 "entryPoint": ["bash", "-lc"],
-                "command": [_restore_command()],
-                "environment": [{"name": "DUMP_URL", "value": dump_url}],
+                "command": [command],
                 "logConfiguration": {
                     "logDriver": "awslogs",
                     "options": {
@@ -120,31 +159,44 @@ def _register_restore_taskdef(ecs, dump_url: str) -> tuple[str, str, str, str]:
     return family, container, log_group, prefix
 
 
-def _register_mask_taskdef(ecs, admin_password: Optional[str]) -> tuple[str, str, str, str]:
+# ---------------------------------------------------------------------------
+# MASK
+# ---------------------------------------------------------------------------
+
+def _register_mask_taskdef(ecs, src: dict, tgt: dict, params: dict) -> tuple[str, str, str, str]:
     proj = config.require("PROJECT")
     family = f"{proj}-mask"
     log_group = f"/ecs/{proj}"
-    prefix = "mask"
-    container = "masker"
+    prefix, container = "mask", "masker"
 
-    def kv(k: str, v: str) -> dict:
-        return {"name": k, "value": v}
+    def kv(k: str, v) -> dict:
+        return {"name": k, "value": str(v)}
 
-    src_host = config.get("SRC_RDS_ENDPOINT") or config.require("RDS_ENDPOINT")
-    src_user = config.get("SOURCE_DB_MASTER_USER") or config.require("TARGET_DB_USER")
-    src_pw = config.get("SOURCE_DB_MASTER_PASSWORD") or config.require("TARGET_DB_PASSWORD")
+    nd = config.neutralize_defaults()
+
+    def flag(key: str, default: bool) -> str:
+        v = params.get(key, default)
+        return "true" if v else "false"
+
     env = [
-        kv("SOURCE_DB_HOST", src_host),
-        kv("SOURCE_DB_PORT", "5432"),
-        kv("SOURCE_DB_NAME", config.require("SOURCE_DB_NAME")),
-        kv("SOURCE_DB_USER", src_user),
-        kv("SOURCE_DB_PASSWORD", src_pw),
-        kv("TARGET_DB_HOST", config.require("RDS_ENDPOINT")),
-        kv("TARGET_DB_PORT", "5432"),
-        kv("TARGET_DB_NAME", config.require("TARGET_DB_NAME")),
-        kv("TARGET_DB_USER", config.require("TARGET_DB_USER")),
-        kv("TARGET_DB_PASSWORD", config.require("TARGET_DB_PASSWORD")),
-        kv("ODOO_ADMIN_PASSWORD", admin_password or config.require("ODOO_ADMIN_PASSWORD")),
+        kv("SOURCE_DB_HOST", src["host"]),
+        kv("SOURCE_DB_PORT", src["port"]),
+        kv("SOURCE_DB_NAME", params.get("source_db") or src["dbname"]),
+        kv("SOURCE_DB_USER", src["user"]),
+        kv("SOURCE_DB_PASSWORD", src["password"]),
+        kv("TARGET_DB_HOST", tgt["host"]),
+        kv("TARGET_DB_PORT", tgt["port"]),
+        kv("TARGET_DB_NAME", params.get("target_db") or tgt["dbname"]),
+        kv("TARGET_DB_USER", tgt["user"]),
+        kv("TARGET_DB_PASSWORD", tgt["password"]),
+        kv("ODOO_ADMIN_PASSWORD", params.get("admin_password") or config.get("ODOO_ADMIN_PASSWORD", "admin")),
+        kv("MASK_PROFILE", params.get("mask_profile") or "odoo-core-pii"),
+        kv("GM_JOBS", params.get("gm_jobs") or nd.get("gm_jobs", 4)),
+        kv("NEUTRALIZE_MAIL", flag("neutralize_mail", nd.get("mail", True))),
+        kv("NEUTRALIZE_FETCHMAIL", flag("neutralize_fetchmail", nd.get("fetchmail", True))),
+        kv("NEUTRALIZE_PAYMENT", flag("neutralize_payment", nd.get("payment", True))),
+        kv("NEUTRALIZE_SMTP_PARAM", flag("neutralize_smtp_param", nd.get("smtp_param", True))),
+        kv("RESET_ADMIN_LOGIN", flag("reset_admin_login", config.panel().get("reset_admin_login", True))),
     ]
     ecs.register_task_definition(
         family=family,
@@ -173,44 +225,31 @@ def _register_mask_taskdef(ecs, admin_password: Optional[str]) -> tuple[str, str
 
 
 # ---------------------------------------------------------------------------
-# run + live log tail
+# live log tail
 # ---------------------------------------------------------------------------
 
-def _tail_until_stopped(
-    ecs, logs, cluster: str, task_arn: str,
-    log_group: str, log_stream: str, emit: LogSink,
-) -> int:
-    """Poll CloudWatch for the task's log stream and forward new lines to `emit`
-    until the task stops. Returns the container exit code."""
+def _tail_until_stopped(ecs, logs, cluster, task_arn, log_group, log_stream, emit) -> int:
     token: Optional[str] = None
     stopped = False
     exit_code = 1
-    # allow a short grace period for the stream to appear
     stream_ready = False
     idle_after_stop = 0
 
     while True:
-        # forward available log events
         try:
-            kwargs = {
-                "logGroupName": log_group,
-                "logStreamName": log_stream,
-                "startFromHead": True,
-            }
+            kwargs = {"logGroupName": log_group, "logStreamName": log_stream, "startFromHead": True}
             if token:
                 kwargs["nextToken"] = token
             resp = logs.get_log_events(**kwargs)
             stream_ready = True
             for ev in resp.get("events", []):
                 emit(ev["message"].rstrip("\n"))
-            new_token = resp.get("nextForwardToken")
+            token = resp.get("nextForwardToken")
             got_events = bool(resp.get("events"))
-            token = new_token
         except logs.exceptions.ResourceNotFoundException:
-            got_events = False  # stream not created yet
+            got_events = False
 
         if stopped:
-            # drain a couple extra cycles after stop to catch trailing logs
             idle_after_stop += 0 if got_events else 1
             if idle_after_stop >= 2:
                 break
@@ -233,26 +272,37 @@ def _tail_until_stopped(
     return exit_code
 
 
+# ---------------------------------------------------------------------------
+# entry
+# ---------------------------------------------------------------------------
+
 def run_operation(operation: str, params: dict, emit: LogSink) -> dict:
-    """Execute a masking operation synchronously (call from a worker thread).
-    Streams progress via `emit`. Returns a result dict."""
     ecs, ec2, logs = _clients()
 
     if operation == "restore":
-        dump_url = params.get("dump_url")
-        if not dump_url:
-            raise ValueError("restore requires dump_url (presigned S3 URL)")
+        target = _resolve_conn(params.get("target_conn") or "source")
+        db_name = params.get("target_db") or target["dbname"]
+        source_type = params.get("source_type")
+        url = params.get("url")
+        dsn = params.get("dsn")
+        if source_type in ("sql_url", "zip_url", "sql_upload", "zip_upload") and not url:
+            raise ValueError(f"{source_type} requires a resolved URL")
+        if source_type == "db_dsn" and not dsn:
+            raise ValueError("db_dsn requires a source DSN")
         cluster = config.require("SOURCE_ECS_CLUSTER")
         sg = config.require("SRC_TASK_SG")
-        emit("[panel] registering restore task definition ...")
-        family, container, log_group, prefix = _register_restore_taskdef(ecs, dump_url)
+        emit(f"[panel] restore source={source_type} target-conn={target['id']} db={db_name}")
+        cmd = _restore_command(target, db_name, source_type, url, dsn)
+        family, container, log_group, prefix = _register_restore_taskdef(ecs, cmd)
+
     elif operation == "mask":
+        src = _resolve_conn(params.get("source_conn") or "source")
+        tgt = _resolve_conn(params.get("target_conn") or "masked")
         cluster = config.require("ECS_CLUSTER")
         sg = config.require("TASK_SG")
-        emit("[panel] registering mask task definition ...")
-        family, container, log_group, prefix = _register_mask_taskdef(
-            ecs, params.get("admin_password")
-        )
+        tdb = params.get("target_db") or tgt["dbname"]
+        emit(f"[panel] mask {src['id']}({src['dbname']}) -> {tgt['id']}({tdb}) profile={params.get('mask_profile')}")
+        family, container, log_group, prefix = _register_mask_taskdef(ecs, src, tgt, params)
     else:
         raise ValueError(f"unknown operation: {operation}")
 
@@ -272,9 +322,7 @@ def run_operation(operation: str, params: dict, emit: LogSink) -> dict:
     log_stream = f"{prefix}/{container}/{task_id}"
     emit(f"[panel] task {task_id} started; streaming logs from {log_group}:{log_stream}")
 
-    exit_code = _tail_until_stopped(
-        ecs, logs, cluster, task_arn, log_group, log_stream, emit
-    )
+    exit_code = _tail_until_stopped(ecs, logs, cluster, task_arn, log_group, log_stream, emit)
     emit(f"[panel] task exited with code {exit_code}")
 
     result: dict = {"task_arn": task_arn, "exit_code": exit_code}

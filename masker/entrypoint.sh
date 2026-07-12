@@ -11,12 +11,29 @@ export SOURCE_DB_PASSWORD="${SOURCE_DB_PASSWORD:-}"
 ODOO_ADMIN_PASSWORD="${ODOO_ADMIN_PASSWORD:-admin}"
 export GM_STORAGE="/tmp/gm_storage"
 
+# ---- configurable knobs (all overridable via env; nothing hardcoded) ----
+# masking profile: /work/profiles/<MASK_PROFILE>.yml (falls back to the legacy
+# baked template for backward-compat).
+MASK_PROFILE="${MASK_PROFILE:-odoo-core-pii}"
+export GM_JOBS="${GM_JOBS:-4}"
+# neutralize toggles (true|false) — post-mask hygiene on the masked replica.
+NEUTRALIZE_MAIL="${NEUTRALIZE_MAIL:-true}"
+NEUTRALIZE_FETCHMAIL="${NEUTRALIZE_FETCHMAIL:-true}"
+NEUTRALIZE_PAYMENT="${NEUTRALIZE_PAYMENT:-true}"
+NEUTRALIZE_SMTP_PARAM="${NEUTRALIZE_SMTP_PARAM:-true}"
+# reset the admin login string to 'admin' (in addition to the password).
+RESET_ADMIN_LOGIN="${RESET_ADMIN_LOGIN:-true}"
+
 say(){ echo "[masker] $*"; }
+is_true(){ case "${1,,}" in true|1|yes|on) return 0;; *) return 1;; esac; }
 rm -rf "$GM_STORAGE"; mkdir -p "$GM_STORAGE"
 
-# 1. render greenmask config
+# 1. render greenmask config from the selected profile
 export SOURCE_DB_HOST SOURCE_DB_PORT SOURCE_DB_USER SOURCE_DB_PASSWORD SOURCE_DB_NAME GM_STORAGE
-envsubst < /work/greenmask.tmpl.yml > /tmp/greenmask.yml
+PROFILE_FILE="/work/profiles/${MASK_PROFILE}.yml"
+[ -f "$PROFILE_FILE" ] || PROFILE_FILE="/work/greenmask.tmpl.yml"
+say "using masking profile: ${MASK_PROFILE} (${PROFILE_FILE}); jobs=${GM_JOBS}"
+envsubst < "$PROFILE_FILE" > /tmp/greenmask.yml
 say "rendered config:"; sed 's/password=[^ ]*/password=***/' /tmp/greenmask.yml
 
 # 2. masked dump from source
@@ -38,7 +55,7 @@ say "restoring masked dump into ${TARGET_DB_NAME} ..."
 set +e
 greenmask --config /tmp/greenmask.yml restore latest \
   -h "${TARGET_DB_HOST}" -p "${TARGET_DB_PORT}" -U "${TARGET_DB_USER}" -d "${TARGET_DB_NAME}" \
-  --no-owner --no-privileges --jobs 4
+  --no-owner --no-privileges --jobs "${GM_JOBS}"
 set -e
 PSQL_T="psql -v ON_ERROR_STOP=1 -h ${TARGET_DB_HOST} -p ${TARGET_DB_PORT} -U ${TARGET_DB_USER} -d ${TARGET_DB_NAME}"
 GOT="$($PSQL_T -A -t -c "SELECT to_regclass('public.res_partner');" || true)"
@@ -46,22 +63,28 @@ GOT="$($PSQL_T -A -t -c "SELECT to_regclass('public.res_partner');" || true)"
 say "restore verified (res_partner present)."
 
 # 5. neutralize (guard each table: modules like fetchmail/payment may be absent)
-say "neutralizing ..."
-$PSQL_T <<'SQL'
-DO $$ BEGIN
-  IF to_regclass('public.ir_mail_server') IS NOT NULL THEN
+#    each step is individually toggleable via NEUTRALIZE_* env vars.
+say "neutralizing (mail=${NEUTRALIZE_MAIL} fetchmail=${NEUTRALIZE_FETCHMAIL} payment=${NEUTRALIZE_PAYMENT} smtp_param=${NEUTRALIZE_SMTP_PARAM}) ..."
+export N_MAIL N_FETCH N_PAY N_SMTP
+is_true "$NEUTRALIZE_MAIL"      && N_MAIL=1  || N_MAIL=0
+is_true "$NEUTRALIZE_FETCHMAIL" && N_FETCH=1 || N_FETCH=0
+is_true "$NEUTRALIZE_PAYMENT"   && N_PAY=1   || N_PAY=0
+is_true "$NEUTRALIZE_SMTP_PARAM" && N_SMTP=1 || N_SMTP=0
+$PSQL_T <<SQL
+DO \$\$ BEGIN
+  IF ${N_MAIL} = 1 AND to_regclass('public.ir_mail_server') IS NOT NULL THEN
     UPDATE ir_mail_server SET active=false, smtp_host=NULL, smtp_user=NULL, smtp_pass=NULL;
   END IF;
-  IF to_regclass('public.fetchmail_server') IS NOT NULL THEN
+  IF ${N_FETCH} = 1 AND to_regclass('public.fetchmail_server') IS NOT NULL THEN
     EXECUTE 'UPDATE fetchmail_server SET active=false, password=NULL, "user"=NULL';
   END IF;
-  IF to_regclass('public.payment_provider') IS NOT NULL THEN
+  IF ${N_PAY} = 1 AND to_regclass('public.payment_provider') IS NOT NULL THEN
     UPDATE payment_provider SET state='disabled';
   END IF;
-  IF to_regclass('public.ir_config_parameter') IS NOT NULL THEN
+  IF ${N_SMTP} = 1 AND to_regclass('public.ir_config_parameter') IS NOT NULL THEN
     UPDATE ir_config_parameter SET value='0' WHERE key='mail.force.smtp.from' AND value IS NOT NULL;
   END IF;
-END $$;
+END \$\$;
 SQL
 
 # 6. set admin password (pbkdf2-sha512, Odoo passlib scheme)
@@ -74,7 +97,12 @@ PY
 )"
 UID_ADMIN="$($PSQL_T -A -t -c "SELECT res_id FROM ir_model_data WHERE module='base' AND name='user_admin' LIMIT 1;" || true)"
 [ -n "$UID_ADMIN" ] || UID_ADMIN=2
-$PSQL_T -c "UPDATE res_users SET password='${HASH}', login='admin' WHERE id=${UID_ADMIN};"
-say "admin uid ${UID_ADMIN} password + login('admin') set."
+if is_true "$RESET_ADMIN_LOGIN"; then
+  $PSQL_T -c "UPDATE res_users SET password='${HASH}', login='admin' WHERE id=${UID_ADMIN};"
+  say "admin uid ${UID_ADMIN} password + login('admin') set."
+else
+  $PSQL_T -c "UPDATE res_users SET password='${HASH}' WHERE id=${UID_ADMIN};"
+  say "admin uid ${UID_ADMIN} password set (login unchanged)."
+fi
 
 say "DONE: masked replica ready in ${TARGET_DB_NAME}@${TARGET_DB_HOST}"

@@ -7,14 +7,22 @@ the browser, and shows the source/target Odoo URLs when a run finishes.
 
 ## What it does
 
-- **restore** — recreate the `source` DB and stream a presigned-S3 `dump.sql`
-  into it (masker image), then report `res_partner` / `res_users` counts.
-- **mask** — run greenmask `source → masked`, neutralize, set the admin
-  password, then surface the target ALB URL.
+- **restore** — load a dump into a target database. The dump source is
+  **selectable**:
+  - `dump.sql` via URL
+  - Odoo backup `.zip` via URL (dump.sql extracted from it)
+  - upload a `dump.sql` (staged to S3, then streamed in)
+  - upload an Odoo backup `.zip` (staged to S3, extracted, streamed in)
+  - a **live database DSN** (`postgresql://…`) — `pg_dump`'d straight into the target
+- **mask** — run greenmask `source → target` using a selectable **masking
+  profile**, then neutralize (per-step **toggles**) and set the admin password.
 
-It reads all infra values from the repo's [config.env](../config.env) and
-[deploy/state.env](../deploy/state.env), so there is **no config duplication** —
-whatever the pipeline uses, the panel uses.
+All inputs are driven by [config.yml](config.yml): named **connection profiles**
+(secrets resolved server-side from env vars — never sent to the browser),
+**mask profiles** (map to `masker/profiles/<id>.yml`), restore **source types**,
+and neutralize **toggle defaults**. Infra values come from the repo's
+[config.env](../config.env) and [deploy/state.env](../deploy/state.env), so there
+is **no config duplication and nothing hardcoded**.
 
 ## Architecture
 
@@ -69,7 +77,22 @@ logs permissions above, instead of static keys.)
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET  | `/api/config` | non-secret infra summary |
-| POST | `/api/runs` | start a run `{operation, dump_url?, admin_password?}` |
+| GET  | `/api/profiles` | connection profiles, mask profiles, restore source types, toggle defaults |
+| POST | `/api/upload` | stage an uploaded `.sql`/`.zip` to S3 → returns a presigned URL |
+| POST | `/api/runs` | start a run (restore/mask) with the selected inputs |
 | GET  | `/api/runs` | recent runs |
 | GET  | `/api/runs/{id}` | run detail (status, result, urls) |
 | GET  | `/api/runs/{id}/logs` | SSE log stream |
+
+## Masker knobs (env, honored by `masker/entrypoint.sh`)
+
+The panel passes these to the masker task; they're all overridable and default
+safely, so the masker also stays fully configurable when run outside the panel:
+
+`MASK_PROFILE` (which `profiles/<id>.yml`), `GM_JOBS`, `NEUTRALIZE_MAIL`,
+`NEUTRALIZE_FETCHMAIL`, `NEUTRALIZE_PAYMENT`, `NEUTRALIZE_SMTP_PARAM`,
+`RESET_ADMIN_LOGIN`.
+
+> Note: changes to `masker/entrypoint.sh` / `masker/profiles/` require
+> rebuilding + pushing the masker image (`deploy/02_build_push.sh`) to take
+> effect on real runs.

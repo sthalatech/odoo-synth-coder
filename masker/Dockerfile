@@ -17,6 +17,7 @@ RUN curl -fsSL -o /tmp/gm.tgz \
 
 WORKDIR /work
 COPY rules/ /work/rules/
+COPY profiles/ /work/profiles/
 COPY greenmask.tmpl.yml /work/greenmask.tmpl.yml
 COPY entrypoint.sh /work/entrypoint.sh
 RUN chmod +x /work/entrypoint.sh

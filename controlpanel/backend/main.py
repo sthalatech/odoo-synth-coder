@@ -16,12 +16,12 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import config, pipeline, store
+from . import config, pipeline, store, uploads
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
@@ -96,8 +96,23 @@ def _worker(run_id: str, operation: str, params: dict) -> None:
 
 class RunRequest(BaseModel):
     operation: str  # "restore" | "mask"
-    dump_url: Optional[str] = None
+    # restore inputs
+    source_type: Optional[str] = None      # sql_url|zip_url|sql_upload|zip_upload|db_dsn
+    url: Optional[str] = None              # resolved URL (direct, or from an upload)
+    dsn: Optional[str] = None              # for db_dsn
+    target_conn: Optional[str] = None      # connection profile id
+    source_conn: Optional[str] = None      # connection profile id (mask)
+    source_db: Optional[str] = None        # override db name on the source conn
+    target_db: Optional[str] = None        # override db name on the target conn
+    # mask inputs
+    mask_profile: Optional[str] = None
     admin_password: Optional[str] = None
+    gm_jobs: Optional[int] = None
+    neutralize_mail: Optional[bool] = None
+    neutralize_fetchmail: Optional[bool] = None
+    neutralize_payment: Optional[bool] = None
+    neutralize_smtp_param: Optional[bool] = None
+    reset_admin_login: Optional[bool] = None
 
 
 # ---------------------------------------------------------------------------
@@ -124,24 +139,64 @@ def api_config() -> dict:
     }
 
 
+@app.get("/api/profiles")
+def api_profiles() -> dict:
+    """Non-secret metadata that drives the form: connection profiles (id+label
+    only), mask profiles, restore source types, and toggle defaults."""
+    conns = [{"id": c["id"], "label": c.get("label", c["id"]),
+              "dbname": config.get(c["dbname_env"]) if c.get("dbname_env") else c.get("dbname")}
+             for c in config.connection_profiles()]
+    return {
+        "connections": conns,
+        "mask_profiles": config.mask_profiles(),
+        "restore_source_types": config.restore_source_types(),
+        "neutralize_defaults": config.neutralize_defaults(),
+        "reset_admin_login": config.panel().get("reset_admin_login", True),
+        "gm_jobs": config.neutralize_defaults().get("gm_jobs", 4),
+        "upload_enabled": bool(config.dump_s3_bucket()),
+    }
+
+
+@app.post("/api/upload")
+async def api_upload(file: UploadFile = File(...)) -> dict:
+    """Stage an uploaded .sql/.zip to S3 and return a presigned URL the caller
+    passes back into POST /api/runs as `url`."""
+    try:
+        url = uploads.stage_upload(file.file, file.filename or "upload.bin")
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, f"upload failed: {exc}")
+    return {"url": url, "filename": file.filename}
+
+
 @app.post("/api/runs")
 def api_start_run(req: RunRequest) -> dict:
     if req.operation not in ("restore", "mask"):
         raise HTTPException(400, "operation must be 'restore' or 'mask'")
-    if req.operation == "restore" and not req.dump_url:
-        raise HTTPException(400, "restore requires dump_url (presigned S3 URL)")
+
+    if req.operation == "restore":
+        if not req.source_type:
+            raise HTTPException(400, "restore requires source_type")
+        needs_url = req.source_type in ("sql_url", "zip_url", "sql_upload", "zip_upload")
+        if needs_url and not req.url:
+            raise HTTPException(400, f"{req.source_type} requires a url")
+        if req.source_type == "db_dsn" and not req.dsn:
+            raise HTTPException(400, "db_dsn requires a dsn")
 
     run_id = uuid.uuid4().hex[:12]
-    # redact nothing sensitive is stored beyond what's needed; dump_url is a
-    # short-lived presigned URL, keep only a marker
     stored_params = {
         "operation": req.operation,
-        "dump_url_present": bool(req.dump_url),
+        "source_type": req.source_type,
+        "source_conn": req.source_conn,
+        "target_conn": req.target_conn,
+        "target_db": req.target_db,
+        "mask_profile": req.mask_profile,
+        "url_present": bool(req.url),
+        "dsn_present": bool(req.dsn),
         "admin_password_set": bool(req.admin_password),
     }
     store.create_run(run_id, req.operation, stored_params)
 
-    params = {"dump_url": req.dump_url, "admin_password": req.admin_password}
+    params = req.model_dump()
     threading.Thread(
         target=_worker, args=(run_id, req.operation, params), daemon=True
     ).start()

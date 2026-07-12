@@ -1,0 +1,22 @@
+# greenmask masking profile: "minimal-demo"
+# Names + emails only on res_partner. Useful for quick demos / smoke tests.
+common:
+  pg_bin_path: "/usr/lib/postgresql/16/bin"
+  tmp_dir: /tmp
+log:
+  level: info
+storage:
+  type: directory
+  directory:
+    path: ${GM_STORAGE}
+dump:
+  pg_dump_options:
+    dbname: "host=${SOURCE_DB_HOST} port=${SOURCE_DB_PORT} user=${SOURCE_DB_USER} password=${SOURCE_DB_PASSWORD} dbname=${SOURCE_DB_NAME}"
+    jobs: ${GM_JOBS}
+  transformation:
+    - schema: public
+      name: res_partner
+      apply_for_inherited: true
+      transformers:
+        - {name: Replace, params: {column: name, value: "REDACTED NAME", keep_null: true}}
+        - {name: RandomEmail, params: {column: email, keep_null: true}}
