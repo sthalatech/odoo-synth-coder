@@ -130,10 +130,7 @@ def api_config() -> dict:
         "destination_db": dest.get("dbname"),
         "destination_host": dest.get("host"),
         "masked_cluster": config.get("ECS_CLUSTER"),
-        "target_url": (
-            f"http://{config.get('ALB_DNS')}/web/login"
-            if config.get("ALB_DNS") else None
-        ),
+
     }
 
 

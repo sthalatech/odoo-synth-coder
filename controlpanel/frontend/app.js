@@ -36,7 +36,6 @@ async function loadConfig() {
     const parts = [];
     if (c.region) parts.push(`region <b>${c.region}</b>`);
     if (c.destination_db) parts.push(`destination <b>${c.destination_db}</b>`);
-    if (c.target_url) parts.push(`<a href="${c.target_url}" target="_blank">masked&nbsp;UI ↗</a>`);
     $("infobar").innerHTML = parts.join("<br>");
   } catch (e) {
     $("infobar").textContent = "config unavailable";
@@ -48,21 +47,25 @@ function card(k, v) {
 }
 async function renderOverview() {
   const c = CONFIG || {};
-  let running = 0, total = 0, lastOk = "—";
+  let running = 0, total = 0, lastOk = "—", lastMaskedUi = "—";
   try {
     const { runs } = await (await fetch("/api/runs")).json();
     total = runs.length;
     running = runs.filter((r) => r.status === "running" || r.status === "queued").length;
     const ok = runs.find((r) => r.status === "succeeded");
     if (ok && ok.started_at) lastOk = new Date(ok.started_at * 1000).toLocaleString();
+    const okUrl = ok && ok.result && ok.result.target_url;
+    if (okUrl) lastMaskedUi = `<a href="${okUrl}" target="_blank">open ↗</a>`;
     const tb = document.querySelector("#overview-runs tbody");
     tb.innerHTML = "";
     for (const r of runs.slice(0, 6)) {
       const started = r.started_at ? new Date(r.started_at * 1000).toLocaleString() : "—";
+      const url = r.result && r.result.target_url;
       const tr = document.createElement("tr");
       tr.className = "clickable";
       tr.innerHTML = `<td class="mono">${r.id}</td><td class="st-${r.status}">${r.status}</td>` +
-        `<td>${r.exit_code ?? "—"}</td><td>${started}</td>`;
+        `<td>${r.exit_code ?? "—"}</td><td>${started}</td>` +
+        `<td>${url ? `<a href="${url}" target="_blank" onclick="event.stopPropagation()">open ↗</a>` : "—"}</td>`;
       tr.onclick = () => { location.hash = "#/runs"; setTimeout(() => openRun(r.id), 0); };
       tb.appendChild(tr);
     }
@@ -73,7 +76,7 @@ async function renderOverview() {
     card("Total runs", total) +
     card("Running", running) +
     card("Last success", lastOk) +
-    card("Masked UI", c.target_url ? `<a href="${c.target_url}" target="_blank">open ↗</a>` : "—");
+    card("Latest masked UI", lastMaskedUi);
 }
 
 
@@ -167,10 +170,12 @@ async function loadRuns() {
       const tr = document.createElement("tr");
       tr.className = "clickable";
       const started = r.started_at ? new Date(r.started_at * 1000).toLocaleString() : "—";
+      const url = r.result && r.result.target_url;
       tr.innerHTML =
         `<td class="mono">${r.id}</td><td>${r.operation}</td>` +
         `<td class="st-${r.status}">${r.status}</td>` +
-        `<td>${r.exit_code ?? "—"}</td><td>${started}</td>`;
+        `<td>${r.exit_code ?? "—"}</td><td>${started}</td>` +
+        `<td>${url ? `<a href="${url}" target="_blank" onclick="event.stopPropagation()">open ↗</a>` : "—"}</td>`;
       tr.onclick = () => openRun(r.id);
       tb.appendChild(tr);
     }

@@ -109,11 +109,16 @@ def get_run(run_id: str) -> dict[str, Any] | None:
 
 def list_runs(limit: int = 50) -> list[dict[str, Any]]:
     rows = _conn().execute(
-        "SELECT id, operation, status, exit_code, created_at, started_at, finished_at "
+        "SELECT id, operation, status, exit_code, created_at, started_at, finished_at, result "
         "FROM runs ORDER BY created_at DESC LIMIT ?",
         (limit,),
     ).fetchall()
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["result"] = json.loads(d["result"]) if d.get("result") else None
+        out.append(d)
+    return out
 
 
 def get_logs(run_id: str, after_seq: int = 0) -> list[dict[str, Any]]:
