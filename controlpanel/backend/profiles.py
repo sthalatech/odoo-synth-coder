@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import uuid
 from typing import Any, Optional
+from urllib.parse import quote
 
 import boto3
 
@@ -46,6 +47,13 @@ def _delete_secret(arn: Optional[str]) -> None:
             SecretId=arn, ForceDeleteWithoutRecovery=True)
     except Exception:  # noqa: BLE001
         pass
+
+
+def _get_secret(arn: Optional[str]) -> str:
+    if not arn:
+        return ""
+    sm = boto3.client("secretsmanager", region_name=_region())
+    return sm.get_secret_value(SecretId=arn).get("SecretString", "")
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +161,39 @@ def public_view(p: dict[str, Any]) -> dict[str, Any]:
     for k in ("source_password_secret", "ssh_key_secret", "git_token_secret"):
         d[k + "_set"] = bool(d.pop(k, None))
     return d
+
+
+def run_params(profile_id: str, overrides: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """Reconstruct the pipeline params for a mask run from a saved profile.
+
+    Fetches the source password + SSH key from Secrets Manager and rebuilds the
+    source DSN and mask inputs so the pipeline can run unchanged. ``overrides``
+    may carry per-run knobs (e.g. ``produce_dump``) supplied at launch time.
+    """
+    p = store.get_profile(profile_id)
+    if not p:
+        raise KeyError(profile_id)
+
+    conn = p.get("source_conn") or {}
+    if not conn.get("host"):
+        raise ValueError("profile has no source connection configured")
+    password = _get_secret(p.get("source_password_secret"))
+    user = quote(conn.get("user") or "postgres", safe="")
+    auth = f"{user}:{quote(password, safe='')}@" if password else f"{user}@"
+    source_dsn = (f"postgresql://{auth}{conn['host']}:{conn.get('port', 5432)}"
+                  f"/{conn.get('dbname', '')}")
+
+    params: dict[str, Any] = {
+        "operation": "mask",
+        "source_dsn": source_dsn,
+        "ssh_enabled": bool(conn.get("ssh_enabled")),
+        "ssh_bastion": conn.get("ssh_bastion"),
+        "ssh_key": _get_secret(p.get("ssh_key_secret")) if conn.get("ssh_enabled") else None,
+    }
+    params.update(p.get("mask_inputs") or {})
+    if overrides:
+        params.update({k: v for k, v in overrides.items() if v is not None})
+    return params
 
 
 # ---------------------------------------------------------------------------

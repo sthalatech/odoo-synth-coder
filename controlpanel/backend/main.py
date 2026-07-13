@@ -97,6 +97,8 @@ def _worker(run_id: str, operation: str, params: dict) -> None:
 
 class RunRequest(BaseModel):
     operation: str = "mask"
+    # PROFILE path: run from a saved profile (source + mask inputs come from it)
+    profile_id: Optional[str] = None
     # SOURCE: a live Postgres DB the user points at
     source_dsn: Optional[str] = None       # postgresql://user:pass@host:port/db
     # optional SSH tunnel to reach the source through a bastion
@@ -234,37 +236,63 @@ def api_delete_profile(profile_id: str) -> dict:
 def api_start_run(req: RunRequest) -> dict:
     if req.operation != "mask":
         raise HTTPException(400, "operation must be 'mask'")
-    if not req.source_dsn:
-        raise HTTPException(400, "source database URL (postgresql://…) is required")
-    try:
-        pipeline.parse_dsn(req.source_dsn)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(400, f"invalid source URL: {exc}")
 
-    if req.ssh_enabled:
-        if not req.ssh_bastion:
-            raise HTTPException(400, "SSH tunnel enabled but bastion (user@host[:port]) is missing")
-        if not req.ssh_key:
-            raise HTTPException(400, "SSH tunnel enabled but private key is missing")
+    profile_id = req.profile_id
+    if profile_id:
+        # PROFILE path: source + mask inputs come from the saved profile.
+        prof = store.get_profile(profile_id)
+        if not prof:
+            raise HTTPException(404, "profile not found")
         try:
-            pipeline.parse_bastion(req.ssh_bastion)
+            params = profiles.run_params(
+                profile_id, overrides={"produce_dump": req.produce_dump})
+        except (KeyError, ValueError) as exc:
+            raise HTTPException(400, f"cannot run profile: {exc}")
+        odoo_image = prof.get("image_uri")
+        stored_params = {
+            "operation": "mask",
+            "profile_id": profile_id,
+            "mask_profile": params.get("mask_profile"),
+            "source_present": True,
+            "ssh_enabled": bool(params.get("ssh_enabled")),
+            "produce_dump": bool(params.get("produce_dump")),
+            "odoo_image": odoo_image,
+        }
+    else:
+        # LEGACY inline path: caller supplies the source DSN + mask inputs.
+        if not req.source_dsn:
+            raise HTTPException(400, "source database URL (postgresql://…) is required")
+        try:
+            pipeline.parse_dsn(req.source_dsn)
         except Exception as exc:  # noqa: BLE001
-            raise HTTPException(400, f"invalid bastion: {exc}")
+            raise HTTPException(400, f"invalid source URL: {exc}")
+
+        if req.ssh_enabled:
+            if not req.ssh_bastion:
+                raise HTTPException(400, "SSH tunnel enabled but bastion (user@host[:port]) is missing")
+            if not req.ssh_key:
+                raise HTTPException(400, "SSH tunnel enabled but private key is missing")
+            try:
+                pipeline.parse_bastion(req.ssh_bastion)
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(400, f"invalid bastion: {exc}")
+
+        params = req.model_dump()
+        odoo_image = None
+        stored_params = {
+            "operation": req.operation,
+            "mask_profile": req.mask_profile,
+            "source_present": bool(req.source_dsn),
+            "ssh_enabled": bool(req.ssh_enabled),
+            "produce_dump": bool(req.produce_dump),
+            "admin_password_set": bool(req.admin_password),
+        }
 
     run_id = uuid.uuid4().hex[:12]
-    stored_params = {
-        "operation": req.operation,
-        "mask_profile": req.mask_profile,
-        "source_present": bool(req.source_dsn),
-        "ssh_enabled": bool(req.ssh_enabled),
-        "produce_dump": bool(req.produce_dump),
-        "admin_password_set": bool(req.admin_password),
-    }
-    store.create_run(run_id, req.operation, stored_params)
+    store.create_run(run_id, "mask", stored_params, profile_id=profile_id)
 
-    params = req.model_dump()
     threading.Thread(
-        target=_worker, args=(run_id, req.operation, params), daemon=True
+        target=_worker, args=(run_id, "mask", params), daemon=True
     ).start()
     return {"run_id": run_id}
 
