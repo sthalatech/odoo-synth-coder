@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import config, pipeline, store, environments
+from . import config, pipeline, store, environments, profiles
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
@@ -125,6 +125,41 @@ class EnvironmentRequest(BaseModel):
     repo_branch: Optional[str] = None      # branch/ref of the addons repo (optional)
 
 
+class ProfileRequest(BaseModel):
+    """A saved binding of a source system to its provenance code + image.
+
+    All fields optional so the same model can be used for create and PATCH.
+    """
+    label: Optional[str] = None
+    description: Optional[str] = None
+    # SOURCE connection (password is split out into Secrets Manager server-side)
+    source_dsn: Optional[str] = None       # postgresql://user:pass@host:port/db
+    # optional SSH tunnel to reach the source through a bastion
+    ssh_enabled: Optional[bool] = None
+    ssh_bastion: Optional[str] = None      # user@host[:port]
+    ssh_key: Optional[str] = None          # private key material (PEM) -> secret
+    git_token: Optional[str] = None        # PAT for private addons repo -> secret
+    # provenance (decision 2a: odoo_git_ref is manual)
+    odoo_series: Optional[str] = None      # e.g. "19.0"
+    odoo_git_url: Optional[str] = None
+    odoo_git_ref: Optional[str] = None
+    addons_git_url: Optional[str] = None
+    addons_git_ref: Optional[str] = None
+    # enterprise (decision 3: per-profile with explicit indicator)
+    needs_enterprise: Optional[bool] = None
+    enterprise_source: Optional[str] = None
+    # mask inputs saved with the profile
+    mask_profile: Optional[str] = None
+    admin_password: Optional[str] = None
+    gm_jobs: Optional[int] = None
+    neutralize_mail: Optional[bool] = None
+    neutralize_fetchmail: Optional[bool] = None
+    neutralize_payment: Optional[bool] = None
+    neutralize_smtp_param: Optional[bool] = None
+    reset_admin_login: Optional[bool] = None
+    produce_dump: Optional[bool] = None
+
+
 # ---------------------------------------------------------------------------
 # API
 # ---------------------------------------------------------------------------
@@ -142,9 +177,9 @@ def api_config() -> dict:
     }
 
 
-@app.get("/api/profiles")
-def api_profiles() -> dict:
-    """Non-secret metadata that drives the form."""
+@app.get("/api/mask-config")
+def api_mask_config() -> dict:
+    """Non-secret metadata that drives the mask form (mask rulesets, defaults)."""
     dest = config.destination()
     return {
         "mask_profiles": config.mask_profiles(),
@@ -155,6 +190,44 @@ def api_profiles() -> dict:
         "destination_label": config.panel().get("destination", {}).get("label", "managed"),
         "destination_db": dest.get("dbname"),
     }
+
+
+@app.get("/api/profiles")
+def api_list_profiles() -> dict:
+    return {"profiles": [profiles.public_view(p) for p in store.list_profiles()]}
+
+
+@app.post("/api/profiles")
+def api_create_profile(req: ProfileRequest) -> dict:
+    payload = {k: v for k, v in req.model_dump().items() if v is not None}
+    if not payload.get("label"):
+        raise HTTPException(400, "a profile label is required")
+    pid = profiles.create(payload)
+    return {"profile_id": pid}
+
+
+@app.get("/api/profiles/{profile_id}")
+def api_get_profile(profile_id: str) -> dict:
+    p = store.get_profile(profile_id)
+    if not p:
+        raise HTTPException(404, "profile not found")
+    return profiles.public_view(p)
+
+
+@app.patch("/api/profiles/{profile_id}")
+def api_update_profile(profile_id: str, req: ProfileRequest) -> dict:
+    payload = {k: v for k, v in req.model_dump().items() if v is not None}
+    try:
+        profiles.update(profile_id, payload)
+    except KeyError:
+        raise HTTPException(404, "profile not found")
+    return {"status": "updated"}
+
+
+@app.delete("/api/profiles/{profile_id}")
+def api_delete_profile(profile_id: str) -> dict:
+    profiles.delete(profile_id)
+    return {"status": "deleted"}
 
 
 @app.post("/api/runs")

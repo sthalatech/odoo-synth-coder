@@ -67,17 +67,70 @@ def init() -> None:
               created_at    REAL NOT NULL,
               updated_at    REAL
             );
+            CREATE TABLE IF NOT EXISTS profiles (
+              id                     TEXT PRIMARY KEY,
+              label                  TEXT NOT NULL,
+              description            TEXT,
+              -- source connection (non-secret parts) as json: host/port/dbname/
+              -- user/ssh_enabled/ssh_bastion. Secrets live in Secrets Manager.
+              source_conn            TEXT,
+              source_password_secret TEXT,       -- ARN
+              ssh_key_secret         TEXT,       -- ARN (optional bastion key)
+              git_token_secret       TEXT,       -- ARN (private addons clone)
+              -- saved mask inputs as json (mask_profile, neutralize_*, gm_jobs,
+              -- reset_admin_login) so they are not re-entered per run.
+              mask_inputs            TEXT,
+              -- provenance (2a: odoo_git_ref is a manual field; discovery only
+              -- suggests series + dump date).
+              odoo_series            TEXT,
+              odoo_git_url           TEXT,
+              odoo_git_ref           TEXT,
+              addons_git_url         TEXT,
+              addons_git_ref         TEXT,
+              needs_enterprise       INTEGER DEFAULT 0,   -- indicator
+              enterprise_source      TEXT,                -- per-profile enterprise ref
+              -- discovered artifacts (json lists)
+              python_deps            TEXT,
+              apt_deps               TEXT,
+              installed_modules      TEXT,
+              discovery_yaml_uri     TEXT,       -- s3://.../discovery.yaml
+              -- built image + lifecycle
+              image_uri              TEXT,       -- current immutable ECR tag
+              image_status           TEXT,       -- draft|discovering|discovered|building|ready|failed
+              image_history          TEXT,       -- json list of prior {uri,hash,created_at}
+              error                  TEXT,
+              created_at             REAL NOT NULL,
+              updated_at             REAL
+            );
             """
         )
+        _migrate(c)
         c.commit()
 
 
-def create_run(run_id: str, operation: str, params: dict[str, Any]) -> None:
+def _migrate(c: sqlite3.Connection) -> None:
+    """Additive, idempotent schema migrations (SQLite has no ADD COLUMN IF NOT
+    EXISTS, so we check pragma first)."""
+    def cols(table: str) -> set[str]:
+        return {r["name"] for r in c.execute(f"PRAGMA table_info({table})").fetchall()}
+
+    run_cols = cols("runs")
+    if "profile_id" not in run_cols:
+        c.execute("ALTER TABLE runs ADD COLUMN profile_id TEXT")
+    env_cols = cols("environments")
+    if "profile_id" not in env_cols:
+        c.execute("ALTER TABLE environments ADD COLUMN profile_id TEXT")
+
+
+
+def create_run(run_id: str, operation: str, params: dict[str, Any],
+               profile_id: str | None = None) -> None:
     with _write_lock:
         c = _conn()
         c.execute(
-            "INSERT INTO runs (id, operation, status, params, created_at) VALUES (?,?,?,?,?)",
-            (run_id, operation, "queued", json.dumps(params), time.time()),
+            "INSERT INTO runs (id, operation, status, params, profile_id, created_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (run_id, operation, "queued", json.dumps(params), profile_id, time.time()),
         )
         c.commit()
 
@@ -154,15 +207,16 @@ def get_logs(run_id: str, after_seq: int = 0) -> list[dict[str, Any]]:
 def create_environment(env_id: str, source_run_id: str | None, issue: str | None,
                        dump_s3_uri: str | None, repo_url: str | None = None,
                        repo_branch: str | None = None,
-                       odoo_image: str | None = None) -> None:
+                       odoo_image: str | None = None,
+                       profile_id: str | None = None) -> None:
     with _write_lock:
         c = _conn()
         c.execute(
             "INSERT INTO environments (id, source_run_id, issue, dump_s3_uri, "
-            "repo_url, repo_branch, odoo_image, status, created_at, updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "repo_url, repo_branch, odoo_image, profile_id, status, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (env_id, source_run_id, issue, dump_s3_uri, repo_url, repo_branch,
-             odoo_image, "pending", time.time(), time.time()),
+             odoo_image, profile_id, "pending", time.time(), time.time()),
         )
         c.commit()
 
@@ -200,3 +254,79 @@ def environments_by_run() -> dict[str, dict[str, Any]]:
             continue
         out.setdefault(rid, e)
     return out
+
+
+# ---------------------------------------------------------------------------
+# profiles (a source system bound to its matching provenance code + image)
+# ---------------------------------------------------------------------------
+
+# JSON-encoded columns on the profiles table.
+_PROFILE_JSON_COLS = {
+    "source_conn", "mask_inputs", "python_deps", "apt_deps",
+    "installed_modules", "image_history",
+}
+
+
+def _profile_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    d = dict(row)
+    for k in _PROFILE_JSON_COLS:
+        if d.get(k):
+            try:
+                d[k] = json.loads(d[k])
+            except (ValueError, TypeError):
+                d[k] = None
+    return d
+
+
+def create_profile(profile_id: str, label: str, **fields: Any) -> None:
+    fields.setdefault("image_status", "draft")
+    for k in list(fields):
+        if k in _PROFILE_JSON_COLS and fields[k] is not None:
+            fields[k] = json.dumps(fields[k])
+    keys = ["id", "label", "created_at", "updated_at", *fields.keys()]
+    vals = [profile_id, label, time.time(), time.time(), *fields.values()]
+    placeholders = ",".join("?" for _ in keys)
+    with _write_lock:
+        c = _conn()
+        c.execute(
+            f"INSERT INTO profiles ({','.join(keys)}) VALUES ({placeholders})",
+            vals,
+        )
+        c.commit()
+
+
+def update_profile(profile_id: str, **fields: Any) -> None:
+    if not fields:
+        return
+    for k in list(fields):
+        if k in _PROFILE_JSON_COLS and fields[k] is not None:
+            fields[k] = json.dumps(fields[k])
+    fields["updated_at"] = time.time()
+    cols = ", ".join(f"{k}=?" for k in fields)
+    vals = list(fields.values())
+    with _write_lock:
+        c = _conn()
+        c.execute(f"UPDATE profiles SET {cols} WHERE id=?", (*vals, profile_id))
+        c.commit()
+
+
+def get_profile(profile_id: str) -> dict[str, Any] | None:
+    row = _conn().execute(
+        "SELECT * FROM profiles WHERE id=?", (profile_id,)
+    ).fetchone()
+    return _profile_row_to_dict(row) if row else None
+
+
+def list_profiles(limit: int = 100) -> list[dict[str, Any]]:
+    rows = _conn().execute(
+        "SELECT * FROM profiles ORDER BY created_at DESC LIMIT ?", (limit,)
+    ).fetchall()
+    return [_profile_row_to_dict(r) for r in rows]
+
+
+def delete_profile(profile_id: str) -> None:
+    with _write_lock:
+        c = _conn()
+        c.execute("DELETE FROM profiles WHERE id=?", (profile_id,))
+        c.commit()
+

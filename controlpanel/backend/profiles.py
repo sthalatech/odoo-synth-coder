@@ -1,0 +1,168 @@
+"""Profile lifecycle: a *profile* binds a specific source system to its matching
+provenance (Odoo core ref + addons repo/ref + discovered deps) and the immutable
+Odoo image built from that provenance. Mask runs and developer environments are
+launched *from* a profile, so the data and the code always match.
+
+Secrets (source DB password, SSH bastion key, git token) are stored in AWS
+Secrets Manager and referenced by ARN; only non-secret metadata lives in SQLite.
+"""
+from __future__ import annotations
+
+import uuid
+from typing import Any, Optional
+
+import boto3
+
+from . import config, store
+from .pipeline import parse_dsn
+
+
+def _region() -> str:
+    return config.require("AWS_REGION")
+
+
+def _secret_prefix() -> str:
+    e = config.environments_cfg() if hasattr(config, "environments_cfg") else {}
+    return (e.get("secret_prefix") or "odoo-synth/env").rsplit("/", 1)[0] + "/profile"
+
+
+def _put_secret(name: str, value: str) -> str:
+    """Create-or-update a Secrets Manager secret; return its ARN."""
+    sm = boto3.client("secretsmanager", region_name=_region())
+    try:
+        resp = sm.create_secret(Name=name, SecretString=value,
+                                Description="odoo-synth profile secret")
+        return resp["ARN"]
+    except sm.exceptions.ResourceExistsException:
+        sm.put_secret_value(SecretId=name, SecretString=value)
+        return sm.describe_secret(SecretId=name)["ARN"]
+
+
+def _delete_secret(arn: Optional[str]) -> None:
+    if not arn:
+        return
+    try:
+        boto3.client("secretsmanager", region_name=_region()).delete_secret(
+            SecretId=arn, ForceDeleteWithoutRecovery=True)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+# ---------------------------------------------------------------------------
+# CRUD orchestration
+# ---------------------------------------------------------------------------
+
+def create(payload: dict[str, Any]) -> str:
+    """Create a profile from a form payload. Secrets are extracted from the
+    payload, written to Secrets Manager, and only their ARNs are persisted."""
+    profile_id = payload.get("id") or ("prof_" + uuid.uuid4().hex[:8])
+    label = payload.get("label") or profile_id
+
+    fields: dict[str, Any] = {
+        "description": payload.get("description"),
+        "odoo_series": payload.get("odoo_series"),
+        "odoo_git_url": payload.get("odoo_git_url") or "https://github.com/odoo/odoo",
+        "odoo_git_ref": payload.get("odoo_git_ref"),          # manual (decision 2a)
+        "addons_git_url": payload.get("addons_git_url"),
+        "addons_git_ref": payload.get("addons_git_ref"),
+        "needs_enterprise": 1 if payload.get("needs_enterprise") else 0,
+        "enterprise_source": payload.get("enterprise_source"),
+        "mask_inputs": _mask_inputs(payload),
+        "image_status": "draft",
+    }
+
+    # source connection: split DSN into non-secret conn + password secret
+    dsn = payload.get("source_dsn")
+    if dsn:
+        p = parse_dsn(dsn)
+        fields["source_conn"] = {
+            "host": p["host"], "port": p["port"], "dbname": p["dbname"],
+            "user": p["user"],
+            "ssh_enabled": bool(payload.get("ssh_enabled")),
+            "ssh_bastion": payload.get("ssh_bastion"),
+        }
+        if p["password"]:
+            fields["source_password_secret"] = _put_secret(
+                f"{_secret_prefix()}/{profile_id}/source-password", p["password"])
+
+    if payload.get("ssh_key"):
+        fields["ssh_key_secret"] = _put_secret(
+            f"{_secret_prefix()}/{profile_id}/ssh-key", payload["ssh_key"])
+    if payload.get("git_token"):
+        fields["git_token_secret"] = _put_secret(
+            f"{_secret_prefix()}/{profile_id}/git-token", payload["git_token"])
+
+    store.create_profile(profile_id, label, **fields)
+    return profile_id
+
+
+def update(profile_id: str, payload: dict[str, Any]) -> None:
+    existing = store.get_profile(profile_id)
+    if not existing:
+        raise KeyError(profile_id)
+
+    fields: dict[str, Any] = {}
+    for k in ("label", "description", "odoo_series", "odoo_git_url",
+              "odoo_git_ref", "addons_git_url", "addons_git_ref",
+              "enterprise_source"):
+        if k in payload:
+            fields[k] = payload[k]
+    if "needs_enterprise" in payload:
+        fields["needs_enterprise"] = 1 if payload["needs_enterprise"] else 0
+    if any(k in payload for k in _MASK_KEYS):
+        merged = dict(existing.get("mask_inputs") or {})
+        merged.update(_mask_inputs(payload))
+        fields["mask_inputs"] = merged
+
+    dsn = payload.get("source_dsn")
+    if dsn:
+        p = parse_dsn(dsn)
+        fields["source_conn"] = {
+            "host": p["host"], "port": p["port"], "dbname": p["dbname"],
+            "user": p["user"],
+            "ssh_enabled": bool(payload.get("ssh_enabled",
+                                            (existing.get("source_conn") or {}).get("ssh_enabled"))),
+            "ssh_bastion": payload.get("ssh_bastion",
+                                       (existing.get("source_conn") or {}).get("ssh_bastion")),
+        }
+        if p["password"]:
+            fields["source_password_secret"] = _put_secret(
+                f"{_secret_prefix()}/{profile_id}/source-password", p["password"])
+    if payload.get("ssh_key"):
+        fields["ssh_key_secret"] = _put_secret(
+            f"{_secret_prefix()}/{profile_id}/ssh-key", payload["ssh_key"])
+    if payload.get("git_token"):
+        fields["git_token_secret"] = _put_secret(
+            f"{_secret_prefix()}/{profile_id}/git-token", payload["git_token"])
+
+    store.update_profile(profile_id, **fields)
+
+
+def delete(profile_id: str) -> None:
+    p = store.get_profile(profile_id)
+    if not p:
+        return
+    for k in ("source_password_secret", "ssh_key_secret", "git_token_secret"):
+        _delete_secret(p.get(k))
+    store.delete_profile(profile_id)
+
+
+def public_view(p: dict[str, Any]) -> dict[str, Any]:
+    """A profile dict safe to return to the UI: secret ARNs replaced by booleans."""
+    d = dict(p)
+    for k in ("source_password_secret", "ssh_key_secret", "git_token_secret"):
+        d[k + "_set"] = bool(d.pop(k, None))
+    return d
+
+
+# ---------------------------------------------------------------------------
+
+_MASK_KEYS = (
+    "mask_profile", "admin_password", "gm_jobs", "neutralize_mail",
+    "neutralize_fetchmail", "neutralize_payment", "neutralize_smtp_param",
+    "reset_admin_login", "produce_dump",
+)
+
+
+def _mask_inputs(payload: dict[str, Any]) -> dict[str, Any]:
+    return {k: payload[k] for k in _MASK_KEYS if k in payload and payload[k] is not None}

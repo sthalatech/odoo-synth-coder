@@ -146,7 +146,7 @@ function opt(value, label) {
 }
 
 async function loadProfiles() {
-  PROFILES = await (await fetch("/api/profiles")).json();
+  PROFILES = await (await fetch("/api/mask-config")).json();
 
   const mp = $("mask_profile");
   mp.innerHTML = "";
