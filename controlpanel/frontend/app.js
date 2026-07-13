@@ -346,8 +346,19 @@ function profileColumns() {
       formatter: (c) => c.getValue() || "—" },
     { title: "ent", field: "needs_enterprise", width: 60, hozAlign: "center",
       formatter: (c) => (c.getValue() ? "✓" : "—") },
+    { title: "deps", field: "deps", width: 70, hozAlign: "center",
+      formatter: (c) => {
+        const d = c.getRow().getData();
+        if (!d.modules && !c.getValue()) return "—";
+        return `<span title="${d.modules} installed modules">${c.getValue()}</span>`;
+      } },
     { title: "image", field: "image_status", width: 110,
-      formatter: (c) => profileStatusBadge(c.getValue()) },
+      formatter: (c) => {
+        const err = (c.getRow().getData()._raw || {}).error;
+        const s = c.getValue();
+        const badge = profileStatusBadge(s);
+        return err ? `<span title="${String(err).replace(/"/g, "&quot;")}">${badge} ⚠</span>` : badge;
+      } },
     { title: "", field: "id", hozAlign: "center", width: 260, headerSort: false,
       formatter: (c) => {
         const d = c.getRow().getData();
@@ -374,6 +385,8 @@ function profileRow(p) {
   return {
     id: p.id, label: p.label, source: src, odoo_series: p.odoo_series,
     needs_enterprise: p.needs_enterprise, image_status: p.image_status,
+    deps: (p.python_deps || []).length,
+    modules: (p.installed_modules || []).length,
     _raw: p,
   };
 }
@@ -767,4 +780,5 @@ setInterval(() => {
   loadRuns();
   if (currentRoute() === "overview") renderOverview();
   if (currentRoute() === "environments") loadEnvironments();
+  if (currentRoute() === "profiles") loadProfilesList();
 }, 10000);
