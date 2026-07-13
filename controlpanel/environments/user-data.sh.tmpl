@@ -174,6 +174,25 @@ if [ -n "$ODOO_IMAGE" ]; then
   fi
 fi
 
+# --- 5c. odoo health probe + log surfacing ---------------------------------
+# Odoo may crash while building its registry (e.g. a module fails to import).
+# Surface the container logs to the cloud-init console log AND to a file the
+# developer can open in VS Code, so failures are diagnosable without SSH.
+if [ -n "$ODOO_IMAGE" ]; then
+  sleep 15
+  ODOO_STATUS="$(docker inspect -f '{{.State.Status}}' env-odoo 2>/dev/null || echo missing)"
+  HTTP="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:${ODOO_PORT}/web/login 2>/dev/null || echo 000)"
+  echo "[env __ENV_ID__] odoo container=${ODOO_STATUS} http=${HTTP}"
+  install -d -o dev -g dev /home/dev/workspace
+  docker logs --tail 200 env-odoo > /home/dev/workspace/odoo.log 2>&1 || true
+  chown dev:dev /home/dev/workspace/odoo.log 2>/dev/null || true
+  if [ "$ODOO_STATUS" != "running" ] || [ "$HTTP" = "500" ] || [ "$HTTP" = "000" ]; then
+    echo "[env __ENV_ID__] ===== odoo logs (tail) ====="
+    docker logs --tail 60 env-odoo 2>&1 | sed 's/^/[odoo] /' || true
+    echo "[env __ENV_ID__] ===== end odoo logs ====="
+  fi
+fi
+
 # --- 6. code-server password (per-env, from Secrets Manager) ---------------
 CODE_PASS="$(aws secretsmanager get-secret-value --secret-id "$SECRET_ARN" \
     --region "$REGION" --query SecretString --output text 2>/dev/null || echo '')"
