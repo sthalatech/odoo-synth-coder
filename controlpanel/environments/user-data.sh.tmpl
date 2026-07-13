@@ -146,6 +146,46 @@ if [ -n "$ODOO_IMAGE" ]; then
     "$ODOO_IMAGE" || echo "[env __ENV_ID__] odoo container failed to start"
   echo "[env __ENV_ID__] odoo on :${ODOO_PORT} (masked DB, live addons from repo)"
 
+  # --- 5a. install the addons' Python deps into the odoo container -----------
+  # The baked odoo image carries only the deps discovered for ITS provenance.
+  # A different addons repo may declare extra external_dependencies (python) in
+  # its module manifests; without them Odoo crashes building the registry
+  # (ModuleNotFoundError). Collect them from the mounted manifests + any
+  # requirements.txt in the repo, pip install into the container, then restart.
+  if [ -d "$REPO_DIR" ]; then
+    DEPS="$(docker exec env-odoo python3 - <<'PY' 2>/dev/null || true
+import ast, glob
+# import-name -> pip-name for the common Odoo mismatches; others pass through.
+MAP = {"dateutil": "python-dateutil", "ldap": "python-ldap", "Crypto": "pycryptodome",
+       "jwt": "pyjwt", "OpenSSL": "pyOpenSSL", "PIL": "Pillow", "yaml": "PyYAML",
+       "bs4": "beautifulsoup4", "magic": "python-magic", "wand": "Wand"}
+pkgs = set()
+for m in glob.glob('/mnt/live/**/__manifest__.py', recursive=True):
+    try:
+        d = ast.literal_eval(open(m).read())
+    except Exception:
+        continue
+    for p in ((d.get('external_dependencies') or {}).get('python') or []):
+        pkgs.add(MAP.get(p, p))
+print(' '.join(sorted(pkgs)))
+PY
+)"
+    REQS="$(find "$REPO_DIR" -maxdepth 3 -name requirements.txt 2>/dev/null | head -5)"
+    if [ -n "$DEPS" ] || [ -n "$REQS" ]; then
+      echo "[env __ENV_ID__] installing addon python deps: ${DEPS:-<none>} $( [ -n "$REQS" ] && echo '+ requirements.txt' )"
+      REQ_ARGS=""
+      for r in $REQS; do REQ_ARGS="$REQ_ARGS -r /mnt/live/${r#$REPO_DIR/}"; done
+      # shellcheck disable=SC2086
+      docker exec env-odoo pip install --no-cache-dir $DEPS $REQ_ARGS \
+        >/home/dev/workspace/pip-addons.log 2>&1 \
+        && echo "[env __ENV_ID__] addon deps installed" \
+        || echo "[env __ENV_ID__] some addon deps failed (see ~/workspace/pip-addons.log)"
+      chown dev:dev /home/dev/workspace/pip-addons.log 2>/dev/null || true
+      docker restart env-odoo >/dev/null 2>&1 || true
+      echo "[env __ENV_ID__] odoo restarted after dep install"
+    fi
+  fi
+
   # --- 5b. restore a usable admin login --------------------------------------
   # Masking drops every res_users password and randomizes logins, so the masked
   # DB has no account you can sign in with. Reset the standard admin (id=2) to
