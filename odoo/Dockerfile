@@ -150,7 +150,7 @@ ARG PYTHON_DEPS
 RUN set -eux; \
     if [ -n "${PYTHON_DEPS}" ]; then \
       for pkg in ${PYTHON_DEPS}; do \
-        pip install --no-cache-dir --break-system-packages -c /tmp/constraints.txt "$pkg" \
+        pip install --no-cache-dir -c /tmp/constraints.txt "$pkg" \
           || echo "WARN: could not install discovered dep $pkg"; \
       done; \
     fi
