@@ -1,6 +1,18 @@
 state.env
+config.env
 __pycache__/
 *.log
+
+# Control-panel runtime state (SQLite + WAL) — may contain run params/secrets.
+controlpanel/backend/controlpanel.db
+controlpanel/backend/controlpanel.db-shm
+controlpanel/backend/controlpanel.db-wal
+*.db
+*.db-shm
+*.db-wal
+
+# stray capture files
+stopped
 
 # Proprietary / bulky addon sources — keep folders (README + .gitkeep) but not content.
 odoo/enterprise.zip
