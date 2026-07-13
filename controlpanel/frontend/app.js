@@ -365,8 +365,7 @@ function profileColumns() {
           ? `<a href="#" class="pf-run" data-id="${d.id}">run mask</a>`
           : `<span class="muted" title="build an image first">run mask</span>`;
         return `${discover} · ${build} · ${run} · <a href="#" class="pf-edit" data-id="${d.id}">edit</a>`;
-      } },
-  ];
+      } },  ];
 }
 
 function profileRow(p) {
@@ -415,6 +414,7 @@ function resetProfileForm() {
   $("pf_ssh_set").textContent = "";
   $("pf_token_set").textContent = "";
   $("pf-ssh-fields").classList.add("hidden");
+  $("pf-images").classList.add("hidden");
 }
 
 function fillProfileForm(p) {
@@ -444,6 +444,35 @@ function fillProfileForm(p) {
   $("pf_gm_jobs").value = mi.gm_jobs || "";
   $("profile-form-title").textContent = "Edit profile";
   $("pf-delete-btn").style.display = "";
+  loadProfileImages(p.id);
+}
+
+async function loadProfileImages(id) {
+  const wrap = $("pf-images");
+  const list = $("pf-images-list");
+  wrap.classList.remove("hidden");
+  list.innerHTML = `<p class="muted small">loading images…</p>`;
+  try {
+    const data = await (await fetch(`/api/profiles/${id}/images`)).json();
+    const imgs = data.images || [];
+    if (!imgs.length) {
+      list.innerHTML = `<p class="muted small">No images built yet. Run <b>discover</b> then <b>build</b>.</p>`;
+      return;
+    }
+    list.innerHTML = imgs.map((im) => {
+      const tag = im.uri.split(":").pop();
+      const when = im.pushed_at ? new Date(im.pushed_at * 1000).toLocaleString() : "—";
+      const size = im.size_mb ? `${im.size_mb} MB` : "";
+      const gone = !im.exists ? ` <span class="muted">(deleted from ECR)</span>` : "";
+      const badge = im.current
+        ? `<span class="st-ready">current</span>`
+        : `<a href="#" class="pf-img-del" data-id="${id}" data-uri="${im.uri}">delete</a>`;
+      return `<div class="img-row"><span class="mono">${tag}</span>` +
+        `<span class="muted small">${when} ${size}${gone}</span>${badge}</div>`;
+    }).join("");
+  } catch (e) {
+    list.innerHTML = `<p class="muted small st-failed">could not load images</p>`;
+  }
 }
 
 function buildProfilePayload() {
@@ -570,10 +599,29 @@ document.addEventListener("click", async (e) => {
     location.hash = "#/runs";
     setTimeout(() => openRun(run_id), 0);
   }
+
+  const imgDel = e.target.closest(".pf-img-del");
+  if (imgDel) {
+    e.preventDefault();
+    const id = imgDel.dataset.id;
+    const uri = imgDel.dataset.uri;
+    if (!confirm(`Delete image ${uri.split(":").pop()} from ECR?\nThis is permanent.`)) return;
+    const resp = await fetch(`/api/profiles/${id}/images/delete`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image_uri: uri }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      alert(`Could not delete image: ${err.detail || resp.status}`);
+      return;
+    }
+    loadProfileImages(id);
+  }
 });
 
 /* ===== Developer environments ===== */
-function envColumns() {  return [
+function envColumns() {
+  return [
     { title: "id", field: "id", width: 110, formatter: (c) => `<span class="mono">${c.getValue()}</span>` },
     { title: "issue", field: "issue", widthGrow: 1, formatter: (c) => c.getValue() || "—" },
     { title: "source run", field: "source_run_id", width: 120,

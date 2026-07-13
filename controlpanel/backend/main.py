@@ -174,6 +174,10 @@ class ProfileRequest(BaseModel):
     produce_dump: Optional[bool] = None
 
 
+class ImageDeleteRequest(BaseModel):
+    image_uri: str
+
+
 # ---------------------------------------------------------------------------
 # API
 # ---------------------------------------------------------------------------
@@ -279,6 +283,24 @@ def api_build_profile(profile_id: str) -> dict:
         daemon=True,
     ).start()
     return {"run_id": run_id}
+
+
+@app.get("/api/profiles/{profile_id}/images")
+def api_list_profile_images(profile_id: str) -> dict:
+    try:
+        return build.list_images(profile_id)
+    except KeyError:
+        raise HTTPException(404, "profile not found")
+
+
+@app.post("/api/profiles/{profile_id}/images/delete")
+def api_delete_profile_image(profile_id: str, req: ImageDeleteRequest) -> dict:
+    try:
+        return build.delete_image(profile_id, req.image_uri)
+    except KeyError:
+        raise HTTPException(404, "profile not found")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
 
 
 @app.post("/api/runs")

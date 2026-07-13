@@ -157,3 +157,10 @@ button.danger {
   background: transparent; color: var(--err);
   border: 1px solid var(--err); padding: 8px 14px;
 }
+.img-row {
+  display: flex; align-items: center; gap: 12px; justify-content: space-between;
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg); margin-bottom: 6px; font-size: 13px;
+}
+.img-row .mono { flex: 0 0 auto; }
+.img-row a { color: var(--err); }

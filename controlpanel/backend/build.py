@@ -246,3 +246,98 @@ def run_build(profile_id: str, emit: LogSink) -> dict:
     )
     emit(f"[panel] image ready: {image_uri}")
     return {"exit_code": 0, "image_uri": image_uri, "context_uri": context_uri}
+
+
+# ---------------------------------------------------------------------------
+# retention / cleanup (decision 4: immutable images kept; explicit cleanup)
+# ---------------------------------------------------------------------------
+
+def _parse_image_uri(uri: str) -> tuple[str, str]:
+    """Split '<registry>/<repo>:<tag>' into (repo, tag)."""
+    ref, _, tag = uri.rpartition(":")
+    repo = ref.split("/", 1)[1] if "/" in ref else ref
+    return repo, tag
+
+
+def list_images(profile_id: str) -> dict:
+    """Return the profile's current image + history, enriched with live ECR
+    metadata (pushed_at, size, whether the tag still exists)."""
+    profile = store.get_profile(profile_id)
+    if not profile:
+        raise KeyError(profile_id)
+
+    current = profile.get("image_uri")
+    history = list(profile.get("image_history") or [])
+    entries: list[dict] = []
+    seen: set[str] = set()
+
+    def add(uri: str, is_current: bool, created_at=None) -> None:
+        if not uri or uri in seen:
+            return
+        seen.add(uri)
+        entries.append({"uri": uri, "current": is_current,
+                        "created_at": created_at})
+
+    add(current, True)
+    for h in reversed(history):
+        add(h.get("uri"), False, h.get("created_at"))
+
+    # enrich from ECR in one batch per repo
+    proj = config.get("PROJECT")
+    repo = f"{proj}/odoo" if proj else None
+    meta: dict[str, dict] = {}
+    if repo:
+        try:
+            ecr = boto3.client("ecr", region_name=_region())
+            tags = [_parse_image_uri(e["uri"])[1] for e in entries]
+            resp = ecr.describe_images(
+                repositoryName=repo,
+                imageIds=[{"imageTag": t} for t in tags if t])
+            for d in resp.get("imageDetails", []):
+                for t in d.get("imageTags", []):
+                    meta[t] = {
+                        "pushed_at": d.get("imagePushedAt").timestamp()
+                        if d.get("imagePushedAt") else None,
+                        "size_mb": round(d.get("imageSizeInBytes", 0) / 1e6, 1),
+                    }
+        except Exception:  # noqa: BLE001 — ECR unreachable or tags gone
+            pass
+
+    for e in entries:
+        _, tag = _parse_image_uri(e["uri"])
+        m = meta.get(tag)
+        e["exists"] = m is not None
+        e["pushed_at"] = m.get("pushed_at") if m else None
+        e["size_mb"] = m.get("size_mb") if m else None
+
+    return {"profile_id": profile_id, "current": current, "images": entries}
+
+
+def delete_image(profile_id: str, image_uri: str) -> dict:
+    """Delete an ECR tag from a profile's history. The *current* image cannot be
+    deleted (guards against orphaning the ready image). Removes the entry from
+    image_history and the ECR tag itself."""
+    profile = store.get_profile(profile_id)
+    if not profile:
+        raise KeyError(profile_id)
+    if image_uri == profile.get("image_uri"):
+        raise ValueError("cannot delete the profile's current image")
+
+    history = [h for h in (profile.get("image_history") or [])
+               if h.get("uri") != image_uri]
+
+    proj = config.get("PROJECT")
+    deleted = False
+    if proj:
+        repo, tag = _parse_image_uri(image_uri)
+        try:
+            ecr = boto3.client("ecr", region_name=_region())
+            ecr.batch_delete_image(repositoryName=repo,
+                                   imageIds=[{"imageTag": tag}])
+            deleted = True
+        except Exception:  # noqa: BLE001 — already gone / not found
+            pass
+
+    store.update_profile(profile_id, image_history=history)
+    return {"deleted": deleted, "image_uri": image_uri}
+
