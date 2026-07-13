@@ -189,6 +189,10 @@ def run_params(profile_id: str, overrides: Optional[dict[str, Any]] = None) -> d
         "ssh_enabled": bool(conn.get("ssh_enabled")),
         "ssh_bastion": conn.get("ssh_bastion"),
         "ssh_key": _get_secret(p.get("ssh_key_secret")) if conn.get("ssh_enabled") else None,
+        # Provenance: the profile's immutable build. The pipeline records this on
+        # the run result so an environment seeded from the run runs identical
+        # code to the masked data.
+        "odoo_image": p.get("image_uri"),
     }
     params.update(p.get("mask_inputs") or {})
     if overrides:
