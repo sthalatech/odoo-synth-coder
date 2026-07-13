@@ -111,7 +111,26 @@ if [ -n "$ODOO_IMAGE" ]; then
 
   MOUNT_ARGS=""
   if [ -d "$REPO_DIR" ]; then
-    MOUNT_ARGS="-v ${REPO_DIR}:/mnt/live:rw -e EXTRA_ADDONS_PATH=/mnt/live"
+    # Detect which directories actually hold Odoo modules. A module is a folder
+    # with a __manifest__.py; its *parent* is an addons dir. Repos vary: modules
+    # may sit at the repo root, or under custom_addons/, addons/, etc. We collect
+    # every such parent and pass them all (Odoo addons_path is comma-separated),
+    # mapped to their path inside the /mnt/live mount. Without this, a repo that
+    # nests modules under a subdir loads none of them -> the masked DB references
+    # models whose module never loads -> KeyError at runtime.
+    ADDON_DIRS="$(cd "$REPO_DIR" && find . -maxdepth 3 -name __manifest__.py -printf '%h\n' 2>/dev/null \
+      | sed 's#/[^/]*$##' | sed 's#^\./\{0,1\}##' | sort -u)"
+    EXTRA=""
+    if [ -n "$ADDON_DIRS" ]; then
+      while IFS= read -r rel; do
+        [ -z "$rel" ] && cpath="/mnt/live" || cpath="/mnt/live/$rel"
+        EXTRA="${EXTRA:+$EXTRA,}$cpath"
+      done <<< "$ADDON_DIRS"
+    else
+      EXTRA="/mnt/live"
+    fi
+    echo "[env __ENV_ID__] addons dirs detected: $EXTRA"
+    MOUNT_ARGS="-v ${REPO_DIR}:/mnt/live:rw -e EXTRA_ADDONS_PATH=${EXTRA}"
   fi
 
   docker rm -f env-odoo >/dev/null 2>&1 || true
