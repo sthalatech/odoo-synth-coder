@@ -105,7 +105,12 @@ def _render_user_data(image_uri: str, context_get: str, result_put: str,
         "__IMAGE_URI__": image_uri,
         "__ODOO_IMAGE_BASE__": base,
         "__ODOO_GIT_URL__": profile.get("odoo_git_url") or "https://github.com/odoo/odoo",
-        "__ODOO_GIT_REF__": profile.get("odoo_git_ref") or "",
+        # Never let an empty ref fall back to the upstream default branch
+        # (master/latest) — that silently bakes a newer Odoo core than the
+        # source data and breaks the registry (e.g. KeyError 'fold_name' when a
+        # 19.x core loads a 17.0 dump). Pin to the discovered series branch.
+        "__ODOO_GIT_REF__": (profile.get("odoo_git_ref")
+                             or profile.get("odoo_series") or ""),
         "__CUSTOM_ADDONS_GIT_URL__": profile.get("addons_git_url") or "",
         "__CUSTOM_ADDONS_GIT_REF__": profile.get("addons_git_ref") or "",
         "__PYTHON_DEPS__": deps,
