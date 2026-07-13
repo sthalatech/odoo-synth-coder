@@ -426,6 +426,7 @@ function resetProfileForm() {
   $("pf_source_set").textContent = "";
   $("pf_ssh_set").textContent = "";
   $("pf_token_set").textContent = "";
+  $("profile-form").dataset.sshKeyStored = "";
   $("pf-ssh-fields").classList.add("hidden");
   $("pf-images").classList.add("hidden");
 }
@@ -444,6 +445,7 @@ function fillProfileForm(p) {
   $("pf-ssh-fields").classList.toggle("hidden", !c.ssh_enabled);
   $("pf_ssh_bastion").value = c.ssh_bastion || "";
   $("pf_ssh_key").value = "";
+  $("profile-form").dataset.sshKeyStored = p.ssh_key_secret_set ? "1" : "";
   $("pf_ssh_set").textContent = p.ssh_key_secret_set ? "a key is stored — leave blank to keep" : "";
   $("pf_odoo_series").value = p.odoo_series || "";
   $("pf_odoo_git_ref").value = p.odoo_git_ref || "";
@@ -523,6 +525,15 @@ $("profile-form").addEventListener("submit", async (e) => {
   const id = $("pf_id").value;
   const body = buildProfilePayload();
   if (!id && !body.label) { alert("A profile label is required."); return; }
+  const keyStored = $("profile-form").dataset.sshKeyStored === "1";
+  if (body.ssh_enabled && !body.ssh_key && !keyStored) {
+    alert("SSH bastion is enabled but no SSH private key is stored.\n\nPaste the full PEM (including the BEGIN/END lines) into the SSH private key box, otherwise discovery cannot open the tunnel.");
+    return;
+  }
+  if (body.ssh_enabled && !body.ssh_bastion) {
+    alert("SSH bastion is enabled but the bastion (user@host[:port]) is empty.");
+    return;
+  }
   $("pf-save-btn").disabled = true;
   try {
     const url = id ? `/api/profiles/${id}` : "/api/profiles";
