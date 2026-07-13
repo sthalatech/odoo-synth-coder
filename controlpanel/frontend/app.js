@@ -348,7 +348,7 @@ function profileColumns() {
       formatter: (c) => (c.getValue() ? "✓" : "—") },
     { title: "image", field: "image_status", width: 110,
       formatter: (c) => profileStatusBadge(c.getValue()) },
-    { title: "", field: "id", hozAlign: "center", width: 200, headerSort: false,
+    { title: "", field: "id", hozAlign: "center", width: 260, headerSort: false,
       formatter: (c) => {
         const d = c.getRow().getData();
         const raw = d._raw || {};
@@ -356,11 +356,15 @@ function profileColumns() {
         const discover = hasSource
           ? `<a href="#" class="pf-discover" data-id="${d.id}">discover</a>`
           : `<span class="muted" title="add a source DB URL first">discover</span>`;
+        const canBuild = !!raw.discovery_hash;
+        const build = canBuild
+          ? `<a href="#" class="pf-build" data-id="${d.id}">build</a>`
+          : `<span class="muted" title="run discovery first">build</span>`;
         const runnable = d.image_status === "ready";
         const run = runnable
           ? `<a href="#" class="pf-run" data-id="${d.id}">run mask</a>`
           : `<span class="muted" title="build an image first">run mask</span>`;
-        return `${discover} · ${run} · <a href="#" class="pf-edit" data-id="${d.id}">edit</a>`;
+        return `${discover} · ${build} · ${run} · <a href="#" class="pf-edit" data-id="${d.id}">edit</a>`;
       } },
   ];
 }
@@ -550,11 +554,26 @@ document.addEventListener("click", async (e) => {
     location.hash = "#/runs";
     setTimeout(() => openRun(run_id), 0);
   }
+
+  const bld = e.target.closest(".pf-build");
+  if (bld) {
+    e.preventDefault();
+    const id = bld.dataset.id;
+    if (!confirm(`Build the provenance image for profile ${id}?\nThis launches an ephemeral EC2 builder and pushes an immutable image to ECR.`)) return;
+    const resp = await fetch(`/api/profiles/${id}/build`, { method: "POST" });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      alert(`Could not start build: ${err.detail || resp.status}`);
+      return;
+    }
+    const { run_id } = await resp.json();
+    location.hash = "#/runs";
+    setTimeout(() => openRun(run_id), 0);
+  }
 });
 
 /* ===== Developer environments ===== */
-function envColumns() {
-  return [
+function envColumns() {  return [
     { title: "id", field: "id", width: 110, formatter: (c) => `<span class="mono">${c.getValue()}</span>` },
     { title: "issue", field: "issue", widthGrow: 1, formatter: (c) => c.getValue() || "—" },
     { title: "source run", field: "source_run_id", width: 120,

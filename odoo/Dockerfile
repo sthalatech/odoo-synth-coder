@@ -10,6 +10,10 @@ ARG ODOO_GIT_URL=https://github.com/odoo/odoo
 ARG ODOO_GIT_REF=19.0
 ARG CUSTOM_ADDONS_GIT_URL=
 ARG CUSTOM_ADDONS_GIT_REF=
+# Space-separated list of extra pip packages discovered for this profile
+# (manifest external_dependencies + requirements.txt + heuristic import scan,
+# incl. undeclared deps like googletrans). Baked in on top of the static set.
+ARG PYTHON_DEPS=
 
 USER root
 
@@ -137,6 +141,19 @@ RUN set -eux; \
       pip install --no-cache-dir -c /tmp/constraints.txt "$pkg" \
         || echo "WARN: could not install $pkg"; \
     done
+
+# Profile-discovered extra deps (PYTHON_DEPS build-arg). Installed per-package
+# against the same constraints so one bad wheel never blocks the rest. This is
+# what makes each per-profile image match its source's *actual* imports,
+# including undeclared ones the static list above cannot know about.
+ARG PYTHON_DEPS
+RUN set -eux; \
+    if [ -n "${PYTHON_DEPS}" ]; then \
+      for pkg in ${PYTHON_DEPS}; do \
+        pip install --no-cache-dir --break-system-packages -c /tmp/constraints.txt "$pkg" \
+          || echo "WARN: could not install discovered dep $pkg"; \
+      done; \
+    fi
 
 COPY entrypoint.sh /odoo-entrypoint.sh
 RUN chmod +x /odoo-entrypoint.sh

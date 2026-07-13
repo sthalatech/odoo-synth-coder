@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import config, pipeline, store, environments, profiles, discovery
+from . import config, pipeline, store, environments, profiles, discovery, build
 from .seed import seed_starter_profile
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
@@ -75,6 +75,9 @@ def _worker(run_id: str, operation: str, params: dict) -> None:
         if operation == "discover":
             dres = discovery.run_discovery(params["profile_id"], emit)
             result = {"exit_code": dres.get("exit_code", 1), **dres}
+        elif operation == "build":
+            bres = build.run_build(params["profile_id"], emit)
+            result = {"exit_code": bres.get("exit_code", 1), **bres}
         else:
             result = pipeline.run_operation(operation, params, emit)
         status = "succeeded" if result.get("exit_code") == 0 else "failed"
@@ -255,6 +258,24 @@ def api_discover_profile(profile_id: str) -> dict:
                      profile_id=profile_id)
     threading.Thread(
         target=_worker, args=(run_id, "discover", {"profile_id": profile_id}),
+        daemon=True,
+    ).start()
+    return {"run_id": run_id}
+
+
+@app.post("/api/profiles/{profile_id}/build")
+def api_build_profile(profile_id: str) -> dict:
+    prof = store.get_profile(profile_id)
+    if not prof:
+        raise HTTPException(404, "profile not found")
+    if not prof.get("discovery_hash"):
+        raise HTTPException(400, "run discovery first (no discovery result yet)")
+    run_id = uuid.uuid4().hex[:12]
+    store.create_run(run_id, "build",
+                     {"operation": "build", "profile_id": profile_id},
+                     profile_id=profile_id)
+    threading.Thread(
+        target=_worker, args=(run_id, "build", {"profile_id": profile_id}),
         daemon=True,
     ).start()
     return {"run_id": run_id}

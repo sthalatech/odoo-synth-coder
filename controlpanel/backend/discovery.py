@@ -152,6 +152,7 @@ def run_discovery(profile_id: str, emit: LogSink) -> dict:
         "installed_modules": data.get("installed_modules") or [],
         "python_deps": data.get("python_deps") or [],
         "apt_deps": data.get("apt_deps") or [],
+        "discovery_hash": data.get("discovery_hash"),
         "image_status": "discovered",
         "error": None,
     }

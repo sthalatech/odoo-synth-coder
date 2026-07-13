@@ -120,6 +120,9 @@ def _migrate(c: sqlite3.Connection) -> None:
     env_cols = cols("environments")
     if "profile_id" not in env_cols:
         c.execute("ALTER TABLE environments ADD COLUMN profile_id TEXT")
+    prof_cols = cols("profiles")
+    if "discovery_hash" not in prof_cols:
+        c.execute("ALTER TABLE profiles ADD COLUMN discovery_hash TEXT")
 
 
 
