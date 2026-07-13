@@ -114,7 +114,7 @@ def _resolve_odoo_image(source_run_id: Optional[str], s: dict) -> Optional[str]:
 
 def launch(env_id: str, source_run_id: Optional[str], issue: Optional[str],
            dump_s3_uri: Optional[str], repo_url: Optional[str],
-           repo_branch: Optional[str]) -> None:
+           repo_branch: Optional[str], profile_id: Optional[str] = None) -> None:
     """Background worker: create secret, launch instance, poll until reachable."""
     s = config.environments_settings()
     try:
@@ -123,10 +123,20 @@ def launch(env_id: str, source_run_id: Optional[str], issue: Optional[str],
                 "developer environments are not configured (set ENV_AMI_ID, "
                 "ENV_SG_ID, and the other environments.* values)")
 
+        profile = store.get_profile(profile_id) if profile_id else None
+
         dump = _dump_uri_for_run(source_run_id, dump_s3_uri)
-        odoo_img = _resolve_odoo_image(source_run_id, s)
-        r_url = repo_url or s.get("repo_url")
-        r_branch = repo_branch or s.get("repo_branch")
+        if profile:
+            # profile drives the image + addons so code matches the masked data.
+            odoo_img = profile.get("image_uri") or _resolve_odoo_image(source_run_id, s)
+            r_url = repo_url or profile.get("addons_git_url") or s.get("repo_url")
+            r_branch = repo_branch or profile.get("addons_git_ref") or s.get("repo_branch")
+            git_token_secret = profile.get("git_token_secret") or s.get("git_token_secret")
+        else:
+            odoo_img = _resolve_odoo_image(source_run_id, s)
+            r_url = repo_url or s.get("repo_url")
+            r_branch = repo_branch or s.get("repo_branch")
+            git_token_secret = s.get("git_token_secret")
         store.update_environment(
             env_id, status="provisioning", dump_s3_uri=dump,
             odoo_image=odoo_img, repo_url=r_url, repo_branch=r_branch,
@@ -138,7 +148,7 @@ def launch(env_id: str, source_run_id: Optional[str], issue: Optional[str],
 
         user_data = _render_user_data(
             env_id, issue or "", dump or "", secret_arn, odoo_img or "",
-            r_url or "", r_branch or "", s.get("git_token_secret") or "", s,
+            r_url or "", r_branch or "", git_token_secret or "", s,
         )
 
         ec2 = boto3.client("ec2", region_name=_region())
@@ -202,14 +212,17 @@ def launch(env_id: str, source_run_id: Optional[str], issue: Optional[str],
 
 def create(source_run_id: Optional[str], issue: Optional[str],
            dump_s3_uri: Optional[str], repo_url: Optional[str] = None,
-           repo_branch: Optional[str] = None) -> str:
+           repo_branch: Optional[str] = None,
+           profile_id: Optional[str] = None) -> str:
     env_id = uuid.uuid4().hex[:10]
     store.create_environment(env_id, source_run_id, issue, dump_s3_uri,
-                             repo_url=repo_url, repo_branch=repo_branch)
+                             repo_url=repo_url, repo_branch=repo_branch,
+                             profile_id=profile_id)
     import threading
     threading.Thread(
         target=launch,
-        args=(env_id, source_run_id, issue, dump_s3_uri, repo_url, repo_branch),
+        args=(env_id, source_run_id, issue, dump_s3_uri, repo_url, repo_branch,
+              profile_id),
         daemon=True,
     ).start()
     return env_id

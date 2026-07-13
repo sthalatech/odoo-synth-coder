@@ -680,6 +680,21 @@ async function loadEnvironments() {
     if (cur) sel.value = cur;
   } catch (e) {}
 
+  // populate the "profile" select with profiles that have a built (ready) image
+  try {
+    const { profiles } = await (await fetch("/api/profiles")).json();
+    const sel = $("env-profile");
+    const cur = sel.value;
+    sel.innerHTML = "";
+    sel.appendChild(opt("", "— none (use configured default image) —"));
+    for (const p of profiles) {
+      if (p.image_status === "ready" && p.image_uri) {
+        sel.appendChild(opt(p.id, `${p.label} · ${p.image_uri.split(":").pop()}`));
+      }
+    }
+    if (cur) sel.value = cur;
+  } catch (e) {}
+
   try {
     const { environments } = await (await fetch("/api/environments")).json();
     if (!envTable) {
@@ -712,6 +727,7 @@ $("env-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   $("env-create-btn").disabled = true;
   const ok = await createEnvironment({
+    profile_id: $("env-profile").value || null,
     source_run_id: $("env-source-run").value || null,
     issue: $("env-issue").value.trim() || null,
     repo_url: $("env-repo-url").value.trim() || null,

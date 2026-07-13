@@ -132,6 +132,7 @@ class RunRequest(BaseModel):
 
 
 class EnvironmentRequest(BaseModel):
+    profile_id: Optional[str] = None       # profile whose image + addons drive the env
     source_run_id: Optional[str] = None    # mask run whose dump seeds the env
     issue: Optional[str] = None            # github issue ref (optional)
     dump_s3_uri: Optional[str] = None      # explicit s3:// masked dump (optional)
@@ -456,6 +457,17 @@ def api_create_environment(req: EnvironmentRequest) -> dict:
             "developer environments are not configured (set ENV_AMI_ID, ENV_SG_ID "
             "and the other environments.* values in config.env / state.env)",
         )
+    prof = None
+    if req.profile_id:
+        prof = store.get_profile(req.profile_id)
+        if not prof:
+            raise HTTPException(404, "profile not found")
+        if prof.get("image_status") != "ready" or not prof.get("image_uri"):
+            raise HTTPException(
+                400,
+                "that profile has no built image yet; run discover then build "
+                "on the profile first",
+            )
     if req.source_run_id:
         run = store.get_run(req.source_run_id)
         if not run:
@@ -477,7 +489,8 @@ def api_create_environment(req: EnvironmentRequest) -> dict:
             "(s3://bucket/key)",
         )
     env_id = environments.create(req.source_run_id, req.issue, req.dump_s3_uri,
-                                 repo_url=req.repo_url, repo_branch=req.repo_branch)
+                                 repo_url=req.repo_url, repo_branch=req.repo_branch,
+                                 profile_id=req.profile_id)
     return {"environment_id": env_id}
 
 
