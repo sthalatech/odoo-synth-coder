@@ -23,6 +23,7 @@
       <nav class="nav">
         <a class="nav-item" data-route="overview" href="#/overview"><span class="nav-ico">▤</span> Overview</a>
         <a class="nav-item" data-route="new" href="#/new"><span class="nav-ico">＋</span> New mask</a>
+        <a class="nav-item" data-route="profiles" href="#/profiles"><span class="nav-ico">◈</span> Profiles</a>
         <a class="nav-item" data-route="runs" href="#/runs"><span class="nav-ico">≣</span> Runs</a>
         <a class="nav-item" data-route="environments" href="#/environments"><span class="nav-ico">▢</span> Environments</a>
       </nav>
@@ -111,6 +112,88 @@
             </div>
             <pre id="log" class="log"></pre>
             <div id="result" class="result hidden"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Profiles -->
+      <section id="page-profiles" class="page">
+        <header class="page-head">
+          <h1>Profiles</h1>
+          <button class="secondary" id="profiles-refresh" type="button">Refresh</button>
+        </header>
+        <p class="muted small">A <b>profile</b> binds a source system to its provenance (Odoo core ref + addons repo/ref + discovered dependencies) and the immutable Odoo image built from it. Mask runs and developer environments launch <b>from</b> a profile, so the data and the code always match.</p>
+        <div class="two-col">
+          <div class="panel">
+            <h2>Saved profiles</h2>
+            <div id="profiles-table"></div>
+          </div>
+          <div class="panel">
+            <div class="row-between">
+              <h2 id="profile-form-title">New profile</h2>
+              <button class="secondary" id="profile-new-btn" type="button">＋ New</button>
+            </div>
+            <form id="profile-form">
+              <input type="hidden" id="pf_id" />
+
+              <label>Label
+                <input type="text" id="pf_label" placeholder="your-addons (example)" />
+              </label>
+              <label>Description <span class="muted">(optional)</span>
+                <input type="text" id="pf_description" placeholder="Example production Odoo" />
+              </label>
+
+              <div class="toggles"><span class="toggles-title">Source database</span></div>
+              <label>Source database URL
+                <input type="text" id="pf_source_dsn" placeholder="postgresql://user:password@host:5432/dbname" />
+                <span class="muted small" id="pf_source_set"></span>
+              </label>
+              <label class="chk"><input type="checkbox" id="pf_ssh_enabled" /> Reach the source through an SSH bastion</label>
+              <div id="pf-ssh-fields" class="hidden">
+                <label>Bastion <span class="muted">(user@host[:port])</span>
+                  <input type="text" id="pf_ssh_bastion" placeholder="sutharson@3.6.155.204" />
+                </label>
+                <label>SSH private key <span class="muted">(PEM; stored in Secrets Manager)</span>
+                  <textarea id="pf_ssh_key" rows="3" placeholder="leave blank to keep existing"></textarea>
+                  <span class="muted small" id="pf_ssh_set"></span>
+                </label>
+              </div>
+
+              <div class="toggles"><span class="toggles-title">Provenance</span></div>
+              <label>Odoo series <span class="muted">(e.g. 19.0)</span>
+                <input type="text" id="pf_odoo_series" placeholder="19.0" />
+              </label>
+              <label>Odoo git ref <span class="muted">(commit/branch/tag)</span>
+                <input type="text" id="pf_odoo_git_ref" placeholder="3ffd51f1…" />
+              </label>
+              <label>Addons repo URL
+                <input type="text" id="pf_addons_git_url" placeholder="https://github.com/org/addons" />
+              </label>
+              <label>Addons git ref
+                <input type="text" id="pf_addons_git_ref" placeholder="uat / 08f788e8…" />
+              </label>
+              <label>Git token <span class="muted">(PAT for private addons; stored as a secret)</span>
+                <input type="password" id="pf_git_token" placeholder="leave blank to keep existing" />
+                <span class="muted small" id="pf_token_set"></span>
+              </label>
+              <label class="chk"><input type="checkbox" id="pf_needs_enterprise" /> This profile needs Odoo Enterprise</label>
+              <label>Enterprise source <span class="muted">(optional; repo/url for enterprise addons)</span>
+                <input type="text" id="pf_enterprise_source" placeholder="https://github.com/odoo/enterprise" />
+              </label>
+
+              <div class="toggles"><span class="toggles-title">Default mask inputs</span></div>
+              <label>Masking profile
+                <select id="pf_mask_profile"></select>
+              </label>
+              <label>greenmask jobs
+                <input type="number" id="pf_gm_jobs" min="1" max="16" placeholder="4" />
+              </label>
+
+              <div class="form-actions">
+                <button type="submit" id="pf-save-btn">Save profile</button>
+                <button type="button" class="danger" id="pf-delete-btn" style="display:none">Delete</button>
+              </div>
+            </form>
           </div>
         </div>
       </section>

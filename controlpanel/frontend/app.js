@@ -10,7 +10,7 @@ let envTable = null;
 let ENV_CONFIG = null;
 
 /* ===== Router ===== */
-const ROUTES = ["overview", "new", "runs", "environments"];
+const ROUTES = ["overview", "new", "profiles", "runs", "environments"];
 function currentRoute() {
   const h = (location.hash || "").replace(/^#\/?/, "").split("/")[0];
   return ROUTES.includes(h) ? h : "overview";
@@ -23,6 +23,7 @@ function navigate() {
   document.querySelectorAll(".nav-item").forEach((a) =>
     a.classList.toggle("active", a.dataset.route === route));
   if (route === "overview") renderOverview();
+  if (route === "profiles") loadProfilesList();
   if (route === "runs") loadRuns();
   if (route === "environments") loadEnvironments();
 }
@@ -327,6 +328,208 @@ $("run-form").addEventListener("submit", async (e) => {
 });
 
 $("runs-refresh").addEventListener("click", loadRuns);
+
+/* ===== Profiles ===== */
+let profilesTable = null;
+
+function profileStatusBadge(s) {
+  return `<span class="st-${s || "draft"}">${s || "draft"}</span>`;
+}
+
+function profileColumns() {
+  return [
+    { title: "label", field: "label", widthGrow: 2,
+      formatter: (c) => `${c.getValue()}<br><span class="muted mono">${c.getRow().getData().id}</span>` },
+    { title: "source", field: "source", widthGrow: 2,
+      formatter: (c) => c.getValue() || "—" },
+    { title: "series", field: "odoo_series", width: 80,
+      formatter: (c) => c.getValue() || "—" },
+    { title: "ent", field: "needs_enterprise", width: 60, hozAlign: "center",
+      formatter: (c) => (c.getValue() ? "✓" : "—") },
+    { title: "image", field: "image_status", width: 110,
+      formatter: (c) => profileStatusBadge(c.getValue()) },
+    { title: "", field: "id", hozAlign: "center", width: 140, headerSort: false,
+      formatter: (c) => {
+        const d = c.getRow().getData();
+        const runnable = d.image_status === "ready";
+        const run = runnable
+          ? `<a href="#" class="pf-run" data-id="${d.id}">run mask</a>`
+          : `<span class="muted" title="build an image first">run mask</span>`;
+        return `${run} · <a href="#" class="pf-edit" data-id="${d.id}">edit</a>`;
+      } },
+  ];
+}
+
+function profileRow(p) {
+  const c = p.source_conn || {};
+  const src = c.host ? `${c.user || ""}@${c.host}:${c.port || 5432}/${c.dbname || ""}` : "";
+  return {
+    id: p.id, label: p.label, source: src, odoo_series: p.odoo_series,
+    needs_enterprise: p.needs_enterprise, image_status: p.image_status,
+    _raw: p,
+  };
+}
+
+async function loadProfilesList() {
+  // ensure the mask-profile dropdown in the form is populated
+  if (PROFILES && PROFILES.mask_profiles) fillProfileMaskSelect();
+  try {
+    const { profiles } = await (await fetch("/api/profiles")).json();
+    const rows = profiles.map(profileRow);
+    if (!profilesTable) {
+      profilesTable = new Tabulator("#profiles-table", {
+        layout: "fitColumns", height: "auto",
+        pagination: true, paginationSize: 10, paginationCounter: "rows",
+        placeholder: "No profiles yet — create one on the right.",
+        columns: profileColumns(),
+      });
+      profilesTable.on("tableBuilt", () => profilesTable.setData(rows));
+    } else {
+      profilesTable.setData(rows);
+    }
+  } catch (e) {}
+}
+
+function fillProfileMaskSelect() {
+  const mp = $("pf_mask_profile");
+  if (!mp || mp.dataset.filled) return;
+  (PROFILES.mask_profiles || []).forEach((p) => mp.appendChild(opt(p.id, p.label)));
+  mp.dataset.filled = "1";
+}
+
+function resetProfileForm() {
+  $("profile-form").reset();
+  $("pf_id").value = "";
+  $("profile-form-title").textContent = "New profile";
+  $("pf-delete-btn").style.display = "none";
+  $("pf_source_set").textContent = "";
+  $("pf_ssh_set").textContent = "";
+  $("pf_token_set").textContent = "";
+  $("pf-ssh-fields").classList.add("hidden");
+}
+
+function fillProfileForm(p) {
+  fillProfileMaskSelect();
+  const c = p.source_conn || {};
+  const mi = p.mask_inputs || {};
+  $("pf_id").value = p.id;
+  $("pf_label").value = p.label || "";
+  $("pf_description").value = p.description || "";
+  $("pf_source_dsn").value = "";
+  $("pf_source_set").textContent = p.source_conn && c.host
+    ? `current: ${c.user || ""}@${c.host}:${c.port || 5432}/${c.dbname || ""} — leave blank to keep` : "";
+  $("pf_ssh_enabled").checked = !!c.ssh_enabled;
+  $("pf-ssh-fields").classList.toggle("hidden", !c.ssh_enabled);
+  $("pf_ssh_bastion").value = c.ssh_bastion || "";
+  $("pf_ssh_key").value = "";
+  $("pf_ssh_set").textContent = p.ssh_key_secret_set ? "a key is stored — leave blank to keep" : "";
+  $("pf_odoo_series").value = p.odoo_series || "";
+  $("pf_odoo_git_ref").value = p.odoo_git_ref || "";
+  $("pf_addons_git_url").value = p.addons_git_url || "";
+  $("pf_addons_git_ref").value = p.addons_git_ref || "";
+  $("pf_git_token").value = "";
+  $("pf_token_set").textContent = p.git_token_secret_set ? "a token is stored — leave blank to keep" : "";
+  $("pf_needs_enterprise").checked = !!p.needs_enterprise;
+  $("pf_enterprise_source").value = p.enterprise_source || "";
+  $("pf_mask_profile").value = mi.mask_profile || "";
+  $("pf_gm_jobs").value = mi.gm_jobs || "";
+  $("profile-form-title").textContent = "Edit profile";
+  $("pf-delete-btn").style.display = "";
+}
+
+function buildProfilePayload() {
+  const body = {
+    label: $("pf_label").value.trim() || null,
+    description: $("pf_description").value.trim() || null,
+    ssh_enabled: $("pf_ssh_enabled").checked,
+    ssh_bastion: $("pf_ssh_bastion").value.trim() || null,
+    odoo_series: $("pf_odoo_series").value.trim() || null,
+    odoo_git_ref: $("pf_odoo_git_ref").value.trim() || null,
+    addons_git_url: $("pf_addons_git_url").value.trim() || null,
+    addons_git_ref: $("pf_addons_git_ref").value.trim() || null,
+    needs_enterprise: $("pf_needs_enterprise").checked,
+    enterprise_source: $("pf_enterprise_source").value.trim() || null,
+    mask_profile: $("pf_mask_profile").value || null,
+    gm_jobs: parseInt($("pf_gm_jobs").value, 10) || null,
+  };
+  const dsn = $("pf_source_dsn").value.trim();
+  if (dsn) body.source_dsn = dsn;
+  const key = $("pf_ssh_key").value.trim();
+  if (key) body.ssh_key = key;
+  const tok = $("pf_git_token").value.trim();
+  if (tok) body.git_token = tok;
+  return body;
+}
+
+$("pf_ssh_enabled").addEventListener("change", () => {
+  $("pf-ssh-fields").classList.toggle("hidden", !$("pf_ssh_enabled").checked);
+});
+$("profile-new-btn").addEventListener("click", resetProfileForm);
+$("profiles-refresh").addEventListener("click", loadProfilesList);
+
+$("profile-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const id = $("pf_id").value;
+  const body = buildProfilePayload();
+  if (!id && !body.label) { alert("A profile label is required."); return; }
+  $("pf-save-btn").disabled = true;
+  try {
+    const url = id ? `/api/profiles/${id}` : "/api/profiles";
+    const method = id ? "PATCH" : "POST";
+    const resp = await fetch(url, {
+      method, headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      alert(`Could not save profile: ${err.detail || resp.status}`);
+    } else {
+      resetProfileForm();
+      loadProfilesList();
+    }
+  } finally {
+    $("pf-save-btn").disabled = false;
+  }
+});
+
+$("pf-delete-btn").addEventListener("click", async () => {
+  const id = $("pf_id").value;
+  if (!id) return;
+  if (!confirm("Delete this profile and its stored secrets?")) return;
+  await fetch(`/api/profiles/${id}`, { method: "DELETE" });
+  resetProfileForm();
+  loadProfilesList();
+});
+
+// delegated clicks on the profiles table: edit + run mask
+document.addEventListener("click", async (e) => {
+  const ed = e.target.closest(".pf-edit");
+  if (ed) {
+    e.preventDefault();
+    const p = await (await fetch(`/api/profiles/${ed.dataset.id}`)).json();
+    fillProfileForm(p);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    return;
+  }
+  const run = e.target.closest(".pf-run");
+  if (run) {
+    e.preventDefault();
+    const id = run.dataset.id;
+    if (!confirm(`Start a mask run from profile ${id}?`)) return;
+    const resp = await fetch("/api/runs", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ operation: "mask", profile_id: id }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      alert(`Could not start run: ${err.detail || resp.status}`);
+      return;
+    }
+    const { run_id } = await resp.json();
+    location.hash = "#/runs";
+    setTimeout(() => openRun(run_id), 0);
+  }
+});
 
 /* ===== Developer environments ===== */
 function envColumns() {

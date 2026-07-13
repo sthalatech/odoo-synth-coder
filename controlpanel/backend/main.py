@@ -23,6 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import config, pipeline, store, environments, profiles
+from .seed import seed_starter_profile
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
@@ -32,6 +33,10 @@ app = FastAPI(title="odoo-synth control panel")
 @app.on_event("startup")
 def _startup() -> None:
     store.init()
+    try:
+        seed_starter_profile()
+    except Exception:  # noqa: BLE001 — seeding is best-effort
+        pass
 
 
 # ---------------------------------------------------------------------------
