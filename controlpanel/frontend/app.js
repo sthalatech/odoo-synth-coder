@@ -580,7 +580,7 @@ document.addEventListener("click", async (e) => {
     if (!confirm(`Start a mask run from profile ${id}?`)) return;
     const resp = await fetch("/api/runs", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ operation: "mask", profile_id: id }),
+      body: JSON.stringify({ operation: "mask", profile_id: id, produce_dump: true }),
     });
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));

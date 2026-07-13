@@ -316,8 +316,11 @@ def api_start_run(req: RunRequest) -> dict:
         if not prof:
             raise HTTPException(404, "profile not found")
         try:
+            # Profile-driven runs always produce the masked S3 dump: it is the
+            # seed artifact a developer environment launched from this profile
+            # consumes. (The Runs UI checkbox only applies to the legacy path.)
             params = profiles.run_params(
-                profile_id, overrides={"produce_dump": req.produce_dump})
+                profile_id, overrides={"produce_dump": True})
         except (KeyError, ValueError) as exc:
             raise HTTPException(400, f"cannot run profile: {exc}")
         odoo_image = prof.get("image_uri")
