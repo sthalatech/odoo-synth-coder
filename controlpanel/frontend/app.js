@@ -271,7 +271,7 @@ function buildPayload() {
     source_dsn: $("source_dsn").value.trim(),
     ssh_enabled: $("ssh_enabled").checked,
     ssh_bastion: $("ssh_bastion").value.trim() || null,
-    ssh_key: $("ssh_key").value || null,
+    ssh_key: $("ssh_key").value.trim() || null,
     mask_profile: $("mask_profile").value,
     admin_password: $("admin_password").value || null,
     gm_jobs: parseInt($("gm_jobs").value, 10) || null,
@@ -297,7 +297,10 @@ $("run-form").addEventListener("submit", async (e) => {
     return;
   }
   if (body.ssh_enabled && (!body.ssh_bastion || !body.ssh_key)) {
-    appendLog("[panel] SSH tunnel on: provide the bastion (user@host[:port]) and the private key");
+    const missing = [];
+    if (!body.ssh_bastion) missing.push("Bastion (user@host[:port]) — the grey text is only a placeholder, type the value");
+    if (!body.ssh_key) missing.push("SSH private key (paste the full PEM, incl. the BEGIN/END lines)");
+    appendLog("[panel] SSH tunnel on, still missing: " + missing.join("; "));
     return;
   }
   $("start-btn").disabled = true;
