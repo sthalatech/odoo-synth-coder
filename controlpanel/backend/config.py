@@ -56,6 +56,27 @@ def get(key: str, default: str | None = None) -> str | None:
     return load().get(key, default)
 
 
+def _load_fresh() -> dict[str, str]:
+    """Same as load() but WITHOUT the lru_cache — re-reads config.env/state.env
+    from disk on every call. Used for secrets (passwords) so a value rotated on
+    disk takes effect on the next run without restarting the panel."""
+    cfg: dict[str, str] = {}
+    cfg.update(_parse_env_file(REPO_ROOT / "config.env"))
+    cfg.update(_parse_env_file(REPO_ROOT / "deploy" / "state.env"))
+    for k in list(cfg.keys()):
+        if k in os.environ:
+            cfg[k] = os.environ[k]
+    return cfg
+
+
+def get_fresh(key: str, default: str | None = None) -> str | None:
+    """Read a config value bypassing the cache (for secrets that may rotate)."""
+    val = os.environ.get(key)
+    if val is not None:
+        return val
+    return _load_fresh().get(key, default)
+
+
 def require(key: str) -> str:
     val = get(key)
     if not val:
@@ -84,13 +105,23 @@ def _resolve_conn(c: dict) -> dict:
             return get(env_name, default)
         return default
 
+    # secrets are read fresh (bypass cache) so a rotated password on disk takes
+    # effect on the next run without a panel restart.
+    def secret(direct_key: str, env_key: str) -> str:
+        if c.get(direct_key) is not None:
+            return str(c[direct_key])
+        env_name = c.get(env_key)
+        if env_name:
+            return get_fresh(env_name, "") or ""
+        return ""
+
     return {
         "label": c.get("label"),
         "host": val("host", "host_env"),
         "port": str(c.get("port", 5432)),
         "dbname": val("dbname", "dbname_env"),
         "user": val("user", "user_env"),
-        "password": val("password", "password_env") or "",
+        "password": secret("password", "password_env"),
     }
 
 
