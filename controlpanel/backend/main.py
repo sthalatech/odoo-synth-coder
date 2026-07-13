@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import config, pipeline, store, environments, profiles
+from . import config, pipeline, store, environments, profiles, discovery
 from .seed import seed_starter_profile
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
@@ -72,7 +72,11 @@ def _worker(run_id: str, operation: str, params: dict) -> None:
     ft.start()
 
     try:
-        result = pipeline.run_operation(operation, params, emit)
+        if operation == "discover":
+            dres = discovery.run_discovery(params["profile_id"], emit)
+            result = {"exit_code": dres.get("exit_code", 1), **dres}
+        else:
+            result = pipeline.run_operation(operation, params, emit)
         status = "succeeded" if result.get("exit_code") == 0 else "failed"
         store.update_run(
             run_id,
@@ -235,6 +239,25 @@ def api_update_profile(profile_id: str, req: ProfileRequest) -> dict:
 def api_delete_profile(profile_id: str) -> dict:
     profiles.delete(profile_id)
     return {"status": "deleted"}
+
+
+@app.post("/api/profiles/{profile_id}/discover")
+def api_discover_profile(profile_id: str) -> dict:
+    prof = store.get_profile(profile_id)
+    if not prof:
+        raise HTTPException(404, "profile not found")
+    conn = prof.get("source_conn") or {}
+    if not conn.get("host"):
+        raise HTTPException(400, "profile has no source database URL; add one first")
+    run_id = uuid.uuid4().hex[:12]
+    store.create_run(run_id, "discover",
+                     {"operation": "discover", "profile_id": profile_id},
+                     profile_id=profile_id)
+    threading.Thread(
+        target=_worker, args=(run_id, "discover", {"profile_id": profile_id}),
+        daemon=True,
+    ).start()
+    return {"run_id": run_id}
 
 
 @app.post("/api/runs")

@@ -348,14 +348,19 @@ function profileColumns() {
       formatter: (c) => (c.getValue() ? "✓" : "—") },
     { title: "image", field: "image_status", width: 110,
       formatter: (c) => profileStatusBadge(c.getValue()) },
-    { title: "", field: "id", hozAlign: "center", width: 140, headerSort: false,
+    { title: "", field: "id", hozAlign: "center", width: 200, headerSort: false,
       formatter: (c) => {
         const d = c.getRow().getData();
+        const raw = d._raw || {};
+        const hasSource = !!(raw.source_conn && raw.source_conn.host);
+        const discover = hasSource
+          ? `<a href="#" class="pf-discover" data-id="${d.id}">discover</a>`
+          : `<span class="muted" title="add a source DB URL first">discover</span>`;
         const runnable = d.image_status === "ready";
         const run = runnable
           ? `<a href="#" class="pf-run" data-id="${d.id}">run mask</a>`
           : `<span class="muted" title="build an image first">run mask</span>`;
-        return `${run} · <a href="#" class="pf-edit" data-id="${d.id}">edit</a>`;
+        return `${discover} · ${run} · <a href="#" class="pf-edit" data-id="${d.id}">edit</a>`;
       } },
   ];
 }
@@ -523,6 +528,22 @@ document.addEventListener("click", async (e) => {
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
       alert(`Could not start run: ${err.detail || resp.status}`);
+      return;
+    }
+    const { run_id } = await resp.json();
+    location.hash = "#/runs";
+    setTimeout(() => openRun(run_id), 0);
+  }
+
+  const disc = e.target.closest(".pf-discover");
+  if (disc) {
+    e.preventDefault();
+    const id = disc.dataset.id;
+    if (!confirm(`Run provenance discovery for profile ${id}?\nThis inspects the live source DB + addons repo.`)) return;
+    const resp = await fetch(`/api/profiles/${id}/discover`, { method: "POST" });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      alert(`Could not start discovery: ${err.detail || resp.status}`);
       return;
     }
     const { run_id } = await resp.json();

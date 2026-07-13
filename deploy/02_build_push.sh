@@ -8,6 +8,11 @@ docker build --platform linux/amd64 \
   -t "$ECR/$PROJECT/masker:latest" "$HERE/masker"
 docker push "$ECR/$PROJECT/masker:latest"
 
+log "building discovery image ..."
+docker build --platform linux/amd64 \
+  -t "$ECR/$PROJECT/discovery:latest" "$HERE/discovery"
+docker push "$ECR/$PROJECT/discovery:latest"
+
 log "building odoo image (from source ref ${ODOO_GIT_REF}) ..."
 export DOCKER_BUILDKIT=1
 # Resolve a GitHub token for cloning the (possibly private) custom addons repo.

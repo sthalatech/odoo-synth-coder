@@ -68,7 +68,7 @@ aws logs delete-log-group --log-group-name "/ecs/$PROJECT" --region "$R" >/dev/n
 # Keep ECR repos + images (re-push is cheap; delete if --ecr passed).
 if [ "${1:-}" = "--ecr" ]; then
   log "deleting ECR repos ..."
-  for name in masker odoo; do
+  for name in masker discovery odoo; do
     aws ecr delete-repository --repository-name "$PROJECT/$name" --force --region "$R" >/dev/null 2>&1 || true
   done
 fi
