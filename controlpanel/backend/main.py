@@ -295,6 +295,15 @@ def api_create_environment(req: EnvironmentRequest) -> dict:
                 "that run has no masked dump to seed from; re-run the mask with "
                 "'produce a downloadable pg_dump' enabled, or pass an explicit dump_s3_uri",
             )
+    elif not req.dump_s3_uri:
+        # no source run and no explicit dump -> the env would boot with an empty
+        # database and Odoo would 500. Require one of the two.
+        raise HTTPException(
+            400,
+            "a masked dump is required: pick a source run that produced a "
+            "downloadable pg_dump, or pass an explicit dump_s3_uri "
+            "(s3://bucket/key)",
+        )
     env_id = environments.create(req.source_run_id, req.issue, req.dump_s3_uri,
                                  repo_url=req.repo_url, repo_branch=req.repo_branch)
     return {"environment_id": env_id}

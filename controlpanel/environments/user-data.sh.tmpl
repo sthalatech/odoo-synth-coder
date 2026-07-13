@@ -126,6 +126,33 @@ if [ -n "$ODOO_IMAGE" ]; then
     $MOUNT_ARGS \
     "$ODOO_IMAGE" || echo "[env __ENV_ID__] odoo container failed to start"
   echo "[env __ENV_ID__] odoo on :${ODOO_PORT} (masked DB, live addons from repo)"
+
+  # --- 5b. restore a usable admin login --------------------------------------
+  # Masking drops every res_users password and randomizes logins, so the masked
+  # DB has no account you can sign in with. Reset the standard admin (id=2) to
+  # login 'admin' with the per-env password (same value as code-server), hashing
+  # it with odoo's own passlib so the hash scheme matches.
+  ADMIN_PASS="$(aws secretsmanager get-secret-value --secret-id "$SECRET_ARN" \
+      --region "$REGION" --query SecretString --output text 2>/dev/null || echo '')"
+  if [ -n "$ADMIN_PASS" ]; then
+    echo "[env __ENV_ID__] resetting admin login"
+    for _ in $(seq 1 30); do
+      docker exec env-db pg_isready -U odoo -d "$DB_NAME" >/dev/null 2>&1 && break
+      sleep 2
+    done
+    ADMIN_HASH="$(docker exec env-odoo python3 -c \
+      "from passlib.context import CryptContext; print(CryptContext(['pbkdf2_sha512']).hash('$ADMIN_PASS'))" \
+      2>/dev/null || echo '')"
+    if [ -n "$ADMIN_HASH" ]; then
+      docker exec env-db psql -U odoo -d "$DB_NAME" -c \
+        "UPDATE res_users SET login='admin', password='$ADMIN_HASH', active=true WHERE id=2;" \
+        >/dev/null 2>&1 \
+        && echo "[env __ENV_ID__] admin login ready (user: admin)" \
+        || echo "[env __ENV_ID__] admin reset failed (sql)"
+    else
+      echo "[env __ENV_ID__] admin reset failed (hash)"
+    fi
+  fi
 fi
 
 # --- 6. code-server password (per-env, from Secrets Manager) ---------------
