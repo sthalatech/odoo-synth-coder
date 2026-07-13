@@ -8,6 +8,9 @@ bash deploy/03_network.sh
 bash deploy/04_rds.sh
 bash deploy/05_cluster.sh
 bash deploy/02_build_push.sh
+# Ephemeral-builder IAM (role + instance-profile) used by the profile image
+# build path. One-time, idempotent, account-level — same category as ECR/IAM.
+bash deploy/10_builder.sh
 # Source stack (persistent). Skipped automatically if it already exists.
 if ! grep -q '^SRC_RDS_ENDPOINT=' deploy/state.env 2>/dev/null; then
   bash deploy/source/run.sh
