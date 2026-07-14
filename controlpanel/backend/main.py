@@ -570,6 +570,18 @@ def api_get_environment(env_id: str) -> dict:
     return env
 
 
+@app.get("/api/environments/{env_id}/password")
+def api_get_environment_password(env_id: str) -> dict:
+    """Reveal the code-server login password (read from Secrets Manager on
+    demand; never persisted in the panel DB)."""
+    if not store.get_environment(env_id):
+        raise HTTPException(404, "environment not found")
+    pw = environments.get_password(env_id)
+    if pw is None:
+        raise HTTPException(404, "no password available for this environment")
+    return {"password": pw}
+
+
 @app.delete("/api/environments/{env_id}")
 def api_teardown_environment(env_id: str) -> dict:
     if not store.get_environment(env_id):

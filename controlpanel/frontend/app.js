@@ -739,6 +739,12 @@ function envColumns() {
         : "—") },
     { title: "odoo", field: "odoo_url", hozAlign: "center", width: 100,
       formatter: (c) => linkCell(c.getValue(), "open") },
+    { title: "password", field: "id", hozAlign: "center", width: 100, headerSort: false,
+      formatter: (c) => {
+        const d = c.getRow().getData();
+        if (d.status === "terminated" || d.status === "failed") return "—";
+        return `<a href="#" class="pw-env" data-env="${d.id}">show</a>`;
+      } },
     { title: "created", field: "created_at", width: 170,
       formatter: (c) => (c.getValue() ? new Date(c.getValue() * 1000).toLocaleString() : "—") },
     { title: "", field: "id", hozAlign: "center", width: 110, headerSort: false,
@@ -866,6 +872,20 @@ document.addEventListener("click", async (e) => {
     if (!confirm(`Tear down environment ${envId}? The instance is terminated.`)) return;
     await fetch(`/api/environments/${envId}`, { method: "DELETE" });
     loadEnvironments();
+  }
+  const pw = e.target.closest(".pw-env");
+  if (pw) {
+    e.preventDefault();
+    const envId = pw.dataset.env;
+    try {
+      const r = await fetch(`/api/environments/${envId}/password`);
+      if (!r.ok) { alert("No password available for this environment yet."); return; }
+      const { password } = await r.json();
+      try { await navigator.clipboard.writeText(password); } catch (_) {}
+      prompt(`code-server login password for ${envId}\n(copied to clipboard):`, password);
+    } catch (_) {
+      alert("Could not fetch the password.");
+    }
   }
 });
 

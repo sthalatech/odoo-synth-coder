@@ -83,6 +83,19 @@ def _delete_secret(secret_arn: str) -> None:
         pass
 
 
+def get_password(env_id: str) -> Optional[str]:
+    """Fetch the code-server login password for an env from Secrets Manager.
+    Returns None if the env or its secret is gone (e.g. after teardown)."""
+    env = store.get_environment(env_id)
+    if not env or not env.get("secret_arn"):
+        return None
+    try:
+        sm = boto3.client("secretsmanager", region_name=_region())
+        return sm.get_secret_value(SecretId=env["secret_arn"]).get("SecretString")
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _dump_uri_for_run(run_id: Optional[str], explicit: Optional[str]) -> Optional[str]:
     """Resolve the masked-dump S3 URI: explicit wins, else derive from the run's
     result (produce_dump stores a presigned GET; we prefer a plain s3:// URI the
