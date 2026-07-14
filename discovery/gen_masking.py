@@ -193,7 +193,20 @@ def transformer_for(column: str, dtype: str, fk_target: str | None,
         return _mask("url")
     if any(k in low for k in ("name", "contact", "display_name", "commercial",
                               "first", "last")):
-        return _mask("name")
+        # Person-ish name column: replace with a fully random person name via
+        # greenmask RandomPerson. Unlike Masking type=name (which keeps the
+        # first+last char of every word AND the word count -> "I**a Y**a
+        # C**ter" is trivially reconstructable), RandomPerson emits a brand-new
+        # realistic name with ZERO derivability from the original. We pick a
+        # template so first/last-name columns stay single-token and generic
+        # name columns get a full name.
+        if "first" in low:
+            tmpl = "{{ .FirstName }}"
+        elif "last" in low:
+            tmpl = "{{ .LastName }}"
+        else:
+            tmpl = "{{ .FirstName }} {{ .LastName }}"
+        return {"name": "RandomPerson", "column": column, "template": tmpl}
     # generic free-text (notes, comments, description, ...) -> default masking
     return _mask("default")
 
@@ -260,6 +273,15 @@ def _render_greenmask(table_transformers: dict[str, list[dict]]) -> str:
             lines.append("      apply_for_inherited: true")
         lines.append("      transformers:")
         for t in table_transformers[table]:
+            # RandomPerson has a nested `columns` param (each with its own
+            # go-template), so it can't use the single-line params form.
+            if t["name"] == "RandomPerson":
+                lines.append("        - name: RandomPerson")
+                lines.append("          params:")
+                lines.append("            columns:")
+                lines.append(f"              - name: {t['column']}")
+                lines.append(f"                template: {_q(t['template'])}")
+                continue
             params = [f"column: {t['column']}"]
             if "type" in t:
                 params.append(f"type: {t['type']}")
