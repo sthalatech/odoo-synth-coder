@@ -160,12 +160,12 @@ RUN set -eux; \
         esac; \
         # Try constrained first (reproducible pins). If the constraints file
         # conflicts with the discovered dep (e.g. google-genai needs a newer
-        # requests than Odoo's pin), retry WITHOUT touching the dependency tree
-        # (--no-deps) so the real import resolves but a discovered dep can never
-        # upgrade Odoo's own pinned stack (cryptography/pyOpenSSL/lxml/etc.) —
-        # such an upgrade breaks base at import time (OpenSSL GEN_EMAIL).
+        # requests than Odoo's pin), retry unconstrained so the dep gets its
+        # full runtime tree (pydantic/tenacity/httpx/... for genai). Any
+        # collateral upgrade of Odoo's pinned security stack is undone by the
+        # repair step below, so the dep is fully functional AND base still boots.
         pip install --no-cache-dir -c /tmp/constraints.txt "$pkg" \
-          || pip install --no-cache-dir --no-deps "$pkg" \
+          || pip install --no-cache-dir "$pkg" \
           || echo "WARN: could not install discovered dep $pkg"; \
       done; \
     fi
