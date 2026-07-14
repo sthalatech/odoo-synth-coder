@@ -95,6 +95,7 @@ def init() -> None:
               installed_modules      TEXT,
               required_config_keys   TEXT,       -- json list of odoo.conf keys addons read
               odoo_conf_extra        TEXT,       -- extra odoo.conf lines injected into dev envs
+              masking_rules          TEXT,       -- editable per-source masking plan (yaml)
               discovery_yaml_uri     TEXT,       -- s3://.../discovery.yaml
               -- built image + lifecycle
               image_uri              TEXT,       -- current immutable ECR tag
@@ -129,6 +130,8 @@ def _migrate(c: sqlite3.Connection) -> None:
         c.execute("ALTER TABLE profiles ADD COLUMN required_config_keys TEXT")
     if "odoo_conf_extra" not in prof_cols:
         c.execute("ALTER TABLE profiles ADD COLUMN odoo_conf_extra TEXT")
+    if "masking_rules" not in prof_cols:
+        c.execute("ALTER TABLE profiles ADD COLUMN masking_rules TEXT")
 
 
 

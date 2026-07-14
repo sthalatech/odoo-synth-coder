@@ -266,6 +266,76 @@ async function openRun(runId) {
   }
 }
 
+// Editable per-source masking plan (generated during discovery). A lightweight
+// self-contained modal: textarea + save / reset-to-discovered / close.
+async function openMaskingEditor(profileId) {
+  let data;
+  try {
+    data = await (await fetch(`/api/profiles/${profileId}/masking-rules`)).json();
+  } catch (err) {
+    alert("Could not load masking rules: " + err);
+    return;
+  }
+  const overlay = document.createElement("div");
+  overlay.style.cssText =
+    "position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1000;" +
+    "display:flex;align-items:center;justify-content:center;";
+  const box = document.createElement("div");
+  box.style.cssText =
+    "background:#fff;color:#111;width:min(900px,92vw);height:min(80vh,760px);" +
+    "border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:10px;" +
+    "box-shadow:0 12px 40px rgba(0,0,0,.4);";
+  box.innerHTML =
+    `<div style="display:flex;justify-content:space-between;align-items:center;">` +
+    `<b>Masking plan — ${profileId}</b>` +
+    `<a href="#" class="mk-close" style="text-decoration:none;font-size:20px;">×</a></div>` +
+    `<p class="muted small" style="margin:0;">Curated baseline + auto-classified PII columns discovered from the live source. ` +
+    `Edit strategies below; entries marked <code>auto:</code> were guessed and should be reviewed. ` +
+    `Empty = use the masker's baked baseline only.</p>` +
+    `<textarea class="mk-text" spellcheck="false" style="flex:1;width:100%;font-family:monospace;` +
+    `font-size:12px;white-space:pre;overflow:auto;resize:none;border:1px solid #ccc;border-radius:4px;padding:8px;"></textarea>` +
+    `<div class="mk-msg small muted" style="min-height:16px;"></div>` +
+    `<div style="display:flex;gap:8px;justify-content:flex-end;">` +
+    `<button class="mk-reset" type="button">Reset to discovered</button>` +
+    `<button class="mk-save" type="button">Save</button></div>`;
+  overlay.appendChild(box);
+  document.body.appendChild(overlay);
+  const ta = box.querySelector(".mk-text");
+  const msg = box.querySelector(".mk-msg");
+  ta.value = data.masking_rules || "";
+
+  const close = () => overlay.remove();
+  box.querySelector(".mk-close").addEventListener("click", (ev) => { ev.preventDefault(); close(); });
+  overlay.addEventListener("click", (ev) => { if (ev.target === overlay) close(); });
+
+  box.querySelector(".mk-save").addEventListener("click", async () => {
+    msg.textContent = "saving…"; msg.style.color = "";
+    const resp = await fetch(`/api/profiles/${profileId}/masking-rules`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ masking_rules: ta.value }),
+    });
+    if (resp.ok) { msg.style.color = "green"; msg.textContent = "saved ✓"; }
+    else {
+      const err = await resp.json().catch(() => ({}));
+      msg.style.color = "crimson"; msg.textContent = "error: " + (err.detail || resp.status);
+    }
+  });
+
+  box.querySelector(".mk-reset").addEventListener("click", async () => {
+    if (!confirm("Discard edits and reset to the last discovered plan?")) return;
+    msg.textContent = "resetting…"; msg.style.color = "";
+    const resp = await fetch(`/api/profiles/${profileId}/masking-rules/reset`, { method: "POST" });
+    if (resp.ok) {
+      const j = await resp.json();
+      ta.value = j.masking_rules || "";
+      msg.style.color = "green"; msg.textContent = "reset to discovered ✓";
+    } else {
+      const err = await resp.json().catch(() => ({}));
+      msg.style.color = "crimson"; msg.textContent = "error: " + (err.detail || resp.status);
+    }
+  });
+}
+
 function buildPayload() {
   return {
     operation: "mask",
@@ -359,7 +429,7 @@ function profileColumns() {
         const badge = profileStatusBadge(s);
         return err ? `<span title="${String(err).replace(/"/g, "&quot;")}">${badge} ⚠</span>` : badge;
       } },
-    { title: "", field: "id", hozAlign: "center", width: 260, headerSort: false,
+    { title: "", field: "id", hozAlign: "center", width: 330, headerSort: false,
       formatter: (c) => {
         const d = c.getRow().getData();
         const raw = d._raw || {};
@@ -375,7 +445,10 @@ function profileColumns() {
         const run = runnable
           ? `<a href="#" class="pf-run" data-id="${d.id}">run mask</a>`
           : `<span class="muted" title="build an image first">run mask</span>`;
-        return `${discover} · ${build} · ${run} · <a href="#" class="pf-edit" data-id="${d.id}">edit</a>`;
+        const masking = raw.discovery_hash
+          ? `<a href="#" class="pf-masking" data-id="${d.id}">masking</a>`
+          : `<span class="muted" title="run discovery first">masking</span>`;
+        return `${discover} · ${build} · ${masking} · ${run} · <a href="#" class="pf-edit" data-id="${d.id}">edit</a>`;
       } },  ];
 }
 
@@ -606,6 +679,12 @@ document.addEventListener("click", async (e) => {
     const { run_id } = await resp.json();
     location.hash = "#/runs";
     setTimeout(() => openRun(run_id), 0);
+  }
+
+  const msk = e.target.closest(".pf-masking");
+  if (msk) {
+    e.preventDefault();
+    await openMaskingEditor(msk.dataset.id);
   }
 
   const bld = e.target.closest(".pf-build");

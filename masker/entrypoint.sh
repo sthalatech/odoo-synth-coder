@@ -82,7 +82,19 @@ preflight "TARGET" "$TARGET_DB_HOST" "$TARGET_DB_PORT" "$TARGET_DB_USER" "$TARGE
 
 # 1. render greenmask config from the selected profile
 export SOURCE_DB_HOST SOURCE_DB_PORT SOURCE_DB_USER SOURCE_DB_PASSWORD SOURCE_DB_NAME GM_STORAGE
+# Per-source editable profile: when the control panel provides MASK_RULES_URL
+# (a presigned GET to the greenmask profile generated during discovery and
+# possibly edited by the operator), download and use it instead of a baked one.
 PROFILE_FILE="/work/profiles/${MASK_PROFILE}.yml"
+if [ -n "${MASK_RULES_URL:-}" ]; then
+  say "downloading per-source masking profile from control panel ..."
+  if curl -fsS "${MASK_RULES_URL}" -o /tmp/profile.yml && [ -s /tmp/profile.yml ]; then
+    PROFILE_FILE="/tmp/profile.yml"
+    say "using per-source (edited) masking profile."
+  else
+    say "WARN: could not download per-source profile; falling back to baked ${MASK_PROFILE}."
+  fi
+fi
 [ -f "$PROFILE_FILE" ] || PROFILE_FILE="/work/greenmask.tmpl.yml"
 say "using masking profile: ${MASK_PROFILE} (${PROFILE_FILE}); jobs=${GM_JOBS}"
 envsubst < "$PROFILE_FILE" > /tmp/greenmask.yml

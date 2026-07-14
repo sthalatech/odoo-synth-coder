@@ -112,7 +112,7 @@ def update(profile_id: str, payload: dict[str, Any]) -> None:
     fields: dict[str, Any] = {}
     for k in ("label", "description", "odoo_series", "odoo_git_url",
               "odoo_git_ref", "addons_git_url", "addons_git_ref",
-              "enterprise_source", "odoo_conf_extra"):
+              "enterprise_source", "odoo_conf_extra", "masking_rules"):
         if k in payload:
             fields[k] = payload[k]
     if "needs_enterprise" in payload:
@@ -193,6 +193,10 @@ def run_params(profile_id: str, overrides: Optional[dict[str, Any]] = None) -> d
         # the run result so an environment seeded from the run runs identical
         # code to the masked data.
         "odoo_image": p.get("image_uri"),
+        # Editable per-source greenmask profile (generated during discovery).
+        # When present the pipeline uploads it to S3 and points the masker at it
+        # instead of the baked profile.
+        "mask_rules": p.get("masking_rules") or "",
     }
     params.update(p.get("mask_inputs") or {})
     if overrides:

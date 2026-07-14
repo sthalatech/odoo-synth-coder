@@ -117,12 +117,30 @@ def _presign_masked_dump() -> tuple[str, str, str]:
     return put_url, get_url, f"s3://{bucket}/{key}"
 
 
+def _upload_mask_rules(text: str) -> str:
+    """Upload an edited greenmask profile to S3 and return a presigned GET URL
+    the masker can download. Returns '' if there's nothing to upload."""
+    if not text.strip():
+        return ""
+    bucket = config.dump_s3_bucket()
+    if not bucket:
+        raise RuntimeError("no S3 bucket configured (set DUMP_S3_BUCKET)")
+    prefix = config.dump_s3_prefix().rstrip("/").rsplit("/", 1)[0] + "/mask-rules"
+    key = f"{prefix}/{uuid.uuid4().hex[:12]}/greenmask.yml"
+    s3 = boto3.client("s3", region_name=_region())
+    s3.put_object(Bucket=bucket, Key=key, Body=text.encode("utf-8"),
+                  ContentType="text/yaml")
+    return s3.generate_presigned_url(
+        "get_object", Params={"Bucket": bucket, "Key": key}, ExpiresIn=12 * 3600)
+
+
 # ---------------------------------------------------------------------------
 # mask task definition
 # ---------------------------------------------------------------------------
 
 def _register_mask_taskdef(ecs, src: dict, tgt: dict, params: dict,
-                           masked_dump_put_url: Optional[str]) -> tuple[str, str, str, str]:
+                           masked_dump_put_url: Optional[str],
+                           mask_rules_url: Optional[str] = None) -> tuple[str, str, str, str]:
     proj = config.require("PROJECT")
     family = f"{proj}-mask"
     log_group = f"/ecs/{proj}"
@@ -159,6 +177,8 @@ def _register_mask_taskdef(ecs, src: dict, tgt: dict, params: dict,
     ]
     if masked_dump_put_url:
         env.append(kv("MASKED_DUMP_PUT_URL", masked_dump_put_url))
+    if mask_rules_url:
+        env.append(kv("MASK_RULES_URL", mask_rules_url))
 
     # optional SSH tunnel to reach the source through a bastion
     if params.get("ssh_enabled") and params.get("ssh_bastion"):
@@ -274,6 +294,11 @@ def run_operation(operation: str, params: dict, emit: LogSink) -> dict:
         masked_dump_put_url, masked_dump_get_url, masked_dump_s3_uri = _presign_masked_dump()
         emit("[panel] masked dump download requested; will upload pg_dump to S3")
 
+    # per-source editable greenmask profile (generated during discovery)
+    mask_rules_url = _upload_mask_rules(params.get("mask_rules") or "")
+    if mask_rules_url:
+        emit("[panel] using edited per-source masking profile (greenmask)")
+
     cluster = config.require("ECS_CLUSTER")
     sg = config.require("TASK_SG")
     via = ""
@@ -283,7 +308,7 @@ def run_operation(operation: str, params: dict, emit: LogSink) -> dict:
          f"-> {tgt['dbname']}@{tgt['host']} profile={params.get('mask_profile')}")
 
     family, container, log_group, prefix = _register_mask_taskdef(
-        ecs, src, tgt, params, masked_dump_put_url
+        ecs, src, tgt, params, masked_dump_put_url, mask_rules_url
     )
 
     emit(f"[panel] launching Fargate task ({family}) on cluster {cluster} ...")

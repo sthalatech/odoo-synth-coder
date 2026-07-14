@@ -167,7 +167,18 @@ def run_discovery(profile_id: str, emit: LogSink) -> dict:
     merged_conf = _merge_conf_extra(profile.get("odoo_conf_extra") or "", req_keys)
     if merged_conf != (profile.get("odoo_conf_extra") or ""):
         fields["odoo_conf_extra"] = merged_conf
+    # Editable per-source masking plan: seed it from discovery only if the
+    # profile has none yet, so a hand-edited plan survives re-discovery. The
+    # freshly discovered plan always stays retrievable from discovery.json in S3
+    # (discovery_yaml_uri), which powers the "reset to discovered" action.
+    discovered_plan = data.get("masking_plan") or ""
+    if discovered_plan and not (profile.get("masking_rules") or "").strip():
+        fields["masking_rules"] = discovered_plan
     store.update_profile(profile_id, **fields)
+
+    if discovered_plan:
+        emit(f"[panel] masking plan generated ({discovered_plan.count(chr(10))} "
+             f"lines){' (seeded)' if 'masking_rules' in fields else ' (kept existing edits)'}")
 
     if req_keys:
         emit(f"[panel] required odoo.conf keys discovered: {', '.join(req_keys)}")
@@ -204,3 +215,50 @@ def _merge_conf_extra(existing: str, required_keys: list) -> str:
     body = existing.rstrip("\n")
     prefix = (body + "\n") if body else ""
     return prefix + "\n".join(additions) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# masking-plan helpers (used by the API to view/edit/reset the per-source plan)
+# ---------------------------------------------------------------------------
+
+def validate_masking_rules(text: str) -> tuple[bool, str]:
+    """Best-effort validation of an edited greenmask masking profile. Empty is
+    allowed (the masker falls back to its baked profile). If PyYAML is available
+    we parse it and sanity-check that it looks like a greenmask profile with a
+    dump.transformation list."""
+    if not text.strip():
+        return True, ""
+    try:
+        import yaml
+    except Exception:  # noqa: BLE001
+        return True, ""  # cannot validate here; masker/greenmask validates strictly
+    try:
+        doc = yaml.safe_load(text)
+    except Exception as exc:  # noqa: BLE001
+        return False, f"YAML parse error: {exc}"
+    if not isinstance(doc, dict):
+        return False, "profile must be a YAML mapping"
+    dump = doc.get("dump")
+    if not isinstance(dump, dict) or "transformation" not in dump:
+        return False, "greenmask profile must define dump.transformation"
+    if not isinstance(dump["transformation"], list):
+        return False, "dump.transformation must be a list"
+    return True, ""
+
+
+def discovered_masking_plan(profile: dict) -> str:
+    """Fetch the freshly-discovered masking plan from the profile's last
+    discovery.json in S3 (discovery_yaml_uri), for the 'reset to discovered'
+    action. Returns '' if unavailable."""
+    uri = profile.get("discovery_yaml_uri") or ""
+    if not uri.startswith("s3://"):
+        return ""
+    try:
+        _, _, rest = uri.partition("s3://")
+        bucket, _, key = rest.partition("/")
+        s3 = boto3.client("s3", region_name=_region())
+        body = s3.get_object(Bucket=bucket, Key=key)["Body"].read()
+        return (json.loads(body).get("masking_plan") or "")
+    except Exception:  # noqa: BLE001
+        return ""
+

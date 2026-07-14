@@ -179,6 +179,10 @@ class ImageDeleteRequest(BaseModel):
     image_uri: str
 
 
+class MaskingRulesRequest(BaseModel):
+    masking_rules: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # API
 # ---------------------------------------------------------------------------
@@ -266,6 +270,40 @@ def api_discover_profile(profile_id: str) -> dict:
         daemon=True,
     ).start()
     return {"run_id": run_id}
+
+
+@app.get("/api/profiles/{profile_id}/masking-rules")
+def api_get_masking_rules(profile_id: str) -> dict:
+    p = store.get_profile(profile_id)
+    if not p:
+        raise HTTPException(404, "profile not found")
+    return {"masking_rules": p.get("masking_rules") or "",
+            "discovery_yaml_uri": p.get("discovery_yaml_uri")}
+
+
+@app.put("/api/profiles/{profile_id}/masking-rules")
+def api_update_masking_rules(profile_id: str, req: MaskingRulesRequest) -> dict:
+    p = store.get_profile(profile_id)
+    if not p:
+        raise HTTPException(404, "profile not found")
+    ok, err = discovery.validate_masking_rules(req.masking_rules or "")
+    if not ok:
+        raise HTTPException(400, f"invalid masking rules: {err}")
+    store.update_profile(profile_id, masking_rules=req.masking_rules or "")
+    return {"status": "updated"}
+
+
+@app.post("/api/profiles/{profile_id}/masking-rules/reset")
+def api_reset_masking_rules(profile_id: str) -> dict:
+    """Re-seed the editable plan from the last discovery.json in S3."""
+    p = store.get_profile(profile_id)
+    if not p:
+        raise HTTPException(404, "profile not found")
+    plan = discovery.discovered_masking_plan(p)
+    if not plan:
+        raise HTTPException(400, "no discovered masking plan available; run discovery first")
+    store.update_profile(profile_id, masking_rules=plan)
+    return {"status": "reset", "masking_rules": plan}
 
 
 @app.post("/api/profiles/{profile_id}/build")
