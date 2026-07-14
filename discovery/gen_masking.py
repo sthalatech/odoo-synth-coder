@@ -88,6 +88,27 @@ _SKIP_COLUMNS = {
     "ref", "code", "currency", "website_url",
 }
 
+# Odoo core auth / model-metadata / technical tables the masker handles itself
+# (admin-password reset + neutralize) or that carry structural XML-id / model
+# data Odoo depends on. Auto-masking their columns is redundant at best and
+# destructive at worst: e.g. greenmask hashing res_users.login (UNIQUE/NOT NULL)
+# can make greenmask emit the table with ZERO rows, wiping base.public_user /
+# user_admin and 500-ing every request. Never auto-transform these; the operator
+# can still add rules by hand. Generic across sources -- table *names* only.
+_SKIP_TABLES = {
+    # authentication & users -- reset/neutralized by the masker post-restore
+    "res_users", "res_users_log", "res_users_settings", "res_users_apikeys",
+    "res_users_apikeys_description", "auth_totp_device",
+    # XML-id / model metadata -- structural; masking breaks external IDs
+    "ir_model_data", "ir_model", "ir_model_fields", "ir_model_fields_selection",
+    "ir_model_relation", "ir_model_constraint", "ir_module_module",
+    "ir_module_module_dependency", "ir_translation", "ir_ui_view", "ir_ui_menu",
+    "ir_actions", "ir_act_window", "ir_act_server", "ir_cron", "ir_rule",
+    "ir_config_parameter", "ir_model_access", "res_groups",
+    # credentials -- neutralized by the masker
+    "ir_mail_server", "fetchmail_server", "payment_provider",
+}
+
 
 def transformer_for(column: str, dtype: str, fk_target: str | None) -> dict | None:
     """Return a greenmask transformer dict for a column, or None to leave it."""
@@ -123,6 +144,8 @@ def generate_plan(installed_modules: list[str], _baseline_dir=None) -> tuple[str
     table_transformers: dict[str, list[dict]] = {}
     n_cols = 0
     for table in sorted(schema):
+        if table in _SKIP_TABLES:
+            continue  # core auth/metadata/credential tables: masker handles them
         tlist: list[dict] = []
         for col in sorted(schema[table]):
             info = schema[table][col]

@@ -51,8 +51,15 @@ if [ -n "$DUMP_S3_URI" ]; then
   echo "[env __ENV_ID__] downloading masked dump $DUMP_S3_URI"
   aws s3 cp "$DUMP_S3_URI" /tmp/masked.dump --region "$REGION"
   echo "[env __ENV_ID__] restoring masked dump into $DB_NAME"
+  # --disable-triggers defers FK enforcement (SET session_replication_role =
+  # replica) during the data COPY. Without it, rows whose audit columns
+  # (create_uid/write_uid) reference a user deleted in the source are silently
+  # dropped by pg_restore -- which can take out core records like
+  # base.public_user and 500 every request. Generic across sources. (odoo is
+  # superuser in this container.)
   docker exec -i env-db pg_restore -U odoo -d "$DB_NAME" \
-      --no-owner --no-privileges --clean --if-exists < /tmp/masked.dump || true
+      --no-owner --no-privileges --clean --if-exists --disable-triggers \
+      < /tmp/masked.dump || true
   rm -f /tmp/masked.dump
   echo "[env __ENV_ID__] restore complete"
 fi
