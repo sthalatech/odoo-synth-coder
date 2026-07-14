@@ -138,21 +138,25 @@ def _resolve_odoo_image(source_run_id: Optional[str], s: dict) -> Optional[str]:
 
 def _authorize_ip(ec2, sg_id: str, ip: str, ports) -> None:
     """Authorize a single IP (a.b.c.d or CIDR) on the env SG for the given TCP
-    ports. Idempotent: an already-present rule is treated as success."""
+    ports. Each port is authorized independently so an already-present rule on
+    one port (e.g. a second env from the same IP) does not prevent the others
+    from being added — AWS rejects a multi-rule batch atomically on the first
+    duplicate, which would otherwise silently drop the still-missing ports."""
     cidr = ip.strip()
     if not cidr:
         return
     if "/" not in cidr:
         cidr = f"{cidr}/32"
-    perms = [{
-        "IpProtocol": "tcp", "FromPort": int(p), "ToPort": int(p),
-        "IpRanges": [{"CidrIp": cidr, "Description": "odoo-synth-env user access"}],
-    } for p in ports]
-    try:
-        ec2.authorize_security_group_ingress(GroupId=sg_id, IpPermissions=perms)
-    except Exception as exc:  # noqa: BLE001
-        if "InvalidPermission.Duplicate" not in str(exc):
-            raise
+    for p in ports:
+        perm = {
+            "IpProtocol": "tcp", "FromPort": int(p), "ToPort": int(p),
+            "IpRanges": [{"CidrIp": cidr, "Description": "odoo-synth-env user access"}],
+        }
+        try:
+            ec2.authorize_security_group_ingress(GroupId=sg_id, IpPermissions=[perm])
+        except Exception as exc:  # noqa: BLE001
+            if "InvalidPermission.Duplicate" not in str(exc):
+                raise
 
 
 def _revoke_ip(sg_id: str, ip: str, ports) -> None:
@@ -161,15 +165,16 @@ def _revoke_ip(sg_id: str, ip: str, ports) -> None:
         return
     if "/" not in cidr:
         cidr = f"{cidr}/32"
-    perms = [{
-        "IpProtocol": "tcp", "FromPort": int(p), "ToPort": int(p),
-        "IpRanges": [{"CidrIp": cidr}],
-    } for p in ports]
-    try:
-        ec2 = boto3.client("ec2", region_name=_region())
-        ec2.revoke_security_group_ingress(GroupId=sg_id, IpPermissions=perms)
-    except Exception:  # noqa: BLE001
-        pass
+    ec2 = boto3.client("ec2", region_name=_region())
+    for p in ports:
+        perm = {
+            "IpProtocol": "tcp", "FromPort": int(p), "ToPort": int(p),
+            "IpRanges": [{"CidrIp": cidr}],
+        }
+        try:
+            ec2.revoke_security_group_ingress(GroupId=sg_id, IpPermissions=[perm])
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def launch(env_id: str, source_run_id: Optional[str], issue: Optional[str],
