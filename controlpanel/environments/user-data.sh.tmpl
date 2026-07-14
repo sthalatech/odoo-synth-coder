@@ -134,9 +134,13 @@ if [ -n "$ODOO_IMAGE" ]; then
     MOUNT_ARGS="-v ${REPO_DIR}:/mnt/live:rw -e EXTRA_ADDONS_PATH=${EXTRA}"
   fi
 
+  # Odoo listens HTTP only on the docker network + a loopback publish used for
+  # the local health probe. Public traffic is terminated by the env-tls nginx
+  # sidecar (section 5a-tls) which re-encrypts to https on ${ODOO_PORT}. Odoo's
+  # odoo.conf sets proxy_mode=True so it trusts the X-Forwarded-* headers.
   docker rm -f env-odoo >/dev/null 2>&1 || true
   docker run -d --name env-odoo --network "$NET" \
-    -p 0.0.0.0:${ODOO_PORT}:8069 \
+    -p 127.0.0.1:18069:8069 \
     -e TARGET_DB_HOST=env-db \
     -e TARGET_DB_PORT=5432 \
     -e TARGET_DB_NAME="$DB_NAME" \
@@ -146,7 +150,66 @@ if [ -n "$ODOO_IMAGE" ]; then
     -e ODOO_CONF_EXTRA_B64="$ODOO_CONF_EXTRA_B64" \
     $MOUNT_ARGS \
     "$ODOO_IMAGE" || echo "[env __ENV_ID__] odoo container failed to start"
-  echo "[env __ENV_ID__] odoo on :${ODOO_PORT} (masked DB, live addons from repo)"
+  echo "[env __ENV_ID__] odoo (http, internal) up; fronting with TLS on :${ODOO_PORT}"
+
+  # --- 5a-tls. HTTPS termination in front of Odoo ----------------------------
+  # A tiny nginx sidecar terminates TLS (self-signed) on the public ${ODOO_PORT}
+  # and proxies to env-odoo:8069 over the private docker network. This makes the
+  # masked replica reachable only over https, matching the code-server box. The
+  # /websocket location keeps Odoo's bus (longpolling) working through the proxy.
+  install -d -m 700 /etc/odoo-tls
+  if [ ! -f /etc/odoo-tls/cert.pem ]; then
+    openssl req -x509 -nodes -newkey rsa:2048 -days 825 \
+      -keyout /etc/odoo-tls/key.pem -out /etc/odoo-tls/cert.pem \
+      -subj "/CN=odoo-synth-env-__ENV_ID__" >/dev/null 2>&1 \
+      || echo "[env __ENV_ID__] WARN: self-signed cert generation failed"
+  fi
+  cat > /etc/odoo-tls/nginx.conf <<'NGINX'
+worker_processes 1;
+events { worker_connections 1024; }
+http {
+  sendfile on;
+  keepalive_timeout 65;
+  client_max_body_size 500m;
+  map $http_upgrade $connection_upgrade { default upgrade; '' close; }
+  server {
+    listen 443 ssl;
+    ssl_certificate     /etc/nginx/tls/cert.pem;
+    ssl_certificate_key /etc/nginx/tls/key.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    proxy_read_timeout 720s;
+    proxy_connect_timeout 5s;
+    location /websocket {
+      proxy_pass http://env-odoo:8069;
+      proxy_http_version 1.1;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection $connection_upgrade;
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-Proto https;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Real-IP $remote_addr;
+    }
+    location / {
+      proxy_pass http://env-odoo:8069;
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-Host $host;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto https;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_redirect off;
+    }
+  }
+}
+NGINX
+  docker rm -f env-tls >/dev/null 2>&1 || true
+  docker run -d --name env-tls --network "$NET" --restart unless-stopped \
+    -p 0.0.0.0:${ODOO_PORT}:443 \
+    -v /etc/odoo-tls/cert.pem:/etc/nginx/tls/cert.pem:ro \
+    -v /etc/odoo-tls/key.pem:/etc/nginx/tls/key.pem:ro \
+    -v /etc/odoo-tls/nginx.conf:/etc/nginx/nginx.conf:ro \
+    nginx:alpine >/dev/null 2>&1 \
+    && echo "[env __ENV_ID__] TLS proxy up: https on :${ODOO_PORT} -> env-odoo:8069" \
+    || echo "[env __ENV_ID__] WARN: TLS proxy failed to start"
 
   # --- 5a. install the addons' Python deps into the odoo container -----------
   # The baked odoo image carries only the deps discovered for ITS provenance.
@@ -223,7 +286,7 @@ fi
 if [ -n "$ODOO_IMAGE" ]; then
   sleep 15
   ODOO_STATUS="$(docker inspect -f '{{.State.Status}}' env-odoo 2>/dev/null || echo missing)"
-  HTTP="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:${ODOO_PORT}/web/login 2>/dev/null || echo 000)"
+  HTTP="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:18069/web/login 2>/dev/null || echo 000)"
   echo "[env __ENV_ID__] odoo container=${ODOO_STATUS} http=${HTTP}"
   install -d -o dev -g dev /home/dev/workspace
   docker logs --tail 200 env-odoo > /home/dev/workspace/odoo.log 2>&1 || true
@@ -274,7 +337,7 @@ cat > "$WORKSPACE/ENVIRONMENT.md" <<EOF
 # odoo-synth dev environment __ENV_ID__
 
 - Issue: __ISSUE__
-- Masked Odoo: http://<this-host>:${ODOO_PORT}/
+- Masked Odoo: https://<this-host>:${ODOO_PORT}/ (self-signed TLS)
 - Masked DB:  postgresql://odoo:${PGPASS}@127.0.0.1:5432/${DB_NAME}
 - Odoo image: __ODOO_IMAGE__
 - Addons repo: __REPO_URL__ (${REPO_BRANCH:-default branch}) -- cloned at ./repo,

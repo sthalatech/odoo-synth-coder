@@ -208,7 +208,7 @@ def launch(env_id: str, source_run_id: Optional[str], issue: Optional[str],
             public_ip = inst.get("PrivateIpAddress")
 
         vscode_url = f"https://{public_ip}:{s['code_port']}/" if public_ip else None
-        odoo_url = f"http://{public_ip}:{s['odoo_port']}/" if public_ip else None
+        odoo_url = f"https://{public_ip}:{s['odoo_port']}/" if public_ip else None
         store.update_environment(
             env_id, status="running", public_ip=public_ip,
             vscode_url=vscode_url, odoo_url=odoo_url,
