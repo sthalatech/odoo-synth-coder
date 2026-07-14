@@ -42,20 +42,44 @@ def _psql_rows(query: str) -> list[list[str]]:
 
 
 def snapshot_schema() -> dict[str, dict[str, dict]]:
-    """table -> {column -> {data_type, fk_target}} for public base tables."""
+    """table -> {column -> {data_type, fk_target, unique, not_null}} for public
+    base tables. ``unique`` marks a column covered by a SINGLE-column UNIQUE or
+    PRIMARY KEY constraint (a shape-collapsing transformer on such a column emits
+    duplicate values -> the whole table fails its COPY on restore and lands
+    EMPTY). ``not_null`` marks a NOT NULL column (must never be nulled out)."""
     tables: dict[str, dict[str, dict]] = {}
     cols = _psql_rows(
-        "SELECT c.table_name, c.column_name, c.data_type "
+        "SELECT c.table_name, c.column_name, c.data_type, c.is_nullable "
         "FROM information_schema.columns c "
         "JOIN information_schema.tables t "
         "  ON t.table_schema=c.table_schema AND t.table_name=c.table_name "
         "WHERE c.table_schema='public' AND t.table_type='BASE TABLE' "
         "ORDER BY c.table_name, c.ordinal_position")
     for row in cols:
-        if len(row) < 3:
+        if len(row) < 4:
             continue
-        tbl, col, dtype = row[0], row[1], row[2]
-        tables.setdefault(tbl, {})[col] = {"data_type": dtype, "fk_target": None}
+        tbl, col, dtype, nullable = row[0], row[1], row[2], row[3]
+        tables.setdefault(tbl, {})[col] = {
+            "data_type": dtype, "fk_target": None,
+            "unique": False, "not_null": (nullable == "NO")}
+    # single-column UNIQUE / PRIMARY KEY constraints: a masked value that
+    # collides here fails the table's COPY on restore (table ends up empty).
+    # Only single-column constraints matter -- a multi-column unique key can
+    # still be satisfied even if one masked column repeats.
+    uniq = _psql_rows(
+        "SELECT t.relname, a.attname "
+        "FROM pg_constraint con "
+        "JOIN pg_class t ON t.oid=con.conrelid "
+        "JOIN pg_namespace n ON n.oid=t.relnamespace "
+        "JOIN pg_attribute a ON a.attrelid=t.oid AND a.attnum=ANY(con.conkey) "
+        "WHERE n.nspname='public' AND con.contype IN ('u','p') "
+        "  AND array_length(con.conkey,1)=1")
+    for row in uniq:
+        if len(row) < 2:
+            continue
+        tbl, col = row[0], row[1]
+        if tbl in tables and col in tables[tbl]:
+            tables[tbl][col]["unique"] = True
     fks = _psql_rows(
         "SELECT tc.table_name, kcu.column_name, ccu.table_name "
         "FROM information_schema.table_constraints tc "
@@ -119,8 +143,17 @@ _SKIP_TABLES = {
 }
 
 
-def transformer_for(column: str, dtype: str, fk_target: str | None) -> dict | None:
-    """Return a greenmask transformer dict for a column, or None to leave it."""
+def transformer_for(column: str, dtype: str, fk_target: str | None,
+                    unique: bool = False) -> dict | None:
+    """Return a greenmask transformer dict for a column, or None to leave it.
+
+    ``unique`` = the column is covered by a single-column UNIQUE/PK constraint.
+    Shape-collapsing transformers (Masking/Replace) would emit duplicate values
+    on such a column, which fails the table's COPY on restore and leaves the
+    table EMPTY. So a unique text column is masked with ``Hash`` instead, which
+    is deterministic and distinctness-preserving (each distinct input -> a
+    distinct output), keeping the constraint satisfiable. Generic across sources.
+    """
     if fk_target:
         return None  # FK (incl. partner ref): structural; target row is masked itself
     base = (dtype or "").lower().split("(")[0].strip()
@@ -131,6 +164,9 @@ def transformer_for(column: str, dtype: str, fk_target: str | None) -> dict | No
         return None
     if low in _SKIP_COLUMNS or low.endswith("_id") or low.endswith("_state"):
         return None
+    # UNIQUE/PK text column: only a distinctness-preserving transformer is safe.
+    if unique:
+        return {"name": "Hash", "column": column}
     # The greenmask `Masking` transformer keeps the value *shape* while hiding
     # the content (e.g. "John Smith" -> "Jo** *****"), which is far more useful
     # in a dev replica than a constant "REDACTED". Its `type` param picks the
@@ -176,7 +212,8 @@ def generate_plan(installed_modules: list[str], _baseline_dir=None) -> tuple[str
         tlist: list[dict] = []
         for col in sorted(schema[table]):
             info = schema[table][col]
-            t = transformer_for(col, info["data_type"], info["fk_target"])
+            t = transformer_for(col, info["data_type"], info["fk_target"],
+                                 info.get("unique", False))
             if t:
                 tlist.append(t)
                 n_cols += 1
