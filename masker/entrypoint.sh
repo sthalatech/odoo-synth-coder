@@ -21,6 +21,10 @@ NEUTRALIZE_MAIL="${NEUTRALIZE_MAIL:-true}"
 NEUTRALIZE_FETCHMAIL="${NEUTRALIZE_FETCHMAIL:-true}"
 NEUTRALIZE_PAYMENT="${NEUTRALIZE_PAYMENT:-true}"
 NEUTRALIZE_SMTP_PARAM="${NEUTRALIZE_SMTP_PARAM:-true}"
+# disable ALL scheduled actions (ir_cron) on the masked replica: a dev copy must
+# never fire crons (delayed emails, external syncs, custom jobs that hit prod
+# systems, or ones that choke on masked data). Generic across sources.
+NEUTRALIZE_CRONS="${NEUTRALIZE_CRONS:-true}"
 # reset the admin login string to 'admin' (in addition to the password).
 RESET_ADMIN_LOGIN="${RESET_ADMIN_LOGIN:-true}"
 
@@ -128,12 +132,13 @@ say "restore verified (res_partner present)."
 
 # 5. neutralize (guard each table: modules like fetchmail/payment may be absent)
 #    each step is individually toggleable via NEUTRALIZE_* env vars.
-say "neutralizing (mail=${NEUTRALIZE_MAIL} fetchmail=${NEUTRALIZE_FETCHMAIL} payment=${NEUTRALIZE_PAYMENT} smtp_param=${NEUTRALIZE_SMTP_PARAM}) ..."
-export N_MAIL N_FETCH N_PAY N_SMTP
+say "neutralizing (mail=${NEUTRALIZE_MAIL} fetchmail=${NEUTRALIZE_FETCHMAIL} payment=${NEUTRALIZE_PAYMENT} smtp_param=${NEUTRALIZE_SMTP_PARAM} crons=${NEUTRALIZE_CRONS}) ..."
+export N_MAIL N_FETCH N_PAY N_SMTP N_CRON
 is_true "$NEUTRALIZE_MAIL"      && N_MAIL=1  || N_MAIL=0
 is_true "$NEUTRALIZE_FETCHMAIL" && N_FETCH=1 || N_FETCH=0
 is_true "$NEUTRALIZE_PAYMENT"   && N_PAY=1   || N_PAY=0
 is_true "$NEUTRALIZE_SMTP_PARAM" && N_SMTP=1 || N_SMTP=0
+is_true "$NEUTRALIZE_CRONS"     && N_CRON=1  || N_CRON=0
 $PSQL_T <<SQL
 DO \$\$ BEGIN
   IF ${N_MAIL} = 1 AND to_regclass('public.ir_mail_server') IS NOT NULL THEN
@@ -147,6 +152,13 @@ DO \$\$ BEGIN
   END IF;
   IF ${N_SMTP} = 1 AND to_regclass('public.ir_config_parameter') IS NOT NULL THEN
     UPDATE ir_config_parameter SET value='0' WHERE key='mail.force.smtp.from' AND value IS NOT NULL;
+  END IF;
+  IF ${N_CRON} = 1 AND to_regclass('public.ir_cron') IS NOT NULL THEN
+    -- disable every scheduled action so the masked dev replica never fires crons
+    UPDATE ir_cron SET active=false;
+    IF to_regclass('public.ir_cron_trigger') IS NOT NULL THEN
+      DELETE FROM ir_cron_trigger;  -- drop any queued immediate triggers too
+    END IF;
   END IF;
 END \$\$;
 SQL
