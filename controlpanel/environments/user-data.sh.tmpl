@@ -351,3 +351,38 @@ EOF
 chown dev:dev "$WORKSPACE/ENVIRONMENT.md"
 
 echo "[env __ENV_ID__] ready; code-server on :${CODE_PORT}, odoo on :${ODOO_PORT}"
+
+# --- 7. readiness signal ---------------------------------------------------
+# The instance only becomes truly usable once Odoo answers HTTP (DB restore +
+# module registry load can take several minutes). We poll Odoo locally, then
+# tag the instance so the control panel can flip the env to "running" only
+# when it is actually serving (best-effort: never fail boot on this).
+signal_ready() {
+  set +e
+  local tok iid deadline
+  tok="$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \
+    -H "X-aws-ec2-metadata-token-ttl-seconds: 300" 2>/dev/null)"
+  iid="$(curl -s -H "X-aws-ec2-metadata-token: $tok" \
+    http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null)"
+  # wait up to ~12 min for Odoo to answer on the internal HTTP port.
+  deadline=$(( $(date +%s) + 720 ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+      http://127.0.0.1:18069/web/health 2>/dev/null)"
+    if [ "$code" = "200" ] || [ "$code" = "303" ] || [ "$code" = "302" ]; then
+      echo "[env __ENV_ID__] odoo answered http $code; marking ready"
+      if [ -n "$iid" ]; then
+        aws ec2 create-tags --region "$REGION" --resources "$iid" \
+          --tags Key=odoo-synth:ready,Value=true >/dev/null 2>&1 \
+          || echo "[env __ENV_ID__] WARN: could not tag ready (missing ec2:CreateTags?)"
+      fi
+      return 0
+    fi
+    sleep 10
+  done
+  echo "[env __ENV_ID__] WARN: odoo did not answer within timeout; tagging ready anyway"
+  [ -n "$iid" ] && aws ec2 create-tags --region "$REGION" --resources "$iid" \
+    --tags Key=odoo-synth:ready,Value=timeout >/dev/null 2>&1 || true
+}
+signal_ready
+

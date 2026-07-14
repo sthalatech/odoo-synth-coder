@@ -275,13 +275,56 @@ def launch(env_id: str, source_run_id: Optional[str], issue: Optional[str],
         vscode_remote_url = (
             f"vscode://vscode-remote/ssh-remote+{ssh_user}@{public_ip}"
             f"/home/{ssh_user}/workspace?windowId=_blank" if public_ip else None)
+        # The instance is up, but Odoo is not yet serving (DB restore + registry
+        # load). Record URLs but stay in "booting" until the boot script tags the
+        # instance ready (it polls Odoo's /web/health locally). This way the UI
+        # only shows "running" when the env is actually reachable.
         store.update_environment(
-            env_id, status="running", public_ip=public_ip,
+            env_id, status="booting", public_ip=public_ip,
             vscode_url=vscode_url, odoo_url=odoo_url,
             vscode_remote_url=vscode_remote_url,
         )
+        _wait_until_ready(ec2, instance_id, env_id)
     except Exception as exc:  # noqa: BLE001
         store.update_environment(env_id, status="failed", error=str(exc))
+
+
+def _wait_until_ready(ec2, instance_id: str, env_id: str,
+                      timeout_s: int = 900, interval_s: int = 15) -> None:
+    """Poll the instance's odoo-synth:ready tag (set by the boot script once Odoo
+    answers HTTP) and flip the env to 'running' only then. Falls back to 'running'
+    after the timeout so an env is never stuck in 'booting'."""
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        time.sleep(interval_s)
+        # a teardown may have flipped the env; stop polling if so.
+        env = store.get_environment(env_id)
+        if not env or env.get("status") in ("terminated", "failed"):
+            return
+        try:
+            d = ec2.describe_instances(InstanceIds=[instance_id])
+            inst = d["Reservations"][0]["Instances"][0]
+            if inst["State"]["Name"] in ("terminated", "stopping", "stopped"):
+                store.update_environment(
+                    env_id, status="failed",
+                    error=f"instance {inst['State']['Name']} while booting")
+                return
+            tags = {t["Key"]: t["Value"] for t in inst.get("Tags", [])}
+            ready = tags.get("odoo-synth:ready")
+            if ready == "true":
+                store.update_environment(env_id, status="running")
+                return
+            if ready == "timeout":
+                store.update_environment(
+                    env_id, status="running",
+                    error="odoo slow to answer during boot; may need a moment")
+                return
+        except Exception:  # noqa: BLE001 — transient AWS errors, keep polling
+            continue
+    # never leave it stuck in booting
+    store.update_environment(env_id, status="running",
+                             error="readiness signal not received before timeout")
+
 
 
 def create(source_run_id: Optional[str], issue: Optional[str],
