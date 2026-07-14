@@ -107,6 +107,12 @@ _SKIP_TABLES = {
     "ir_config_parameter", "ir_model_access", "res_groups",
     # credentials -- neutralized by the masker
     "ir_mail_server", "fetchmail_server", "payment_provider",
+    # core reference / locale / config data -- seeded from Odoo XML, parsed by
+    # code (e.g. res_lang.week_start is cast with int(); hashing it 500s every
+    # web page). Zero customer PII, so never auto-mask.
+    "res_lang", "res_country", "res_country_state", "res_country_group",
+    "res_currency", "res_currency_rate", "res_bank",
+    "decimal_precision", "uom_uom", "uom_category",
 }
 
 
