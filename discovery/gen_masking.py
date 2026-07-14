@@ -170,10 +170,12 @@ def transformer_for(column: str, dtype: str, fk_target: str | None,
     # The greenmask `Masking` transformer keeps the value *shape* while hiding
     # the content (e.g. "John Smith" -> "Jo** *****"), which is far more useful
     # in a dev replica than a constant "REDACTED". Its `type` param picks the
-    # masking style; we classify by column name (generic across sources).
+    # masking style; we classify by column name (generic across sources). NOTE:
+    # Masking accepts ONLY `column` + `type` -- it rejects `keep_null` with a
+    # fatal validation error, so we must not emit it here (it masks NULLs to a
+    # masked-empty value, which is harmless for these free-text columns).
     def _mask(mtype: str) -> dict:
-        return {"name": "Masking", "column": column, "type": mtype,
-                "keep_null": True}
+        return {"name": "Masking", "column": column, "type": mtype}
     if "email" in low:
         return _mask("email")
     if any(k in low for k in ("phone", "mobile", "fax", "tel")):
