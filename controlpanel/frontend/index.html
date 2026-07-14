@@ -251,6 +251,12 @@
             <label>Branch <span class="muted">(optional)</span>
               <input type="text" id="env-repo-branch" placeholder="main" />
             </label>
+            <label>Allow IP <span class="muted">(opens the firewall to you; blank = your current IP)</span>
+              <input type="text" id="env-allow-ip" placeholder="auto (your IP)" />
+            </label>
+            <label>SSH public key <span class="muted">(optional; enables VS Code Remote-SSH / ssh access)</span>
+              <textarea id="env-ssh-key" rows="2" placeholder="ssh-ed25519 AAAA... you@host"></textarea>
+            </label>
             <button type="submit" id="env-create-btn">Launch environment</button>
           </form>
           <p class="muted small">Launches an isolated EC2 running <b>code-server</b> + the provenance-baked Odoo image against a local masked DB. The addons repo is cloned into the workspace and live-mounted into Odoo. Tear down when the issue is closed.</p>

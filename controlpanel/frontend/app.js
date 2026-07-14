@@ -835,6 +835,8 @@ $("env-form").addEventListener("submit", async (e) => {
     issue: $("env-issue").value.trim() || null,
     repo_url: $("env-repo-url").value.trim() || null,
     repo_branch: $("env-repo-branch").value.trim() || null,
+    allow_ip: $("env-allow-ip").value.trim() || "auto",
+    ssh_public_key: $("env-ssh-key").value.trim() || null,
   });
   $("env-create-btn").disabled = false;
   if (ok) { $("env-issue").value = ""; loadEnvironments(); }
@@ -849,7 +851,7 @@ document.addEventListener("click", async (e) => {
     e.preventDefault();
     const runId = mk.dataset.run;
     if (!confirm(`Launch a developer environment seeded from run ${runId}?`)) return;
-    const ok = await createEnvironment({ source_run_id: runId });
+    const ok = await createEnvironment({ source_run_id: runId, allow_ip: "auto" });
     if (ok) { location.hash = "#/environments"; }
     return;
   }
@@ -866,6 +868,12 @@ document.addEventListener("click", async (e) => {
 loadConfig().then(navigate);
 loadProfiles();
 loadRuns();
+// Prefill the "Allow IP" field with the caller's IP so the firewall opens to
+// the right place by default (still editable; blank falls back to "auto").
+fetch("/api/whoami").then(r => r.ok ? r.json() : null).then(d => {
+  const el = $("env-allow-ip");
+  if (el && d && d.ip) el.placeholder = `auto (${d.ip})`;
+}).catch(() => {});
 setInterval(() => {
   loadRuns();
   if (currentRoute() === "overview") renderOverview();

@@ -33,12 +33,13 @@ def _gen_password(n: int = 24) -> str:
 def _render_user_data(env_id: str, issue: str, dump_s3_uri: str,
                       secret_arn: str, odoo_image: str, repo_url: str,
                       repo_branch: str, git_token_secret: str, s: dict,
-                      odoo_conf_extra: str = "") -> str:
+                      odoo_conf_extra: str = "", ssh_public_key: str = "") -> str:
     tmpl = TEMPLATE.read_text()
     conf_extra_b64 = base64.b64encode(
         (odoo_conf_extra or "").encode("utf-8")).decode("ascii")
-    ssh_pubkey_b64 = base64.b64encode(
-        (s.get("ssh_public_key") or "").encode("utf-8")).decode("ascii")
+    # per-env SSH key (from the UI) takes precedence over any configured default.
+    pubkey = (ssh_public_key or s.get("ssh_public_key") or "").strip()
+    ssh_pubkey_b64 = base64.b64encode(pubkey.encode("utf-8")).decode("ascii")
     repl = {
         "__ENV_ID__": env_id,
         "__ISSUE__": issue or "",
@@ -121,9 +122,47 @@ def _resolve_odoo_image(source_run_id: Optional[str], s: dict) -> Optional[str]:
     return None
 
 
+def _authorize_ip(ec2, sg_id: str, ip: str, ports) -> None:
+    """Authorize a single IP (a.b.c.d or CIDR) on the env SG for the given TCP
+    ports. Idempotent: an already-present rule is treated as success."""
+    cidr = ip.strip()
+    if not cidr:
+        return
+    if "/" not in cidr:
+        cidr = f"{cidr}/32"
+    perms = [{
+        "IpProtocol": "tcp", "FromPort": p, "ToPort": p,
+        "IpRanges": [{"CidrIp": cidr, "Description": "odoo-synth-env user access"}],
+    } for p in ports]
+    try:
+        ec2.authorize_security_group_ingress(GroupId=sg_id, IpPermissions=perms)
+    except Exception as exc:  # noqa: BLE001
+        if "InvalidPermission.Duplicate" not in str(exc):
+            raise
+
+
+def _revoke_ip(sg_id: str, ip: str, ports) -> None:
+    cidr = ip.strip()
+    if not cidr:
+        return
+    if "/" not in cidr:
+        cidr = f"{cidr}/32"
+    perms = [{
+        "IpProtocol": "tcp", "FromPort": p, "ToPort": p,
+        "IpRanges": [{"CidrIp": cidr}],
+    } for p in ports]
+    try:
+        ec2 = boto3.client("ec2", region_name=_region())
+        ec2.revoke_security_group_ingress(GroupId=sg_id, IpPermissions=perms)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def launch(env_id: str, source_run_id: Optional[str], issue: Optional[str],
            dump_s3_uri: Optional[str], repo_url: Optional[str],
-           repo_branch: Optional[str], profile_id: Optional[str] = None) -> None:
+           repo_branch: Optional[str], profile_id: Optional[str] = None,
+           allow_ip: Optional[str] = None,
+           ssh_public_key: Optional[str] = None) -> None:
     """Background worker: create secret, launch instance, poll until reachable."""
     s = config.environments_settings()
     try:
@@ -159,10 +198,21 @@ def launch(env_id: str, source_run_id: Optional[str], issue: Optional[str],
         user_data = _render_user_data(
             env_id, issue or "", dump or "", secret_arn, odoo_img or "",
             r_url or "", r_branch or "", git_token_secret or "", s,
-            odoo_conf_extra=conf_extra,
+            odoo_conf_extra=conf_extra, ssh_public_key=ssh_public_key or "",
         )
 
         ec2 = boto3.client("ec2", region_name=_region())
+
+        # Per-env firewall: open the SG to the user's IP for Odoo, code-server
+        # and SSH (Remote-SSH deep link needs port 22). Recorded so teardown
+        # can revoke it.
+        if allow_ip:
+            ports = [s["odoo_port"], s["code_port"], 22]
+            try:
+                _authorize_ip(ec2, s["security_group_id"], allow_ip, ports)
+                store.update_environment(env_id, allow_ip=allow_ip)
+            except Exception as exc:  # noqa: BLE001
+                raise RuntimeError(f"could not authorize IP {allow_ip}: {exc}")
         run_kwargs = {
             "ImageId": s["ami_id"],
             "InstanceType": s["instance_type"],
@@ -232,7 +282,9 @@ def launch(env_id: str, source_run_id: Optional[str], issue: Optional[str],
 def create(source_run_id: Optional[str], issue: Optional[str],
            dump_s3_uri: Optional[str], repo_url: Optional[str] = None,
            repo_branch: Optional[str] = None,
-           profile_id: Optional[str] = None) -> str:
+           profile_id: Optional[str] = None,
+           allow_ip: Optional[str] = None,
+           ssh_public_key: Optional[str] = None) -> str:
     env_id = uuid.uuid4().hex[:10]
     store.create_environment(env_id, source_run_id, issue, dump_s3_uri,
                              repo_url=repo_url, repo_branch=repo_branch,
@@ -241,7 +293,7 @@ def create(source_run_id: Optional[str], issue: Optional[str],
     threading.Thread(
         target=launch,
         args=(env_id, source_run_id, issue, dump_s3_uri, repo_url, repo_branch,
-              profile_id),
+              profile_id, allow_ip, ssh_public_key),
         daemon=True,
     ).start()
     return env_id
@@ -260,4 +312,8 @@ def teardown(env_id: str) -> None:
             pass
     if env.get("secret_arn"):
         _delete_secret(env["secret_arn"])
+    allow_ip = env.get("allow_ip")
+    if allow_ip:
+        s = config.environments_settings()
+        _revoke_ip(s["security_group_id"], allow_ip, [s["odoo_port"], s["code_port"], 22])
     store.update_environment(env_id, status="terminated", vscode_url=None)

@@ -17,7 +17,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -138,6 +138,13 @@ class EnvironmentRequest(BaseModel):
     dump_s3_uri: Optional[str] = None      # explicit s3:// masked dump (optional)
     repo_url: Optional[str] = None         # addons repo to clone + live-mount (optional)
     repo_branch: Optional[str] = None      # branch/ref of the addons repo (optional)
+    # access controls the user supplies from the UI:
+    #  * allow_ip: an IP or CIDR to authorize on the env security group (web +
+    #    SSH ports). "auto" resolves to the caller's own public IP.
+    #  * ssh_public_key: an OpenSSH public key injected into the workspace
+    #    user's authorized_keys so desktop VS Code (Remote-SSH) can connect.
+    allow_ip: Optional[str] = None
+    ssh_public_key: Optional[str] = None
 
 
 class ProfileRequest(BaseModel):
@@ -490,8 +497,23 @@ def api_list_environments() -> dict:
     return {"environments": store.list_environments()}
 
 
+def _caller_ip(request: Request) -> Optional[str]:
+    """Best-effort public IP of the API caller (honours the ALB/proxy
+    X-Forwarded-For header, else the socket peer)."""
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else None
+
+
+@app.get("/api/whoami")
+def api_whoami(request: Request) -> dict:
+    """Return the caller's public IP so the UI can pre-fill the allow-IP field."""
+    return {"ip": _caller_ip(request)}
+
+
 @app.post("/api/environments")
-def api_create_environment(req: EnvironmentRequest) -> dict:
+def api_create_environment(req: EnvironmentRequest, request: Request) -> dict:
     if not config.environments_configured():
         raise HTTPException(
             400,
@@ -529,9 +551,14 @@ def api_create_environment(req: EnvironmentRequest) -> dict:
             "downloadable pg_dump, or pass an explicit dump_s3_uri "
             "(s3://bucket/key)",
         )
+    allow_ip = req.allow_ip
+    if allow_ip and allow_ip.strip().lower() == "auto":
+        allow_ip = _caller_ip(request)
     env_id = environments.create(req.source_run_id, req.issue, req.dump_s3_uri,
                                  repo_url=req.repo_url, repo_branch=req.repo_branch,
-                                 profile_id=req.profile_id)
+                                 profile_id=req.profile_id,
+                                 allow_ip=allow_ip,
+                                 ssh_public_key=req.ssh_public_key)
     return {"environment_id": env_id}
 
 
