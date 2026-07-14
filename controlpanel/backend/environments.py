@@ -37,6 +37,8 @@ def _render_user_data(env_id: str, issue: str, dump_s3_uri: str,
     tmpl = TEMPLATE.read_text()
     conf_extra_b64 = base64.b64encode(
         (odoo_conf_extra or "").encode("utf-8")).decode("ascii")
+    ssh_pubkey_b64 = base64.b64encode(
+        (s.get("ssh_public_key") or "").encode("utf-8")).decode("ascii")
     repl = {
         "__ENV_ID__": env_id,
         "__ISSUE__": issue or "",
@@ -52,6 +54,8 @@ def _render_user_data(env_id: str, issue: str, dump_s3_uri: str,
         "__ODOO_PORT__": s.get("odoo_port") or "8069",
         "__ODOO_MASTER_PASSWORD__": config.get("ODOO_MASTER_PASSWORD", "change_me_master"),
         "__ODOO_CONF_EXTRA_B64__": conf_extra_b64,
+        "__SSH_USER__": s.get("ssh_user") or "dev",
+        "__SSH_PUBLIC_KEY_B64__": ssh_pubkey_b64,
     }
     for k, v in repl.items():
         tmpl = tmpl.replace(k, v)
@@ -209,9 +213,17 @@ def launch(env_id: str, source_run_id: Optional[str], issue: Optional[str],
 
         vscode_url = f"https://{public_ip}:{s['code_port']}/" if public_ip else None
         odoo_url = f"https://{public_ip}:{s['odoo_port']}/" if public_ip else None
+        # Desktop VS Code Remote-SSH deep link (opens the workspace in the local
+        # VS Code app, like exe.dev). Works once the user's SSH key can reach the
+        # env as ssh_user (inject environments.ssh_public_key + open port 22).
+        ssh_user = s.get("ssh_user") or "dev"
+        vscode_remote_url = (
+            f"vscode://vscode-remote/ssh-remote+{ssh_user}@{public_ip}"
+            f"/home/{ssh_user}/workspace?windowId=_blank" if public_ip else None)
         store.update_environment(
             env_id, status="running", public_ip=public_ip,
             vscode_url=vscode_url, odoo_url=odoo_url,
+            vscode_remote_url=vscode_remote_url,
         )
     except Exception as exc:  # noqa: BLE001
         store.update_environment(env_id, status="failed", error=str(exc))

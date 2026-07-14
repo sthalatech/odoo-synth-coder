@@ -285,6 +285,24 @@ fi
 CODE_PASS="$(aws secretsmanager get-secret-value --secret-id "$SECRET_ARN" \
     --region "$REGION" --query SecretString --output text 2>/dev/null || echo '')"
 
+# --- 6b. Remote-SSH access: inject the operator's SSH public key ------------
+# Lets desktop VS Code (Remote-SSH) open the workspace via the deep link
+# vscode://vscode-remote/ssh-remote+${SSH_USER}@<ip>/home/${SSH_USER}/workspace.
+# Best-effort: skip cleanly if no key was configured.
+SSH_USER="__SSH_USER__"
+SSH_PUBKEY="$(printf '%s' "__SSH_PUBLIC_KEY_B64__" | base64 -d 2>/dev/null || true)"
+if [ -n "$SSH_PUBKEY" ]; then
+  SSH_HOME="$(getent passwd "$SSH_USER" | cut -d: -f6)"
+  if [ -n "$SSH_HOME" ]; then
+    install -d -o "$SSH_USER" -g "$SSH_USER" -m 700 "$SSH_HOME/.ssh"
+    if ! grep -qxF "$SSH_PUBKEY" "$SSH_HOME/.ssh/authorized_keys" 2>/dev/null; then
+      echo "$SSH_PUBKEY" >> "$SSH_HOME/.ssh/authorized_keys"
+    fi
+    chown "$SSH_USER:$SSH_USER" "$SSH_HOME/.ssh/authorized_keys"
+    chmod 600 "$SSH_HOME/.ssh/authorized_keys"
+  fi
+fi
+
 # --- 7. self-signed TLS + code-server systemd service ----------------------
 install -d -o dev -g dev /home/dev/.config/code-server
 cat > /home/dev/.config/code-server/config.yaml <<EOF

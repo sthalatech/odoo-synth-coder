@@ -185,6 +185,11 @@ def environments_settings() -> dict:
         "code_port": str(e.get("code_port", 8443)),
         "odoo_port": str(e.get("odoo_port", 8069)),
         "db_name": e.get("db_name", "odoo"),
+        # Remote-SSH deep link: the OS user to connect as (the code-server /
+        # workspace user) and an optional SSH public key injected into its
+        # authorized_keys so desktop VS Code (Remote-SSH) can open the env.
+        "ssh_user": e.get("ssh_user", "dev"),
+        "ssh_public_key": _env_val("ssh_public_key", "ssh_public_key_env") or "",
         # The provenance-baked Odoo image the env runs against the masked DB. A
         # run may override this (result.odoo_image); this is the fallback.
         "odoo_image": odoo_image(),
