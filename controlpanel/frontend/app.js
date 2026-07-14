@@ -732,7 +732,11 @@ function envColumns() {
     { title: "status", field: "status", width: 120,
       formatter: (c) => `<span class="st-${c.getValue()}">${c.getValue()}</span>` },
     { title: "vscode", field: "vscode_url", hozAlign: "center", width: 100,
-      formatter: (c) => linkCell(c.getValue(), "open") },
+      formatter: (c) => linkCell(c.getValue(), "browser") },
+    { title: "vscode (local)", field: "vscode_remote_url", hozAlign: "center", width: 120,
+      formatter: (c) => (c.getValue()
+        ? `<a href="${c.getValue()}" onclick="event.stopPropagation()">open ↗</a>`
+        : "—") },
     { title: "odoo", field: "odoo_url", hozAlign: "center", width: 100,
       formatter: (c) => linkCell(c.getValue(), "open") },
     { title: "created", field: "created_at", width: 170,
