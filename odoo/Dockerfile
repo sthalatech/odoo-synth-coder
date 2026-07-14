@@ -150,7 +150,20 @@ ARG PYTHON_DEPS
 RUN set -eux; \
     if [ -n "${PYTHON_DEPS}" ]; then \
       for pkg in ${PYTHON_DEPS}; do \
+        # Skip junk / namespace / meta packages that must never be installed:
+        #  - "google" is a search-scraper that hijacks the google.* namespace
+        #    and breaks real distributions like google-genai (google.genai).
+        #  - "pip"/"setuptools"/"wheel" must not be reinstalled mid-build.
+        case "$(echo "$pkg" | sed -E 's/[<>=~!].*//' | tr 'A-Z' 'a-z')" in \
+          google|pip|setuptools|wheel) \
+            echo "SKIP junk/meta package $pkg"; continue;; \
+        esac; \
+        # Try constrained first (reproducible pins); if the constraints file
+        # conflicts with the discovered dep (e.g. google-genai needs a newer
+        # requests than Odoo's pin), retry unconstrained so the real import
+        # still resolves rather than leaving the module unimportable.
         pip install --no-cache-dir -c /tmp/constraints.txt "$pkg" \
+          || pip install --no-cache-dir "$pkg" \
           || echo "WARN: could not install discovered dep $pkg"; \
       done; \
     fi

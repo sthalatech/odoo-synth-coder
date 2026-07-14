@@ -177,8 +177,16 @@ def import_scan(root: Path, local_modules: set[str]) -> set[str]:
     return third_party
 
 
+# PyPI names that must never be emitted as deps: junk/namespace/meta packages.
+# "google" is a search-scraper that hijacks the google.* namespace and breaks
+# real distributions (google-genai -> google.genai); the real package is
+# discovered separately from requirements.txt / manifests.
+_JUNK_PIP = {"google", "pip", "setuptools", "wheel"}
+
+
 def to_pip_names(imports: set[str]) -> set[str]:
-    return {_IMPORT_TO_PIP.get(i, i) for i in imports}
+    return {_IMPORT_TO_PIP.get(i, i) for i in imports
+            if _IMPORT_TO_PIP.get(i, i).lower() not in _JUNK_PIP}
 
 
 # ---------------------------------------------------------------------------
