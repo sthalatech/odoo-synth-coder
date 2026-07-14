@@ -494,6 +494,9 @@ def api_env_config() -> dict:
 
 @app.get("/api/environments")
 def api_list_environments() -> dict:
+    # recover any envs left 'booting' by a panel restart (their in-process poll
+    # thread died, but the instance still tagged itself ready).
+    environments.reconcile_booting()
     return {"environments": store.list_environments()}
 
 

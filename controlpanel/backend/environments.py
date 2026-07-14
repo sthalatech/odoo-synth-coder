@@ -344,6 +344,58 @@ def _wait_until_ready(ec2, instance_id: str, env_id: str,
                              error="readiness signal not received before timeout")
 
 
+def reconcile_booting(max_age_s: int = 1800) -> None:
+    """Reconcile envs stuck in 'booting'/'provisioning' by checking the instance
+    ready tag directly. This is what makes readiness robust across control-panel
+    restarts: the in-process poll thread dies on restart, but the boot script
+    still tags the instance, so we recover the true state on demand (e.g. when
+    the UI lists environments). Best-effort and cheap: only touches envs that are
+    still booting and have an instance id."""
+    try:
+        pending = [e for e in store.list_environments()
+                   if e.get("status") in ("booting", "provisioning")
+                   and e.get("instance_id")]
+    except Exception:  # noqa: BLE001
+        return
+    if not pending:
+        return
+    try:
+        ec2 = boto3.client("ec2", region_name=_region())
+        ids = [e["instance_id"] for e in pending]
+        d = ec2.describe_instances(InstanceIds=ids)
+    except Exception:  # noqa: BLE001
+        return
+    state_by_id = {}
+    for r in d.get("Reservations", []):
+        for inst in r.get("Instances", []):
+            state_by_id[inst["InstanceId"]] = inst
+    now = time.time()
+    for e in pending:
+        inst = state_by_id.get(e["instance_id"])
+        if not inst:
+            continue
+        st = inst["State"]["Name"]
+        if st in ("terminated", "stopping", "stopped"):
+            store.update_environment(e["id"], status="failed",
+                                     error=f"instance {st} while booting")
+            continue
+        tags = {t["Key"]: t["Value"] for t in inst.get("Tags", [])}
+        ready = tags.get("odoo-synth:ready")
+        if ready == "true":
+            store.update_environment(e["id"], status="running")
+        elif ready == "timeout":
+            store.update_environment(
+                e["id"], status="running",
+                error="odoo slow to answer during boot; may need a moment")
+        elif (now - (e.get("created_at") or now)) > max_age_s:
+            # fell through the safety net (e.g. panel restarted before the tag
+            # or the boot script could not tag) — don't strand it forever.
+            store.update_environment(
+                e["id"], status="running",
+                error="readiness signal not received; assuming ready after timeout")
+
+
+
 
 def create(source_run_id: Optional[str], issue: Optional[str],
            dump_s3_uri: Optional[str], repo_url: Optional[str] = None,
