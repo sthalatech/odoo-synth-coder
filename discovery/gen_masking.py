@@ -86,6 +86,9 @@ _TEXT_TYPES = {"text", "character varying", "varchar", "char", "character"}
 _SKIP_COLUMNS = {
     "state", "lang", "tz", "active", "color", "type", "res_model", "model",
     "ref", "code", "currency", "website_url",
+    # structural materialized path on any _parent_store model (e.g. "1/5/"):
+    # Odoo splits it and casts each segment with int() -> hashing it 500s.
+    "parent_path",
 }
 
 # Odoo core auth / model-metadata / technical tables the masker handles itself
