@@ -158,15 +158,26 @@ RUN set -eux; \
           google|pip|setuptools|wheel) \
             echo "SKIP junk/meta package $pkg"; continue;; \
         esac; \
-        # Try constrained first (reproducible pins); if the constraints file
+        # Try constrained first (reproducible pins). If the constraints file
         # conflicts with the discovered dep (e.g. google-genai needs a newer
-        # requests than Odoo's pin), retry unconstrained so the real import
-        # still resolves rather than leaving the module unimportable.
+        # requests than Odoo's pin), retry WITHOUT touching the dependency tree
+        # (--no-deps) so the real import resolves but a discovered dep can never
+        # upgrade Odoo's own pinned stack (cryptography/pyOpenSSL/lxml/etc.) —
+        # such an upgrade breaks base at import time (OpenSSL GEN_EMAIL).
         pip install --no-cache-dir -c /tmp/constraints.txt "$pkg" \
-          || pip install --no-cache-dir "$pkg" \
+          || pip install --no-cache-dir --no-deps "$pkg" \
           || echo "WARN: could not install discovered dep $pkg"; \
       done; \
     fi
+
+# Repair step (defense in depth): a discovered dep or its transitive tree must
+# never leave Odoo's security-critical libraries off their supported pins. Any
+# collateral upgrade here re-breaks base (e.g. cryptography>=35 vs pyOpenSSL
+# 21.0.0 -> "module 'lib' has no attribute 'GEN_EMAIL'"). Re-assert the pins.
+RUN set -eux; \
+    pip install --no-cache-dir -c /tmp/constraints.txt \
+      "cryptography==3.4.8" "pyOpenSSL==21.0.0"; \
+    python3 -c "from OpenSSL import crypto; print('OpenSSL import OK')"
 
 COPY entrypoint.sh /odoo-entrypoint.sh
 RUN chmod +x /odoo-entrypoint.sh
