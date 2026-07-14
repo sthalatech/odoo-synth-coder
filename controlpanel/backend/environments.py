@@ -7,6 +7,7 @@ the per-env secret). Designed to later be driven by GitHub-issue webhooks.
 """
 from __future__ import annotations
 import base64
+import gzip
 import secrets
 import string
 import time
@@ -200,6 +201,10 @@ def launch(env_id: str, source_run_id: Optional[str], issue: Optional[str],
             r_url or "", r_branch or "", git_token_secret or "", s,
             odoo_conf_extra=conf_extra, ssh_public_key=ssh_public_key or "",
         )
+        # EC2 caps user-data at 16384 bytes (pre-base64). cloud-init transparently
+        # decompresses gzip'd user-data, so compress to make room for the SSH key
+        # and other injected config.
+        user_data_bytes = gzip.compress(user_data.encode("utf-8"))
 
         ec2 = boto3.client("ec2", region_name=_region())
 
@@ -218,7 +223,7 @@ def launch(env_id: str, source_run_id: Optional[str], issue: Optional[str],
             "InstanceType": s["instance_type"],
             "MinCount": 1,
             "MaxCount": 1,
-            "UserData": user_data,
+            "UserData": user_data_bytes,
             "TagSpecifications": [{
                 "ResourceType": "instance",
                 "Tags": [
