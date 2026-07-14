@@ -150,6 +150,73 @@ def _stdlib_names() -> set[str]:
     return names
 
 
+# odoo.tools.config keys an addon reads from odoo.conf. If a source deployment
+# defines custom keys there (e.g. an SSO addon doing config['sso_api_secret'])
+# and the key is absent, Odoo raises KeyError and the request 500s. We surface
+# these so the profile can seed them (empty) into the dev env's odoo.conf.
+# Anything Odoo itself defines is filtered out — those always exist.
+_CORE_CONFIG_KEYS = {
+    "addons_path", "admin_passwd", "data_dir", "db_host", "db_port", "db_user",
+    "db_password", "db_name", "db_maxconn", "db_template", "dbfilter",
+    "http_port", "http_interface", "http_enable", "list_db", "proxy_mode",
+    "workers", "max_cron_threads", "limit_time_cpu", "limit_time_real",
+    "limit_memory_hard", "limit_memory_soft", "limit_request", "log_level",
+    "logfile", "log_handler", "server_wide_modules", "smtp_server", "smtp_port",
+    "smtp_user", "smtp_password", "smtp_ssl", "email_from", "unaccent",
+    "without_demo", "test_enable", "test_file", "test_tags", "gevent_port",
+    "screencasts", "screenshots", "geoip_database", "geoip_city_db",
+    "geoip_country_db", "pidfile", "syslog", "csv_internal_sep",
+    "publisher_warranty_url", "reportgz", "root_path", "upgrade_path",
+    "pre_upgrade_scripts", "load_language", "language", "transient_age_limit",
+    "osv_memory_age_limit", "websocket_keep_alive_timeout",
+    "websocket_rate_limit_burst", "websocket_rate_limit_delay",
+}
+
+# attribute chains whose subscript/`.get()` reads an odoo.conf key:
+#   config['x'] / config.get('x') / tools.config['x'] / conf.config['x']
+_CONFIG_OBJ_NAMES = {"config"}
+
+
+def _config_key_from_node(node: ast.AST):
+    """Return the string literal key if `node` is `<cfg>['key']` or
+    `<cfg>.get('key'...)` where <cfg> is a config object, else None."""
+    if isinstance(node, ast.Subscript):
+        base = node.value
+        name = (base.attr if isinstance(base, ast.Attribute)
+                else base.id if isinstance(base, ast.Name) else None)
+        if name in _CONFIG_OBJ_NAMES:
+            sl = node.slice
+            if isinstance(sl, ast.Constant) and isinstance(sl.value, str):
+                return sl.value
+    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get"):
+        base = node.func.value
+        name = (base.attr if isinstance(base, ast.Attribute)
+                else base.id if isinstance(base, ast.Name) else None)
+        if name in _CONFIG_OBJ_NAMES and node.args:
+            a0 = node.args[0]
+            if isinstance(a0, ast.Constant) and isinstance(a0.value, str):
+                return a0.value
+    return None
+
+
+def config_key_scan(root: Path) -> set[str]:
+    """Find odoo.tools.config keys the addons read from odoo.conf, minus the
+    keys Odoo always defines. These are the source-specific config options a
+    masked dev replica must have present (even if empty) to avoid KeyError."""
+    keys: set[str] = set()
+    for py in root.rglob("*.py"):
+        try:
+            tree = ast.parse(py.read_text(encoding="utf-8"), filename=str(py))
+        except Exception:  # noqa: BLE001 — skip unparseable files
+            continue
+        for node in ast.walk(tree):
+            k = _config_key_from_node(node)
+            if k:
+                keys.add(k)
+    return {k for k in keys if k not in _CORE_CONFIG_KEYS}
+
+
 def import_scan(root: Path, local_modules: set[str]) -> set[str]:
     stdlib = _stdlib_names()
     found: set[str] = set()
@@ -230,6 +297,7 @@ def main() -> int:
     req_pkgs: set[str] = set()
     req_files: list[str] = []
     heuristic: set[str] = set()
+    config_keys: set[str] = set()
 
     workdir = Path("/tmp/addons")
     repo = clone_addons(workdir)
@@ -248,8 +316,10 @@ def main() -> int:
                 apt_deps.add(b)
         req_pkgs, req_files = scan_requirements(repo)
         heuristic = to_pip_names(import_scan(repo, local_modules))
+        config_keys = config_key_scan(repo)
         log(f"custom_modules={len(custom_modules)} declared_py={len(python_declared)} "
-            f"req_pkgs={len(req_pkgs)} heuristic_py={len(heuristic)}")
+            f"req_pkgs={len(req_pkgs)} heuristic_py={len(heuristic)} "
+            f"config_keys={len(config_keys)}")
 
     python_deps = sorted(python_declared | req_pkgs | heuristic)
     # deps that came ONLY from the heuristic scan (i.e. undeclared) — surfaced so
@@ -268,11 +338,13 @@ def main() -> int:
         "python_deps_undeclared": undeclared,
         "apt_deps": sorted(apt_deps),
         "requirements_files": req_files,
+        "required_config_keys": sorted(config_keys),
     }
     payload["discovery_hash"] = hashlib.sha256(
         json.dumps({k: payload[k] for k in (
             "odoo_series", "odoo_git_ref", "addons_git_ref",
-            "custom_modules", "python_deps", "apt_deps")},
+            "custom_modules", "python_deps", "apt_deps",
+            "required_config_keys")},
             sort_keys=True).encode()).hexdigest()[:12]
 
     upload(payload)

@@ -93,6 +93,8 @@ def init() -> None:
               python_deps            TEXT,
               apt_deps               TEXT,
               installed_modules      TEXT,
+              required_config_keys   TEXT,       -- json list of odoo.conf keys addons read
+              odoo_conf_extra        TEXT,       -- extra odoo.conf lines injected into dev envs
               discovery_yaml_uri     TEXT,       -- s3://.../discovery.yaml
               -- built image + lifecycle
               image_uri              TEXT,       -- current immutable ECR tag
@@ -123,6 +125,10 @@ def _migrate(c: sqlite3.Connection) -> None:
     prof_cols = cols("profiles")
     if "discovery_hash" not in prof_cols:
         c.execute("ALTER TABLE profiles ADD COLUMN discovery_hash TEXT")
+    if "required_config_keys" not in prof_cols:
+        c.execute("ALTER TABLE profiles ADD COLUMN required_config_keys TEXT")
+    if "odoo_conf_extra" not in prof_cols:
+        c.execute("ALTER TABLE profiles ADD COLUMN odoo_conf_extra TEXT")
 
 
 
@@ -266,7 +272,7 @@ def environments_by_run() -> dict[str, dict[str, Any]]:
 # JSON-encoded columns on the profiles table.
 _PROFILE_JSON_COLS = {
     "source_conn", "mask_inputs", "python_deps", "apt_deps",
-    "installed_modules", "image_history",
+    "installed_modules", "image_history", "required_config_keys",
 }
 
 

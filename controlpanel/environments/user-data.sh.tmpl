@@ -31,6 +31,7 @@ DB_NAME="__DB_NAME__"
 CODE_PORT="__CODE_PORT__"
 ODOO_PORT="__ODOO_PORT__"
 ODOO_MASTER_PASSWORD="__ODOO_MASTER_PASSWORD__"
+ODOO_CONF_EXTRA_B64="__ODOO_CONF_EXTRA_B64__"
 WORKSPACE="/home/dev/workspace"
 REPO_DIR="$WORKSPACE/repo"
 PGPASS="odoo"
@@ -142,6 +143,7 @@ if [ -n "$ODOO_IMAGE" ]; then
     -e TARGET_DB_USER=odoo \
     -e TARGET_DB_PASSWORD="$PGPASS" \
     -e ODOO_MASTER_PASSWORD="$ODOO_MASTER_PASSWORD" \
+    -e ODOO_CONF_EXTRA_B64="$ODOO_CONF_EXTRA_B64" \
     $MOUNT_ARGS \
     "$ODOO_IMAGE" || echo "[env __ENV_ID__] odoo container failed to start"
   echo "[env __ENV_ID__] odoo on :${ODOO_PORT} (masked DB, live addons from repo)"

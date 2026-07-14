@@ -6,6 +6,7 @@ instance per environment; torn down on teardown (terminate instance + delete
 the per-env secret). Designed to later be driven by GitHub-issue webhooks.
 """
 from __future__ import annotations
+import base64
 import secrets
 import string
 import time
@@ -31,8 +32,11 @@ def _gen_password(n: int = 24) -> str:
 
 def _render_user_data(env_id: str, issue: str, dump_s3_uri: str,
                       secret_arn: str, odoo_image: str, repo_url: str,
-                      repo_branch: str, git_token_secret: str, s: dict) -> str:
+                      repo_branch: str, git_token_secret: str, s: dict,
+                      odoo_conf_extra: str = "") -> str:
     tmpl = TEMPLATE.read_text()
+    conf_extra_b64 = base64.b64encode(
+        (odoo_conf_extra or "").encode("utf-8")).decode("ascii")
     repl = {
         "__ENV_ID__": env_id,
         "__ISSUE__": issue or "",
@@ -47,6 +51,7 @@ def _render_user_data(env_id: str, issue: str, dump_s3_uri: str,
         "__CODE_PORT__": s.get("code_port") or "8443",
         "__ODOO_PORT__": s.get("odoo_port") or "8069",
         "__ODOO_MASTER_PASSWORD__": config.get("ODOO_MASTER_PASSWORD", "change_me_master"),
+        "__ODOO_CONF_EXTRA_B64__": conf_extra_b64,
     }
     for k, v in repl.items():
         tmpl = tmpl.replace(k, v)
@@ -146,9 +151,11 @@ def launch(env_id: str, source_run_id: Optional[str], issue: Optional[str],
         secret_arn = _create_secret(env_id, password, s)
         store.update_environment(env_id, secret_arn=secret_arn)
 
+        conf_extra = (profile.get("odoo_conf_extra") if profile else "") or ""
         user_data = _render_user_data(
             env_id, issue or "", dump or "", secret_arn, odoo_img or "",
             r_url or "", r_branch or "", git_token_secret or "", s,
+            odoo_conf_extra=conf_extra,
         )
 
         ec2 = boto3.client("ec2", region_name=_region())

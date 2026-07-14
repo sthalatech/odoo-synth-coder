@@ -45,6 +45,17 @@ list_db = False
 proxy_mode = True
 CONF
 
+# Per-profile extra odoo.conf options (base64-encoded newline-delimited
+# key = value lines). Some source deployments read custom config keys from
+# odoo.conf (e.g. an SSO addon doing config['sso_api_secret']); without the key
+# defined, Odoo raises KeyError and the page 500s. Injecting the keys (even
+# empty) lets those addons load in the masked dev replica.
+if [ -n "${ODOO_CONF_EXTRA_B64:-}" ]; then
+  echo "[odoo] appending profile odoo.conf extras"
+  printf '%s' "${ODOO_CONF_EXTRA_B64}" | base64 -d >> /etc/odoo/odoo.conf 2>/dev/null \
+    || echo "[odoo] WARN: could not decode ODOO_CONF_EXTRA_B64"
+fi
+
 COMMIT="$(cat /opt/odoo-src.commit 2>/dev/null || echo unknown)"
 echo "[odoo] source commit ${COMMIT}"
 echo "[odoo] launching against ${TARGET_DB_NAME}@${TARGET_DB_HOST}; addons_path=${ADDONS}"

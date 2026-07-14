@@ -147,18 +147,30 @@ def run_discovery(profile_id: str, emit: LogSink) -> dict:
 
     # fetch the discovery.json we just produced and fold it into the profile
     data = _fetch_discovery(get_url)
+    req_keys = data.get("required_config_keys") or []
     fields: dict = {
         "discovery_yaml_uri": s3_uri,
         "installed_modules": data.get("installed_modules") or [],
         "python_deps": data.get("python_deps") or [],
         "apt_deps": data.get("apt_deps") or [],
+        "required_config_keys": req_keys,
         "discovery_hash": data.get("discovery_hash"),
         "image_status": "discovered",
         "error": None,
     }
     if data.get("odoo_series") and not profile.get("odoo_series"):
         fields["odoo_series"] = data["odoo_series"]
+    # Seed odoo.conf extras from the discovered config keys so custom addons that
+    # read source-specific keys (e.g. an SSO addon's config['sso_api_secret'])
+    # don't KeyError->500 in the masked dev replica. Existing lines are kept and
+    # user-set values are never overwritten; only missing keys are added empty.
+    merged_conf = _merge_conf_extra(profile.get("odoo_conf_extra") or "", req_keys)
+    if merged_conf != (profile.get("odoo_conf_extra") or ""):
+        fields["odoo_conf_extra"] = merged_conf
     store.update_profile(profile_id, **fields)
+
+    if req_keys:
+        emit(f"[panel] required odoo.conf keys discovered: {', '.join(req_keys)}")
 
     undeclared = data.get("python_deps_undeclared") or []
     if undeclared:
@@ -174,3 +186,21 @@ def run_discovery(profile_id: str, emit: LogSink) -> dict:
 def _fetch_discovery(get_url: str) -> dict:
     with urllib.request.urlopen(get_url, timeout=60) as r:  # noqa: S310 — presigned
         return json.loads(r.read().decode())
+
+
+def _merge_conf_extra(existing: str, required_keys: list) -> str:
+    """Append `key =` lines for any required odoo.conf key not already present
+    in `existing`. Never overwrites a key the user already set (with a value),
+    so a hand-edited secret survives re-discovery. Returns the merged text."""
+    present: set = set()
+    for ln in existing.splitlines():
+        s = ln.strip()
+        if not s or s.startswith(("#", ";")) or "=" not in s:
+            continue
+        present.add(s.split("=", 1)[0].strip())
+    additions = [f"{k} =" for k in required_keys if k not in present]
+    if not additions:
+        return existing
+    body = existing.rstrip("\n")
+    prefix = (body + "\n") if body else ""
+    return prefix + "\n".join(additions) + "\n"
