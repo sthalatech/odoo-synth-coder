@@ -131,7 +131,7 @@ def _authorize_ip(ec2, sg_id: str, ip: str, ports) -> None:
     if "/" not in cidr:
         cidr = f"{cidr}/32"
     perms = [{
-        "IpProtocol": "tcp", "FromPort": p, "ToPort": p,
+        "IpProtocol": "tcp", "FromPort": int(p), "ToPort": int(p),
         "IpRanges": [{"CidrIp": cidr, "Description": "odoo-synth-env user access"}],
     } for p in ports]
     try:
@@ -148,7 +148,7 @@ def _revoke_ip(sg_id: str, ip: str, ports) -> None:
     if "/" not in cidr:
         cidr = f"{cidr}/32"
     perms = [{
-        "IpProtocol": "tcp", "FromPort": p, "ToPort": p,
+        "IpProtocol": "tcp", "FromPort": int(p), "ToPort": int(p),
         "IpRanges": [{"CidrIp": cidr}],
     } for p in ports]
     try:
