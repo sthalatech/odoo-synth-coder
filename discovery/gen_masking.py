@@ -131,15 +131,33 @@ def transformer_for(column: str, dtype: str, fk_target: str | None) -> dict | No
         return None
     if low in _SKIP_COLUMNS or low.endswith("_id") or low.endswith("_state"):
         return None
+    # The greenmask `Masking` transformer keeps the value *shape* while hiding
+    # the content (e.g. "John Smith" -> "Jo** *****"), which is far more useful
+    # in a dev replica than a constant "REDACTED". Its `type` param picks the
+    # masking style; we classify by column name (generic across sources).
+    def _mask(mtype: str) -> dict:
+        return {"name": "Masking", "column": column, "type": mtype,
+                "keep_null": True}
     if "email" in low:
-        return {"name": "RandomEmail", "column": column, "keep_null": True}
-    if any(k in low for k in ("phone", "mobile", "fax")):
-        return {"name": "RandomE164PhoneNumber", "column": column, "keep_null": True}
+        return _mask("email")
+    if any(k in low for k in ("phone", "mobile", "fax", "tel")):
+        return _mask("mobile")
+    if any(k in low for k in ("credit_card", "card_number", "cc_number")):
+        return _mask("credit_card")
+    if any(k in low for k in ("vat", "ssn", "tin", "passport", "aadhaar",
+                              "national_id", "tax_id")):
+        return _mask("id")
+    if any(k in low for k in ("zip", "postcode", "postal")):
+        return _mask("postcode")
+    if any(k in low for k in ("street", "addr", "city")):
+        return _mask("addr")
+    if any(k in low for k in ("url", "website", "web")):
+        return _mask("url")
     if any(k in low for k in ("name", "contact", "display_name", "commercial",
                               "first", "last")):
-        return {"name": "Replace", "column": column, "value": "REDACTED", "keep_null": True}
-    # generic free-text (street, city, vat, website, notes, comments, ...) -> Hash
-    return {"name": "Hash", "column": column}
+        return _mask("name")
+    # generic free-text (notes, comments, description, ...) -> default masking
+    return _mask("default")
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +222,8 @@ def _render_greenmask(table_transformers: dict[str, list[dict]]) -> str:
         lines.append("      transformers:")
         for t in table_transformers[table]:
             params = [f"column: {t['column']}"]
+            if "type" in t:
+                params.append(f"type: {t['type']}")
             if "value" in t:
                 params.append(f"value: {_q(t['value'])}")
             if t.get("keep_null"):
