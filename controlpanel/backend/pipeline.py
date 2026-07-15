@@ -11,6 +11,7 @@ Single operation: **mask**.
 Runs the masker Fargate task in-process so we can tail its CloudWatch logs live.
 """
 from __future__ import annotations
+import json
 import time
 import uuid
 from typing import Callable, Optional
@@ -21,6 +22,35 @@ import boto3
 from . import config
 
 LogSink = Callable[[str], None]
+
+# Option E, Phase 3: the mask + discovery single-container workloads run as
+# Coder workspaces from the odoo-synth-runner template (not ECS Fargate). The
+# panel keeps orchestration: it builds the same env-var dict, writes it to S3 as
+# an env-file, presigns a result PUT URL, launches the workspace, tails its
+# logs live, and polls S3 for the result marker -- exactly like the build.
+RUNNER_TEMPLATE = "odoo-synth-runner"
+
+
+def _use_coder() -> bool:
+    """True if mask/discovery should run as Coder workspaces (the
+    odoo-synth-runner template) instead of ECS Fargate. Enabled when the Coder
+    control plane is configured."""
+    s = config.environments_settings()
+    return bool(s.get("coder_url") and s.get("coder_session_token"))
+
+
+def _coder_env() -> dict:
+    s = config.environments_settings()
+    env = {
+        "CODER_URL": s.get("coder_url") or "",
+        "CODER_SESSION_TOKEN": s.get("coder_session_token") or "",
+    }
+    for k in ("AWS_REGION", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+              "AWS_SESSION_TOKEN", "AWS_DEFAULT_REGION"):
+        v = config.get(k)
+        if v:
+            env[k] = v
+    return env
 
 
 def _region() -> str:
@@ -135,8 +165,224 @@ def _upload_mask_rules(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Coder runner workspace (Option E, Phase 3: mask + discovery as workspaces)
+# ---------------------------------------------------------------------------
+
+def _upload_env_file(env_pairs: list[tuple[str, object]]) -> tuple[str, list[str]]:
+    """Write a shell env-setup script to S3 and return (presigned GET URL, list
+    of KEY names). The runner sources the script (which `export`s each var with
+    single-quote escaping -- this handles multi-line values like SSH private
+    keys, which docker's line-based --env-file CANNOT), then passes each KEY to
+    `docker run -e KEY` so the host env (incl. newlines) flows into the
+    container unchanged. Values are stringified. The object is short-lived
+    (matched to the run); the presigned GET lasts 12h."""
+    keys: list[str] = []
+    lines = ["#!/usr/bin/env sh", "# auto-generated runner env (single-quote escaped)"]
+    for k, v in env_pairs:
+        keys.append(k)
+        # escape embedded single-quotes: ' -> '\'' (close, escaped quote, reopen)
+        sv = str(v).replace("'", "'\\''")
+        lines.append(f"export {k}='{sv}'")
+    body = "\n".join(lines).encode("utf-8")
+    bucket = config.dump_s3_bucket()
+    if not bucket:
+        raise RuntimeError("no S3 bucket configured (set the dump_s3_bucket)")
+    prefix = config.dump_s3_prefix().rstrip("/").rsplit("/", 1)[0] + "/runner-env"
+    key = f"{prefix}/{uuid.uuid4().hex[:12]}/container.env"
+    s3 = boto3.client("s3", region_name=_region())
+    s3.put_object(Bucket=bucket, Key=key, Body=body, ContentType="text/plain")
+    url = s3.generate_presigned_url(
+        "get_object", Params={"Bucket": bucket, "Key": key}, ExpiresIn=12 * 3600)
+    return url, keys
+
+
+def _presign_runner_result(phase: str) -> tuple[str, str, str]:
+    """Presign a PUT (runner writes result.json) + GET (panel reads it) and
+    return (put_url, get_url, s3_uri)."""
+    bucket = config.dump_s3_bucket()
+    if not bucket:
+        raise RuntimeError("no S3 bucket configured (set the dump_s3_bucket)")
+    prefix = config.dump_s3_prefix().rstrip("/").rsplit("/", 1)[0] + "/runner-results"
+    key = f"{prefix}/{phase}/{uuid.uuid4().hex[:12]}/result.json"
+    s3 = boto3.client("s3", region_name=_region())
+    put_url = s3.generate_presigned_url(
+        "put_object", Params={"Bucket": bucket, "Key": key,
+                               "ContentType": "application/json"}, ExpiresIn=6 * 3600)
+    get_url = s3.generate_presigned_url(
+        "get_object", Params={"Bucket": bucket, "Key": key}, ExpiresIn=7 * 24 * 3600)
+    return put_url, get_url, f"s3://{bucket}/{key}"
+
+
+def _runner_image(name: str) -> str:
+    """Full ECR URI for a runner image (masker / discovery)."""
+    return f"{_ecr()}/{config.require('PROJECT')}/{name}:latest"
+
+
+def _launch_runner(image_uri: str, env_file_get_url: str, env_keys: list[str],
+                    result_put_url: str, phase: str) -> str:
+    """Launch a Coder runner workspace and return its name. The workspace pulls
+    the image, downloads the env-setup script, sources it, `docker run -e KEY`s
+    each var through (handles multi-line values like SSH keys), PUTs a
+    result.json to S3, and powers off."""
+    import os
+    import subprocess
+
+    s = config.environments_settings()
+    params = [
+        ("ami_id", s.get("ami_id") or ""),
+        ("instance_profile", s.get("instance_profile") or ""),
+        ("subnet_id", s.get("subnet_id") or ""),
+        ("security_group_id", s.get("security_group_id") or ""),
+        ("region", _region()),
+        ("instance_type", s.get("runner_instance_type")
+         or s.get("instance_type") or "m5.large"),
+        ("image_uri", image_uri),
+        ("env_file_get_url", env_file_get_url),
+        ("env_keys", ";".join(env_keys)),
+        ("result_put_url", result_put_url),
+        ("phase", phase),
+    ]
+    ws_name = f"{phase}-{uuid.uuid4().hex[:8]}"
+    args = ["create", "-t", RUNNER_TEMPLATE, "-y", "--no-wait", ws_name]
+    for k, v in params:
+        args += ["--parameter", f"{k}={v}"]
+    subprocess.run(["coder", *args], env={**os.environ, **_coder_env()},
+                   check=True, capture_output=True, text=True, timeout=120)
+    return ws_name
+
+
+def _tail_runner(ws_name: str, emit: LogSink, timeout: float = 7200.0) -> None:
+    """Tail the runner workspace's Coder logs live into the panel's run-log
+    SSE stream (via `coder logs -f`). Returns when the workspace powers off or
+    the timeout elapses. The runner's exit code is read from the result.json it
+    PUTs to S3 (see _poll_runner_result), not from the log stream."""
+    import os
+    import subprocess
+
+    deadline = time.time() + timeout
+    # `coder logs -f` streams startup_script + container stdout (prefixed
+    # [container]). It exits when the workspace stops (poweroff).
+    try:
+        p = subprocess.Popen(
+            ["coder", "logs", "-f", ws_name],
+            env={**os.environ, **_coder_env()},
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            bufsize=1)
+        assert p.stdout is not None
+        for line in p.stdout:
+            emit(line.rstrip("\n"))
+            if time.time() > deadline:
+                p.terminate()
+                break
+        p.wait(timeout=30)
+    except Exception as exc:  # noqa: BLE001
+        emit(f"[panel] log tail ended: {exc}")
+
+
+def _poll_runner_result(get_url: str, emit: LogSink,
+                        deadline: float = 7200.0) -> Optional[dict]:
+    """Poll the runner's result.json marker on S3 until it appears or the
+    deadline elapses. Returns the parsed dict or None on timeout."""
+    import urllib.request
+
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(get_url, timeout=30) as r:  # noqa: S310
+                return json.loads(r.read().decode())
+        except Exception:  # noqa: BLE001
+            time.sleep(5)
+    emit("[panel] timed out waiting for runner result.json")
+    return None
+
+
+def run_runner(image_name: str, env_pairs: list[tuple[str, object]],
+                phase: str, emit: LogSink) -> dict:
+    """Option E runner path: write the env-file, presign the result URL, launch
+    the Coder runner workspace, tail its logs live, poll S3 for the result.
+    Returns a dict with exit_code (0/1) + error (on failure), matching the
+    ECS path's return shape so callers (run_operation / run_discovery) are
+    unchanged."""
+    env_get, env_keys = _upload_env_file(env_pairs)
+    put_url, get_url, _ = _presign_runner_result(phase)
+    image_uri = _runner_image(image_name)
+    emit(f"[panel] launching Coder runner workspace ({image_name}, {phase}) ...")
+    ws_name = _launch_runner(image_uri, env_get, env_keys, put_url, phase)
+    emit(f"[panel] runner workspace {ws_name} launched; streaming logs ...")
+    _tail_runner(ws_name, emit)
+    result = _poll_runner_result(get_url, emit)
+    if not result:
+        return {"exit_code": 1, "error": "runner result.json not found (timeout)"}
+    exit_code = int(result.get("exit_code", 1))
+    out: dict = {"exit_code": exit_code, "task_arn": ws_name}
+    if exit_code != 0:
+        out["error"] = result.get("error") or f"runner exited {exit_code}"
+    return out
+
+
+# ---------------------------------------------------------------------------
 # mask task definition
 # ---------------------------------------------------------------------------
+
+def _mask_env_pairs(src: dict, tgt: dict, params: dict,
+                    masked_dump_put_url: Optional[str],
+                    mask_rules_url: Optional[str] = None) -> list[tuple[str, str]]:
+    """Build the masker's environment as a list of (KEY, VAL) pairs. Shared by
+    the ECS path (_register_mask_taskdef) and the Coder runner path (the env
+    is written to S3 as an env-file). Values are stringified exactly as the
+    ECS container env expects them."""
+    nd = config.neutralize_defaults()
+
+    def flag(key: str, default: bool) -> str:
+        v = params.get(key, default)
+        return "true" if v else "false"
+
+    env = [
+        ("SOURCE_DB_HOST", src["host"]),
+        ("SOURCE_DB_PORT", src["port"]),
+        ("SOURCE_DB_NAME", src["dbname"]),
+        ("SOURCE_DB_USER", src["user"]),
+        ("SOURCE_DB_PASSWORD", src["password"]),
+        ("TARGET_DB_HOST", tgt["host"]),
+        ("TARGET_DB_PORT", tgt["port"]),
+        ("TARGET_DB_NAME", tgt["dbname"]),
+        ("TARGET_DB_USER", tgt["user"]),
+        ("TARGET_DB_PASSWORD", tgt["password"]),
+        ("ODOO_ADMIN_PASSWORD", params.get("admin_password")
+         or config.get("ODOO_ADMIN_PASSWORD", "admin")),
+        ("MASK_PROFILE", params.get("mask_profile") or "odoo-core-pii"),
+        ("GM_JOBS", params.get("gm_jobs") or nd.get("gm_jobs", 4)),
+        ("NEUTRALIZE_MAIL", flag("neutralize_mail", nd.get("mail", True))),
+        ("NEUTRALIZE_FETCHMAIL", flag("neutralize_fetchmail", nd.get("fetchmail", True))),
+        ("NEUTRALIZE_PAYMENT", flag("neutralize_payment", nd.get("payment", True))),
+        ("NEUTRALIZE_SMTP_PARAM", flag("neutralize_smtp_param", nd.get("smtp_param", True))),
+        ("RESET_ADMIN_LOGIN", flag("reset_admin_login",
+                                  config.panel().get("reset_admin_login", True))),
+    ]
+    if masked_dump_put_url:
+        env.append(("MASKED_DUMP_PUT_URL", masked_dump_put_url))
+    if mask_rules_url:
+        env.append(("MASK_RULES_URL", mask_rules_url))
+
+    # dump slimming: keep only the last N days of transactional tables. Applied
+    # by the masker AFTER restore via a generic FK-cascading DELETE (greenmask's
+    # dump-time subset can't handle Odoo's cyclic schema). Saved per-profile in
+    # mask_inputs.
+    sd = params.get("subset_days")
+    if sd not in (None, "", 0, "0"):
+        env.append(("GM_SUBSET_DAYS", sd))
+
+    # optional SSH tunnel to reach the source through a bastion
+    if params.get("ssh_enabled") and params.get("ssh_bastion"):
+        b = parse_bastion(params["ssh_bastion"])
+        env += [
+            ("SSH_ENABLED", "true"),
+            ("SSH_BASTION_HOST", b["host"]),
+            ("SSH_BASTION_USER", b["user"]),
+            ("SSH_BASTION_PORT", b["port"]),
+            ("SSH_PRIVATE_KEY", params.get("ssh_key") or ""),
+        ]
+    return env
+
 
 def _register_mask_taskdef(ecs, src: dict, tgt: dict, params: dict,
                            masked_dump_put_url: Optional[str],
@@ -146,58 +392,8 @@ def _register_mask_taskdef(ecs, src: dict, tgt: dict, params: dict,
     log_group = f"/ecs/{proj}"
     prefix, container = "mask", "masker"
 
-    def kv(k: str, v) -> dict:
-        return {"name": k, "value": str(v)}
-
-    nd = config.neutralize_defaults()
-
-    def flag(key: str, default: bool) -> str:
-        v = params.get(key, default)
-        return "true" if v else "false"
-
-    env = [
-        kv("SOURCE_DB_HOST", src["host"]),
-        kv("SOURCE_DB_PORT", src["port"]),
-        kv("SOURCE_DB_NAME", src["dbname"]),
-        kv("SOURCE_DB_USER", src["user"]),
-        kv("SOURCE_DB_PASSWORD", src["password"]),
-        kv("TARGET_DB_HOST", tgt["host"]),
-        kv("TARGET_DB_PORT", tgt["port"]),
-        kv("TARGET_DB_NAME", tgt["dbname"]),
-        kv("TARGET_DB_USER", tgt["user"]),
-        kv("TARGET_DB_PASSWORD", tgt["password"]),
-        kv("ODOO_ADMIN_PASSWORD", params.get("admin_password") or config.get("ODOO_ADMIN_PASSWORD", "admin")),
-        kv("MASK_PROFILE", params.get("mask_profile") or "odoo-core-pii"),
-        kv("GM_JOBS", params.get("gm_jobs") or nd.get("gm_jobs", 4)),
-        kv("NEUTRALIZE_MAIL", flag("neutralize_mail", nd.get("mail", True))),
-        kv("NEUTRALIZE_FETCHMAIL", flag("neutralize_fetchmail", nd.get("fetchmail", True))),
-        kv("NEUTRALIZE_PAYMENT", flag("neutralize_payment", nd.get("payment", True))),
-        kv("NEUTRALIZE_SMTP_PARAM", flag("neutralize_smtp_param", nd.get("smtp_param", True))),
-        kv("RESET_ADMIN_LOGIN", flag("reset_admin_login", config.panel().get("reset_admin_login", True))),
-    ]
-    if masked_dump_put_url:
-        env.append(kv("MASKED_DUMP_PUT_URL", masked_dump_put_url))
-    if mask_rules_url:
-        env.append(kv("MASK_RULES_URL", mask_rules_url))
-
-    # dump slimming: keep only the last N days of transactional tables. Applied
-    # by the masker AFTER restore via a generic FK-cascading DELETE (greenmask's
-    # dump-time subset can't handle Odoo's cyclic schema). Saved per-profile in
-    # mask_inputs.
-    sd = params.get("subset_days")
-    if sd not in (None, "", 0, "0"):
-        env.append(kv("GM_SUBSET_DAYS", sd))
-
-    # optional SSH tunnel to reach the source through a bastion
-    if params.get("ssh_enabled") and params.get("ssh_bastion"):
-        b = parse_bastion(params["ssh_bastion"])
-        env += [
-            kv("SSH_ENABLED", "true"),
-            kv("SSH_BASTION_HOST", b["host"]),
-            kv("SSH_BASTION_USER", b["user"]),
-            kv("SSH_BASTION_PORT", b["port"]),
-            kv("SSH_PRIVATE_KEY", params.get("ssh_key") or ""),
-        ]
+    env_pairs = _mask_env_pairs(src, tgt, params, masked_dump_put_url, mask_rules_url)
+    env = [{"name": k, "value": str(v)} for k, v in env_pairs]
 
     ecs.register_task_definition(
         family=family,
@@ -281,7 +477,11 @@ def run_operation(operation: str, params: dict, emit: LogSink) -> dict:
     if operation != "mask":
         raise ValueError(f"unknown operation: {operation}")
 
-    ecs, ec2, logs = _clients()
+    use_coder = _use_coder()
+    # ECS clients are only needed for the legacy Fargate path.
+    ecs = ec2 = logs = None
+    if not use_coder:
+        ecs, ec2, logs = _clients()
 
     # SOURCE: a live DB the user pointed at (DSN)
     dsn = params.get("source_dsn")
@@ -307,14 +507,50 @@ def run_operation(operation: str, params: dict, emit: LogSink) -> dict:
     if mask_rules_url:
         emit("[panel] using edited per-source masking profile (greenmask)")
 
-    cluster = config.require("ECS_CLUSTER")
-    sg = config.require("TASK_SG")
     via = ""
     if params.get("ssh_enabled") and params.get("ssh_bastion"):
         via = f" via ssh {params['ssh_bastion']}"
     emit(f"[panel] mask source={src['user']}@{src['host']}:{src['port']}/{src['dbname']}{via} "
          f"-> {tgt['dbname']}@{tgt['host']} profile={params.get('mask_profile')}")
 
+    # ---- Option E, Phase 3: run the masker as a Coder runner workspace ------
+    # Same env vars as the ECS path, written to S3 as an env-file the workspace
+    # downloads. The masker image is unchanged; it PUTs a result.json marker to
+    # S3 on completion. The panel tails `coder logs -f` live into the run log.
+    if _use_coder():
+        env_pairs = _mask_env_pairs(src, tgt, params,
+                                    masked_dump_put_url, mask_rules_url)
+        rr = run_runner("masker", env_pairs, "mask", emit)
+        exit_code = rr.get("exit_code", 1)
+        emit(f"[panel] runner exited with code {exit_code}")
+        result: dict = {"task_arn": rr.get("task_arn"), "exit_code": exit_code}
+        if exit_code == 0:
+            alb = config.get("ALB_DNS")
+            if alb:
+                result["target_url"] = f"http://{alb}/web/login"
+            if masked_dump_get_url:
+                result["masked_dump_url"] = masked_dump_get_url
+            if masked_dump_s3_uri:
+                result["masked_dump_s3_uri"] = masked_dump_s3_uri
+            proj = config.get("PROJECT")
+            result["odoo_image"] = (params.get("odoo_image")
+                                    or f"{_ecr()}/{proj}/odoo:latest")
+        elif exit_code == 3:
+            result["error"] = ("preflight failed: source or destination DB was "
+                                "not reachable from the masker (check the URL, "
+                                "credentials, and network/security-group access).")
+        elif exit_code == 4:
+            result["error"] = ("SSH tunnel failed: could not connect to the "
+                                "bastion or forward to the source DB (check "
+                                "bastion host/user/port, the SSH key, and that "
+                                "the bastion can reach the DB).")
+        else:
+            result["error"] = rr.get("error") or f"masker exited non-zero ({exit_code})"
+        return result
+
+    # ---- legacy ECS Fargate path (fallback when Coder is not configured) ----
+    cluster = config.require("ECS_CLUSTER")
+    sg = config.require("TASK_SG")
     family, container, log_group, prefix = _register_mask_taskdef(
         ecs, src, tgt, params, masked_dump_put_url, mask_rules_url
     )

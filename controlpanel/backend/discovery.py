@@ -43,29 +43,24 @@ def _presign_discovery(profile_id: str) -> tuple[str, str, str]:
     return put_url, get_url, f"s3://{bucket}/{key}"
 
 
-def _register_taskdef(ecs, profile: dict, put_url: str) -> tuple[str, str, str, str]:
-    proj = config.require("PROJECT")
-    family = f"{proj}-discover"
-    log_group = f"/ecs/{proj}"
-    prefix, container = "discover", "discover"
-
-    def kv(k: str, v) -> dict:
-        return {"name": k, "value": str(v)}
-
+def _discovery_env_pairs(profile: dict, put_url: str) -> list[tuple[str, str]]:
+    """Build the discovery container's environment as (KEY, VAL) pairs. Shared by
+    the ECS path (_register_taskdef) and the Coder runner path (env -> S3
+    env-file)."""
     conn = profile.get("source_conn") or {}
     password = profiles._get_secret(profile.get("source_password_secret"))
     env = [
-        kv("PROFILE_ID", profile["id"]),
-        kv("SOURCE_DB_HOST", conn.get("host", "")),
-        kv("SOURCE_DB_PORT", conn.get("port", 5432)),
-        kv("SOURCE_DB_NAME", conn.get("dbname", "")),
-        kv("SOURCE_DB_USER", conn.get("user", "")),
-        kv("SOURCE_DB_PASSWORD", password),
-        kv("ODOO_GIT_REF", profile.get("odoo_git_ref") or ""),
-        kv("ADDONS_GIT_URL", profile.get("addons_git_url") or ""),
-        kv("ADDONS_GIT_REF", profile.get("addons_git_ref") or ""),
-        kv("GIT_TOKEN", profiles._get_secret(profile.get("git_token_secret"))),
-        kv("DISCOVERY_PUT_URL", put_url),
+        ("PROFILE_ID", profile["id"]),
+        ("SOURCE_DB_HOST", conn.get("host", "")),
+        ("SOURCE_DB_PORT", conn.get("port", 5432)),
+        ("SOURCE_DB_NAME", conn.get("dbname", "")),
+        ("SOURCE_DB_USER", conn.get("user", "")),
+        ("SOURCE_DB_PASSWORD", password),
+        ("ODOO_GIT_REF", profile.get("odoo_git_ref") or ""),
+        ("ADDONS_GIT_URL", profile.get("addons_git_url") or ""),
+        ("ADDONS_GIT_REF", profile.get("addons_git_ref") or ""),
+        ("GIT_TOKEN", profiles._get_secret(profile.get("git_token_secret"))),
+        ("DISCOVERY_PUT_URL", put_url),
     ]
     # dump-slimming knobs (saved per-profile in mask_inputs) -> read by
     # gen_masking.py inside the discovery container when it builds the profile.
@@ -75,16 +70,27 @@ def _register_taskdef(ecs, profile: dict, put_url: str) -> tuple[str, str, str, 
     mi = profile.get("mask_inputs") or {}
     etd = mi.get("exclude_table_data")
     if etd not in (None, ""):
-        env.append(kv("GM_EXCLUDE_TABLE_DATA", etd))
+        env.append(("GM_EXCLUDE_TABLE_DATA", etd))
     if conn.get("ssh_enabled") and conn.get("ssh_bastion"):
         b = pipeline.parse_bastion(conn["ssh_bastion"])
         env += [
-            kv("SSH_ENABLED", "true"),
-            kv("SSH_BASTION_HOST", b["host"]),
-            kv("SSH_BASTION_USER", b["user"]),
-            kv("SSH_BASTION_PORT", b["port"]),
-            kv("SSH_PRIVATE_KEY", profiles._get_secret(profile.get("ssh_key_secret"))),
+            ("SSH_ENABLED", "true"),
+            ("SSH_BASTION_HOST", b["host"]),
+            ("SSH_BASTION_USER", b["user"]),
+            ("SSH_BASTION_PORT", b["port"]),
+            ("SSH_PRIVATE_KEY", profiles._get_secret(profile.get("ssh_key_secret"))),
         ]
+    return env
+
+
+def _register_taskdef(ecs, profile: dict, put_url: str) -> tuple[str, str, str, str]:
+    proj = config.require("PROJECT")
+    family = f"{proj}-discover"
+    log_group = f"/ecs/{proj}"
+    prefix, container = "discover", "discover"
+
+    env_pairs = _discovery_env_pairs(profile, put_url)
+    env = [{"name": k, "value": str(v)} for k, v in env_pairs]
 
     ecs.register_task_definition(
         family=family,
@@ -122,32 +128,48 @@ def run_discovery(profile_id: str, emit: LogSink) -> dict:
     if not conn.get("host"):
         raise ValueError("profile has no source connection; add a source DB URL first")
 
-    ecs, ec2, logs = pipeline._clients()
+    use_coder = pipeline._use_coder()
+    ecs = ec2 = logs = None
+    if not use_coder:
+        ecs, ec2, logs = pipeline._clients()
     put_url, get_url, s3_uri = _presign_discovery(profile_id)
     emit(f"[panel] discovery output -> {s3_uri}")
 
-    family, container, log_group, prefix = _register_taskdef(ecs, profile, put_url)
-    cluster = config.require("ECS_CLUSTER")
-    sg = config.require("TASK_SG")
-
     store.update_profile(profile_id, image_status="discovering", error=None)
-    emit(f"[panel] launching discovery task ({family}) on {cluster} ...")
-    resp = ecs.run_task(
-        cluster=cluster, launchType="FARGATE", taskDefinition=family,
-        networkConfiguration=pipeline._net_config(ec2, sg), count=1)
-    failures = resp.get("failures") or []
-    if failures:
-        store.update_profile(profile_id, image_status="failed",
-                             error=f"run_task failed: {failures}")
-        raise RuntimeError(f"run_task failed: {failures}")
 
-    task_arn = resp["tasks"][0]["taskArn"]
-    task_id = task_arn.split("/")[-1]
-    log_stream = f"{prefix}/{container}/{task_id}"
-    emit(f"[panel] task {task_id} started; streaming logs ...")
-    exit_code = pipeline._tail_until_stopped(
-        ecs, logs, cluster, task_arn, log_group, log_stream, emit)
-    emit(f"[panel] discovery task exited with code {exit_code}")
+    # ---- Option E, Phase 3: run the discovery container as a Coder runner ---
+    # Same env vars as the ECS path, written to S3 as an env-file. The discovery
+    # container writes its OWN discovery.json to DISCOVERY_PUT_URL (the presigned
+    # URL above); the runner workspace additionally writes a result.json marker
+    # (exit_code) which run_runner polls. We fetch discovery.json via get_url
+    # after the runner exits 0 -- exactly as the ECS path does.
+    if use_coder:
+        env_pairs = _discovery_env_pairs(profile, put_url)
+        emit("[panel] launching Coder runner workspace (discovery) ...")
+        rr = pipeline.run_runner("discovery", env_pairs, "discover", emit)
+        exit_code = rr.get("exit_code", 1)
+        emit(f"[panel] discovery runner exited with code {exit_code}")
+    else:
+        # ---- legacy ECS Fargate path (fallback) ----------------------------
+        family, container, log_group, prefix = _register_taskdef(ecs, profile, put_url)
+        cluster = config.require("ECS_CLUSTER")
+        sg = config.require("TASK_SG")
+        emit(f"[panel] launching discovery task ({family}) on {cluster} ...")
+        resp = ecs.run_task(
+            cluster=cluster, launchType="FARGATE", taskDefinition=family,
+            networkConfiguration=pipeline._net_config(ec2, sg), count=1)
+        failures = resp.get("failures") or []
+        if failures:
+            store.update_profile(profile_id, image_status="failed",
+                                 error=f"run_task failed: {failures}")
+            raise RuntimeError(f"run_task failed: {failures}")
+        task_arn = resp["tasks"][0]["taskArn"]
+        task_id = task_arn.split("/")[-1]
+        log_stream = f"{prefix}/{container}/{task_id}"
+        emit(f"[panel] task {task_id} started; streaming logs ...")
+        exit_code = pipeline._tail_until_stopped(
+            ecs, logs, cluster, task_arn, log_group, log_stream, emit)
+        emit(f"[panel] discovery task exited with code {exit_code}")
 
     if exit_code != 0:
         store.update_profile(profile_id, image_status="failed",

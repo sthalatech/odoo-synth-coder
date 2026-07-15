@@ -63,6 +63,17 @@ fi
 put_state ENV_SG_ID "$ENV_SG_ID"
 log "env SG=$ENV_SG_ID (egress-only; Coder tunnel brokers access)"
 
+# Option E Phase 3: the runner workspaces (mask + discovery) assume the env SG,
+# and the masker must reach the managed RDS (TARGET). The RDS SG was opened to
+# the ECS TASK_SG in 03_network.sh; also allow the env SG so runner workspaces
+# can connect (idempotent). RDS_SG is sourced from deploy/state.env.
+if [ -n "${RDS_SG:-}" ] && [ "${RDS_SG:-}" != "None" ]; then
+  aws ec2 authorize-security-group-ingress --region "$AWS_REGION" \
+    --group-id "$RDS_SG" --protocol tcp --port 5432 --source-group "$ENV_SG_ID" \
+    >/dev/null 2>&1 || true
+  log "RDS SG ingress: 5432 from env SG $ENV_SG_ID (for runner workspaces)"
+fi
+
 # a subnet for launches (first default subnet)
 ENV_SUBNET_ID="$(subnet_ids | awk '{print $1}')"
 put_state ENV_SUBNET_ID "$ENV_SUBNET_ID"
@@ -114,7 +125,12 @@ doc = {
     {"Sid": "EcrPull", "Effect": "Allow",
      "Action": ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer",
                 "ecr:BatchCheckLayerAvailability"],
-     "Resource": [f"arn:aws:ecr:{region}:{acct}:repository/{project}/odoo"]},
+     "Resource": [f"arn:aws:ecr:{region}:{acct}:repository/{project}/odoo",
+                  # Option E Phase 3: the runner workspaces (mask + discovery)
+                  # also assume this unprivileged profile and pull the masker /
+                  # discovery images. Pull-only -- no ECR push, no source DB.
+                  f"arn:aws:ecr:{region}:{acct}:repository/{project}/masker",
+                  f"arn:aws:ecr:{region}:{acct}:repository/{project}/discovery"]},
   ],
 }
 print(json.dumps(doc))
