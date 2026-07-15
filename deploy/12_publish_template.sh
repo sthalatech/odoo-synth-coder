@@ -15,7 +15,9 @@ TPL_DIR="$HERE/coder/templates/odoo-synth-env"
 
 log "publishing Coder template $TPL_NAME from $TPL_DIR ..."
 cd "$TPL_DIR"
-if coder templates push -y "$TPL_NAME" 2>&1 | tee /tmp/coder-push.log; then
+# --directory is required: without it the CLI uploads a 0-byte source archive
+# and the server-side import provision fails with "No configuration files".
+if coder templates push -y --directory "$TPL_DIR" "$TPL_NAME" 2>&1 | tee /tmp/coder-push.log; then
   log "template $TPL_NAME published -> $CODER_URL/templates/$TPL_NAME"
 else
   log "template push failed (see /tmp/coder-push.log)"
