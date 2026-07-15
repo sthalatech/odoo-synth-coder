@@ -222,6 +222,87 @@ def _exclude_candidates() -> set[str] | None:
     return {t.strip() for t in val.split(",") if t.strip()}
 
 
+# Row-level date subsetting: keep only the last N days of high-volume
+# TRANSACTIONAL tables (orders, moves, pickings, ...). greenmask applies the
+# WHERE at dump time and CASCADES it along foreign keys -- child rows (order
+# lines, payments, ...) are auto-filtered to match their retained parent, and
+# master data (partners, companies, products, journals) is fully retained
+# because it is referenced BY these tables, never the other way round. So this
+# trims transactional bulk while keeping a consistent, bootable Odoo.
+#
+# For each table we list candidate date columns in priority order; the first one
+# that actually exists (with a date/timestamp type) in the LIVE schema is used,
+# so this stays general across Odoo versions/modules and never emits a condition
+# on a column that isn't there. Tables absent from the source are skipped.
+#
+# Disabled by default (subsetting can silently shrink linked data); enable with
+# GM_SUBSET_DAYS=<n>. Override the table list is intentionally code-side; the
+# operator can always add/remove subset_conds by hand in the generated YAML.
+_SUBSET_TABLE_DATE_COLS = {
+    "sale_order": ["date_order", "create_date"],
+    "sale_order_line": ["create_date"],
+    "account_move": ["date", "invoice_date", "create_date"],
+    "purchase_order": ["date_order", "create_date"],
+    "stock_picking": ["scheduled_date", "date_done", "create_date"],
+    "stock_move": ["date", "create_date"],
+    "stock_move_line": ["date", "create_date"],
+    "pos_order": ["date_order", "create_date"],
+    "mrp_production": ["date_start", "create_date"],
+    "crm_lead": ["create_date"],
+    "calendar_event": ["start", "create_date"],
+    "project_task": ["create_date"],
+    "hr_attendance": ["check_in", "create_date"],
+    "mail_message": ["date", "create_date"],
+}
+
+_DATE_TYPES = {
+    "date", "timestamp", "timestamp without time zone",
+    "timestamp with time zone",
+}
+
+
+def _subset_days() -> int | None:
+    """Retention window in days from GM_SUBSET_DAYS, or None if disabled."""
+    raw = os.environ.get("GM_SUBSET_DAYS")
+    if raw is None:
+        return None
+    val = raw.strip().lower()
+    if val in ("", "none", "off", "false", "0"):
+        return None
+    try:
+        n = int(val)
+    except ValueError:
+        return None
+    return n if n > 0 else None
+
+
+def _subset_conditions(schema: dict[str, dict[str, dict]],
+                       days: int) -> dict[str, str]:
+    """Build {table -> subset_conds SQL} keeping only rows newer than ``days``,
+    using the first existing date/timestamp column per table. NULL dates are
+    kept for nullable columns (draft/incomplete records) to avoid dropping rows
+    whose date is simply unset."""
+    conds: dict[str, str] = {}
+    for tbl, prefs in _SUBSET_TABLE_DATE_COLS.items():
+        cols = schema.get(tbl)
+        if not cols:
+            continue
+        for c in prefs:
+            info = cols.get(c)
+            if not info:
+                continue
+            base = (info.get("data_type") or "").lower().split("(")[0].strip()
+            if base not in _DATE_TYPES:
+                continue
+            recent = (f"public.{tbl}.{c} >= (now() - interval '{days} days')")
+            if info.get("not_null") is False:
+                conds[tbl] = f"({recent} OR public.{tbl}.{c} IS NULL)"
+            else:
+                conds[tbl] = recent
+            break
+    return conds
+
+
 def transformer_for(column: str, dtype: str, fk_target: str | None,
                     unique: bool = False) -> dict | None:
     """Return a greenmask transformer dict for a column, or None to leave it.
@@ -320,9 +401,21 @@ def generate_plan(installed_modules: list[str], _baseline_dir=None) -> tuple[str
     dropped_unsafe: list[str] = []
     if candidates:
         exclude_data, dropped_unsafe = _safe_exclude_data(schema, candidates)
-    yaml_text = _render_greenmask(table_transformers, exclude_data, dropped_unsafe)
+    # a table dumped schema-only (exclude-table-data) has no rows, so a row
+    # filter on it is pointless -- drop any overlap.
+    excluded_set = set(exclude_data)
+    # row-level date subsetting (keep last N days of transactional tables).
+    days = _subset_days()
+    subset_conds: dict[str, str] = {}
+    if days:
+        subset_conds = {t: c for t, c in _subset_conditions(schema, days).items()
+                        if t not in excluded_set}
+    yaml_text = _render_greenmask(table_transformers, exclude_data,
+                                  dropped_unsafe, subset_conds, days)
     return yaml_text, {"tables": len(table_transformers), "columns": n_cols,
-                       "exclude_table_data": len(exclude_data)}
+                       "exclude_table_data": len(exclude_data),
+                       "subset_tables": len(subset_conds),
+                       "subset_days": days or 0}
 
 
 def _q(v: str) -> str:
@@ -331,7 +424,9 @@ def _q(v: str) -> str:
 
 def _render_greenmask(table_transformers: dict[str, list[dict]],
                       exclude_table_data: list[str] | None = None,
-                      dropped_unsafe: list[str] | None = None) -> str:
+                      dropped_unsafe: list[str] | None = None,
+                      subset_conds: dict[str, str] | None = None,
+                      subset_days: int | None = None) -> str:
     lines: list[str] = [
         "# greenmask masking profile (auto-generated during provenance discovery).",
         "# Transformers were derived from the LIVE source schema: PII-shaped text",
@@ -368,13 +463,28 @@ def _render_greenmask(table_transformers: dict[str, list[dict]],
         lines.append(
             f"    #   would break restore): {', '.join(dropped_unsafe)}")
     lines.append("  transformation:")
-    for table in sorted(table_transformers):
+    subset_conds = subset_conds or {}
+    if subset_conds:
+        lines.append(
+            f"    # Row subset: keeping only the last {subset_days} days of these")
+        lines.append(
+            "    # transactional tables (greenmask cascades the filter along FKs;")
+        lines.append(
+            "    # master data is retained). Edit/remove conditions as needed.")
+    # emit an entry for every table that needs a transformer OR a subset filter.
+    for table in sorted(set(table_transformers) | set(subset_conds)):
         lines.append("    - schema: public")
         lines.append(f"      name: {table}")
         if table == "res_partner":
             lines.append("      apply_for_inherited: true")
+        if table in subset_conds:
+            lines.append("      subset_conds:")
+            lines.append(f"        - {_q(subset_conds[table])}")
+        tlist = table_transformers.get(table)
+        if not tlist:
+            continue
         lines.append("      transformers:")
-        for t in table_transformers[table]:
+        for t in tlist:
             # RandomPerson has a nested `columns` param (each with its own
             # go-template), so it can't use the single-line params form.
             if t["name"] == "RandomPerson":

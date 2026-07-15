@@ -335,7 +335,9 @@ def main() -> int:
         masking_plan, mstats = gen_masking.generate_plan(installed)
         log(f"masking_plan (greenmask): tables={mstats['tables']} "
             f"columns={mstats['columns']} "
-            f"exclude_table_data={mstats.get('exclude_table_data', 0)}")
+            f"exclude_table_data={mstats.get('exclude_table_data', 0)} "
+            f"subset_tables={mstats.get('subset_tables', 0)} "
+            f"subset_days={mstats.get('subset_days', 0)}")
     except Exception as exc:  # noqa: BLE001
         log(f"WARN: masking plan generation failed: {exc}")
 
