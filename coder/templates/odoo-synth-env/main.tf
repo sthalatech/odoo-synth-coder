@@ -424,7 +424,7 @@ resource "coder_app" "odoo" {
   icon         = "/icon/odoo.svg"
   url          = "http://localhost:18069"
   healthcheck {
-    url       = "http://localhost:18069/web/login"
+    url       = "http://localhost:18069/web/health"
     interval  = 10
     threshold = 3
   }
