@@ -166,7 +166,11 @@ install -d -m 700 -o coder -g coder /etc/coder
 cat > /etc/coder/coder.env <<EENV
 CODER_ACCESS_URL=http://${MYIP}:8943
 CODER_HTTP_ADDRESS=0.0.0.0:8943
-CODER_WILDCARD_ACCESS_URL=*.${MYIP}.nip.io
+# NOTE: the wildcard host MUST include the port (:8943); without it, Coder
+# builds app subdomain URLs on the default port 80, which the SG blocks
+# (only 8943 + 22 are open). The auth-redirect Location header then sends
+# browsers to port 80 -> connection timeout.
+CODER_WILDCARD_ACCESS_URL=*.${MYIP}.nip.io:${CODER_PORT}
 CODER_LOG_FILTER=debug
 EENV
 cat > /etc/systemd/system/coder-server.service <<'UNIT'
