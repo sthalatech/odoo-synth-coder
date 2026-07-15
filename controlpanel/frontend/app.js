@@ -737,10 +737,6 @@ function envColumns() {
       formatter: (c) => `<span class="st-${c.getValue()}">${c.getValue()}</span>` },
     { title: "vscode", field: "vscode_url", hozAlign: "center", width: 100,
       formatter: (c) => linkCell(c.getValue(), "browser") },
-    { title: "vscode (local)", field: "vscode_remote_url", hozAlign: "center", width: 120,
-      formatter: (c) => (c.getValue()
-        ? `<a href="${c.getValue()}" onclick="event.stopPropagation()">open ↗</a>`
-        : "—") },
     { title: "odoo", field: "odoo_url", hozAlign: "center", width: 100,
       formatter: (c) => linkCell(c.getValue(), "open") },
     { title: "password", field: "id", hozAlign: "center", width: 100, headerSort: false,
@@ -767,11 +763,12 @@ async function loadEnvironments() {
   }
   const note = $("env-config-note");
   if (!ENV_CONFIG.configured) {
-    note.innerHTML = "⚠ Environments are not configured. Set <code>ENV_AMI_ID</code>, " +
-      "<code>ENV_SG_ID</code> and the other <code>environments.*</code> values.";
+    note.innerHTML = "⚠ Environments are not configured. Run " +
+      "<code>deploy/11_coder_server.sh</code> and <code>coder login</code>, then set " +
+      "<code>CODER_URL</code> + <code>CODER_SESSION_TOKEN</code> in config.env.";
     $("env-create-btn").disabled = true;
   } else {
-    note.textContent = `Ready · ${ENV_CONFIG.instance_type} · code-server :${ENV_CONFIG.code_port} · odoo :${ENV_CONFIG.odoo_port}`;
+    note.textContent = `Ready · ${ENV_CONFIG.instance_type} · Coder: ${ENV_CONFIG.coder_url || ""}`;
     $("env-create-btn").disabled = false;
     if (ENV_CONFIG.repo_url && !$("env-repo-url").value) {
       $("env-repo-url").placeholder = ENV_CONFIG.repo_url;
@@ -849,8 +846,6 @@ $("env-form").addEventListener("submit", async (e) => {
     issue: $("env-issue").value.trim() || null,
     repo_url: $("env-repo-url").value.trim() || null,
     repo_branch: $("env-repo-branch").value.trim() || null,
-    allow_ip: $("env-allow-ip").value.trim() || "auto",
-    ssh_public_key: $("env-ssh-key").value.trim() || null,
   });
   $("env-create-btn").disabled = false;
   if (ok) { $("env-issue").value = ""; loadEnvironments(); }

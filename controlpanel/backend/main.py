@@ -141,13 +141,9 @@ class EnvironmentRequest(BaseModel):
     dump_s3_uri: Optional[str] = None      # explicit s3:// masked dump (optional)
     repo_url: Optional[str] = None         # addons repo to clone + live-mount (optional)
     repo_branch: Optional[str] = None      # branch/ref of the addons repo (optional)
-    # access controls the user supplies from the UI:
-    #  * allow_ip: an IP or CIDR to authorize on the env security group (web +
-    #    SSH ports). "auto" resolves to the caller's own public IP.
-    #  * ssh_public_key: an OpenSSH public key injected into the workspace
-    #    user's authorized_keys so desktop VS Code (Remote-SSH) can connect.
-    allow_ip: Optional[str] = None
-    ssh_public_key: Optional[str] = None
+    # Access is brokered by the Coder server's Wireguard tunnel (web terminal,
+    # VS Code Web, port-forwarded Odoo) -- the workspace has no inbound ports and
+    # no per-env SG rules, so there is no allow_ip / ssh_public_key to pass.
 
 
 class ProfileRequest(BaseModel):
@@ -488,9 +484,8 @@ def api_env_config() -> dict:
     return {
         "configured": config.environments_configured(),
         "enabled": s["enabled"],
+        "coder_url": s["coder_url"],
         "instance_type": s["instance_type"],
-        "code_port": s["code_port"],
-        "odoo_port": s["odoo_port"],
         "repo_url": s["repo_url"],
         "repo_branch": s["repo_branch"],
         "odoo_image": s["odoo_image"],
@@ -525,8 +520,8 @@ def api_create_environment(req: EnvironmentRequest, request: Request) -> dict:
     if not config.environments_configured():
         raise HTTPException(
             400,
-            "developer environments are not configured (set ENV_AMI_ID, ENV_SG_ID "
-            "and the other environments.* values in config.env / state.env)",
+            "developer environments are not configured (run deploy/11_coder_server.sh "
+            "and `coder login`, then set CODER_URL + CODER_SESSION_TOKEN in config.env)",
         )
     prof = None
     if req.profile_id:
@@ -559,14 +554,9 @@ def api_create_environment(req: EnvironmentRequest, request: Request) -> dict:
             "downloadable pg_dump, or pass an explicit dump_s3_uri "
             "(s3://bucket/key)",
         )
-    allow_ip = req.allow_ip
-    if allow_ip and allow_ip.strip().lower() == "auto":
-        allow_ip = _caller_ip(request)
     env_id = environments.create(req.source_run_id, req.issue, req.dump_s3_uri,
                                  repo_url=req.repo_url, repo_branch=req.repo_branch,
-                                 profile_id=req.profile_id,
-                                 allow_ip=allow_ip,
-                                 ssh_public_key=req.ssh_public_key)
+                                 profile_id=req.profile_id)
     return {"environment_id": env_id}
 
 

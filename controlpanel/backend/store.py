@@ -136,6 +136,10 @@ def _migrate(c: sqlite3.Connection) -> None:
         c.execute("ALTER TABLE environments ADD COLUMN vscode_remote_url TEXT")
     if "allow_ip" not in env_cols:
         c.execute("ALTER TABLE environments ADD COLUMN allow_ip TEXT")
+    if "workspace_name" not in env_cols:
+        c.execute("ALTER TABLE environments ADD COLUMN workspace_name TEXT")
+    if "password" not in env_cols:
+        c.execute("ALTER TABLE environments ADD COLUMN password TEXT")
 
 
 

@@ -176,20 +176,21 @@ def environments_settings() -> dict:
     e = environments_cfg()
     return {
         "enabled": bool(e.get("enabled", True)),
+        # Coder control plane: the server URL + a session token drive the `coder`
+        # CLI shim in environments.py. The Coder server (deployed by
+        # deploy/11_coder_server.sh) launches workspace VMs from the template.
+        "coder_url": _env_val("coder_url", "coder_url_env") or get("CODER_URL", ""),
+        "coder_session_token": _env_val("coder_session_token", "coder_session_token_env")
+                                or get_fresh("CODER_SESSION_TOKEN", ""),
+        # Workspace VM inputs (passed as Coder template parameters). These reuse
+        # the existing thin golden AMI + env instance profile + env SG + subnet
+        # baked by deploy/09_dev_env.sh -- no new AWS artifacts per environment.
         "ami_id": _env_val("ami_id", "ami_id_env"),
         "instance_type": e.get("instance_type", "t3.large"),
         "subnet_id": _env_val("subnet_id", "subnet_id_env"),
         "security_group_id": _env_val("security_group_id", "security_group_id_env"),
         "instance_profile": _env_val("instance_profile", "instance_profile_env"),
-        "key_name": _env_val("key_name", "key_name_env"),
-        "code_port": str(e.get("code_port", 8443)),
-        "odoo_port": str(e.get("odoo_port", 8069)),
         "db_name": e.get("db_name", "odoo"),
-        # Remote-SSH deep link: the OS user to connect as (the code-server /
-        # workspace user) and an optional SSH public key injected into its
-        # authorized_keys so desktop VS Code (Remote-SSH) can open the env.
-        "ssh_user": e.get("ssh_user", "dev"),
-        "ssh_public_key": _env_val("ssh_public_key", "ssh_public_key_env") or "",
         # The provenance-baked Odoo image the env runs against the masked DB. A
         # run may override this (result.odoo_image); this is the fallback.
         "odoo_image": odoo_image(),
@@ -197,11 +198,9 @@ def environments_settings() -> dict:
         # odoo container as live-dev addons. Defaults to the pipeline's custom repo.
         "repo_url": _env_val("repo_url", "repo_url_env") or get("CUSTOM_ADDONS_GIT_URL"),
         "repo_branch": _env_val("repo_branch", "repo_branch_env") or get("CUSTOM_ADDONS_GIT_REF"),
-        "secret_prefix": e.get("secret_prefix", "odoo-synth/env"),
         # Optional Secrets Manager secret holding a GitHub token for cloning a
-        # private addons repo on the instance.
+        # private addons repo on the instance (read by the workspace agent).
         "git_token_secret": _env_val("git_token_secret", "git_token_secret_env"),
-        "assign_public_ip": bool(e.get("assign_public_ip", True)),
     }
 
 
@@ -225,5 +224,8 @@ def odoo_image() -> str | None:
 
 def environments_configured() -> bool:
     s = environments_settings()
-    return bool(s["enabled"] and s["ami_id"] and s["security_group_id"])
+    # The Coder control plane (URL + session token) is required; the AMI/SG/
+    # profile/subnet are required to pass to the Coder template as parameters.
+    return bool(s["enabled"] and s["coder_url"] and s["coder_session_token"]
+                and s["ami_id"] and s["security_group_id"] and s["instance_profile"])
 

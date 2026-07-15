@@ -17,3 +17,7 @@ if ! grep -q '^SRC_RDS_ENDPOINT=' deploy/state.env 2>/dev/null; then
 fi
 bash deploy/07_mask.sh
 bash deploy/08_odoo_service.sh
+# Developer-environment control plane: Coder server (one EC2) + publish the
+# odoo-synth-env template to it. Requires `coder login` once (interactive).
+bash deploy/11_coder_server.sh
+bash deploy/12_publish_template.sh

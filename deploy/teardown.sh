@@ -65,6 +65,26 @@ done
 log "deleting CloudWatch log group ..."
 aws logs delete-log-group --log-group-name "/ecs/$PROJECT" --region "$R" >/dev/null 2>&1 || true
 
+log "terminating Coder server + odoo-synth workspace VMs ..."
+# Workspace VMs carry the odoo-synth:env tag (set by the Coder template).
+for iid in $(aws ec2 describe-instances --region "$R" \
+    --filters "Name=tag:odoo-synth:env,Values=true" \
+              "Name=instance-state-name,Values=running,pending,stopping,stopped" \
+    --query 'Reservations[].Instances[].InstanceId' --output text 2>/dev/null); do
+  aws ec2 terminate-instances --region "$R" --instance-ids "$iid" >/dev/null 2>&1 || true
+done
+# The Coder server itself (tagged odoo-synth:control-plane).
+for iid in $(aws ec2 describe-instances --region "$R" \
+    --filters "Name=tag:odoo-synth:control-plane,Values=true" \
+              "Name=instance-state-name,Values=running,pending,stopping,stopped" \
+    --query 'Reservations[].Instances[].InstanceId' --output text 2>/dev/null); do
+  aws ec2 terminate-instances --region "$R" --instance-ids "$iid" >/dev/null 2>&1 || true
+done
+
+log "deleting Coder server SG ..."
+CSG="$(aws ec2 describe-security-groups --region "$R"   --filters "Name=group-name,Values=$PROJECT-coder-sg"   --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || true)"
+[ -n "$CSG" ] && [ "$CSG" != "None" ] &&   aws ec2 delete-security-group --group-id "$CSG" --region "$R" >/dev/null 2>&1 || true
+
 # Keep ECR repos + images (re-push is cheap; delete if --ecr passed).
 if [ "${1:-}" = "--ecr" ]; then
   log "deleting ECR repos ..."
