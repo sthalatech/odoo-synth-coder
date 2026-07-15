@@ -417,12 +417,20 @@ resource "aws_ec2_instance_state" "workspace" {
 
 # port-forwards through the Coder tunnel so the dev reaches odoo + code-server
 # without any inbound SG rule or public IP.
+# subdomain = true => Coder serves each app on its own origin
+# (<app>--<owner>--<ws>.apps.<access_host>). This is REQUIRED for Odoo,
+# whose login form/assets use absolute server-root paths (/web/login,
+# /web/session/authenticate, /web/static/...). With path-based proxying
+# those resolve against the Coder dashboard origin and 404. Subdomain
+# proxying gives Odoo a real origin so its absolute paths work natively.
+# Requires CODER_APP_HOSTNAME=*.<host> on the server (set in 11_coder_server.sh).
 resource "coder_app" "odoo" {
   agent_id     = coder_agent.main.id
   slug         = "odoo"
   display_name = "Odoo (masked)"
   icon         = "/icon/odoo.svg"
   url          = "http://localhost:18069"
+  subdomain    = true
   healthcheck {
     url       = "http://localhost:18069/web/health"
     interval  = 10
@@ -436,6 +444,7 @@ resource "coder_app" "vscode" {
   display_name = "VS Code (code-server)"
   icon         = "/icon/vscode.svg"
   url          = "http://localhost:8443"
+  subdomain    = true
   healthcheck {
     url       = "http://localhost:8443/healthz"
     interval  = 5

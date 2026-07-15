@@ -1,29 +1,53 @@
-"""Developer environment lifecycle via boto3 (EC2 + Secrets Manager).
+"""Developer environment lifecycle via Coder (coder/coder).
 
-An *environment* is an ephemeral, isolated VS Code (code-server) box launched
-from a pre-baked golden AMI and seeded from a masked pg_dump artifact. One EC2
-instance per environment; torn down on teardown (terminate instance + delete
-the per-env secret). Designed to later be driven by GitHub-issue webhooks.
+An *environment* is a Coder workspace: an EC2 instance launched by the Coder
+server from the `odoo-synth-env` Terraform template (existing thin golden AMI
++ existing env instance profile, no public IP, no per-env SG rules). The Coder
+agent running inside the workspace dials out to the Coder server over the
+public internet; the developer reaches the workspace (web terminal, VS Code
+Web, port-forwarded Odoo) through Coder's Wireguard tunnel -- so the workspace
+needs zero inbound ports and no Secrets Manager secret. This deletes ~5 AWS
+artifacts per environment vs. the old hand-rolled EC2/Secrets-Manager/SG-ingress
+design.
+
+This module is a thin shim over the `coder` CLI (driven by CODER_URL +
+CODER_SESSION_TOKEN). The panel stores the Coder workspace name and proxies
+lifecycle to the CLI/API.
 """
 from __future__ import annotations
 import base64
-import gzip
+import json
+import os
 import secrets
 import string
-import time
+import subprocess
+import urllib.request
 import uuid
-from pathlib import Path
 from typing import Optional
-
-import boto3
 
 from . import config, store
 
-TEMPLATE = Path(__file__).resolve().parent.parent / "environments" / "user-data.sh.tmpl"
+TEMPLATE_NAME = "odoo-synth-env"
 
 
 def _region() -> str:
     return config.require("AWS_REGION")
+
+
+def _coder_env() -> dict:
+    """Env for the coder CLI: the server URL + a session token, plus AWS creds."""
+    env = {
+        "CODER_URL": config.get("CODER_URL", "") or "",
+        "CODER_SESSION_TOKEN": config.get_fresh("CODER_SESSION_TOKEN", "") or "",
+    }
+    for k in ("AWS_REGION", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+              "AWS_SESSION_TOKEN", "AWS_DEFAULT_REGION"):
+        v = config.get(k)
+        if v:
+            env[k] = v
+    return env
+
+
 
 
 def _gen_password(n: int = 24) -> str:
@@ -31,75 +55,56 @@ def _gen_password(n: int = 24) -> str:
     return "".join(secrets.choice(alphabet) for _ in range(n))
 
 
-def _render_user_data(env_id: str, issue: str, dump_s3_uri: str,
-                      secret_arn: str, odoo_image: str, repo_url: str,
-                      repo_branch: str, git_token_secret: str, s: dict,
-                      odoo_conf_extra: str = "", ssh_public_key: str = "") -> str:
-    tmpl = TEMPLATE.read_text()
-    conf_extra_b64 = base64.b64encode(
-        (odoo_conf_extra or "").encode("utf-8")).decode("ascii")
-    # per-env SSH key (from the UI) takes precedence over any configured default.
-    pubkey = (ssh_public_key or s.get("ssh_public_key") or "").strip()
-    ssh_pubkey_b64 = base64.b64encode(pubkey.encode("utf-8")).decode("ascii")
-    repl = {
-        "__ENV_ID__": env_id,
-        "__ISSUE__": issue or "",
-        "__AWS_REGION__": _region(),
-        "__DUMP_S3_URI__": dump_s3_uri or "",
-        "__SECRET_ARN__": secret_arn,
-        "__ODOO_IMAGE__": odoo_image or "",
-        "__REPO_URL__": repo_url or "",
-        "__REPO_BRANCH__": repo_branch or "",
-        "__GIT_TOKEN_SECRET__": git_token_secret or "",
-        "__DB_NAME__": s.get("db_name") or "odoo",
-        "__CODE_PORT__": s.get("code_port") or "8443",
-        "__ODOO_PORT__": s.get("odoo_port") or "8069",
-        "__ODOO_MASTER_PASSWORD__": config.get("ODOO_MASTER_PASSWORD", "change_me_master"),
-        "__ODOO_CONF_EXTRA_B64__": conf_extra_b64,
-        "__SSH_USER__": s.get("ssh_user") or "dev",
-        "__SSH_PUBLIC_KEY_B64__": ssh_pubkey_b64,
-    }
-    for k, v in repl.items():
-        tmpl = tmpl.replace(k, v)
-    return tmpl
+def _subdomain_url(subdomain_name: str) -> str:
+    """Build the browser-reachable URL for a subdomain-hosted coder_app.
+
+    CODER_URL is the Coder server origin, e.g. http://203.0.113.10:8943, and
+    CODER_WILDCARD_ACCESS_URL on the server is "*.<same host:port>". Coder
+    exposes per-app `subdomain_name` = "<app>--<ws>--<owner>". The app origin is
+    therefore "<subdomain_name>.<host>:<port>" with the same scheme:port as
+    CODER_URL. (nip.io makes *.host resolve to host, so no real DNS needed.)
+    """
+    base = config.get("CODER_URL", "").rstrip("/")
+    if not base or not subdomain_name:
+        return ""
+    from urllib.parse import urlsplit
+    ps = urlsplit(base)
+    host, port = ps.hostname, ps.port
+    full_host = f"{subdomain_name}.{host}" + (f":{port}" if port else "")
+    return f"{ps.scheme}://{full_host}"
 
 
-def _create_secret(env_id: str, password: str, s: dict) -> str:
-    sm = boto3.client("secretsmanager", region_name=_region())
-    name = f"{s.get('secret_prefix', 'odoo-synth/env')}/{env_id}"
-    resp = sm.create_secret(
-        Name=name,
-        SecretString=password,
-        Description=f"code-server password for odoo-synth env {env_id}",
-    )
-    return resp["ARN"]
-
-
-def _delete_secret(secret_arn: str) -> None:
+def _api(path: str) -> dict:
+    """Call the Coder HTTP API (CODER_URL/api/v2/<path>) and return JSON."""
+    url = f"{config.get('CODER_URL','').rstrip('/')}/api/v2/{path.lstrip('/')}"
+    tok = config.get_fresh("CODER_SESSION_TOKEN", "") or ""
+    req = urllib.request.Request(url, headers={"Coder-Session-Token": tok})
     try:
-        sm = boto3.client("secretsmanager", region_name=_region())
-        sm.delete_secret(SecretId=secret_arn, ForceDeleteWithoutRecovery=True)
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read())
     except Exception:  # noqa: BLE001
-        pass
+        return {}
 
-
-def get_password(env_id: str) -> Optional[str]:
-    """Fetch the code-server login password for an env from Secrets Manager.
-    Returns None if the env or its secret is gone (e.g. after teardown)."""
-    env = store.get_environment(env_id)
-    if not env or not env.get("secret_arn"):
-        return None
+def _run(args: list, *, json_out: bool = True, timeout: int = 60):
+    """Run a `coder` CLI command, returning parsed JSON (or stdout)."""
+    cmd = ["coder"] + args + (["-o", "json"] if json_out else [])
     try:
-        sm = boto3.client("secretsmanager", region_name=_region())
-        return sm.get_secret_value(SecretId=env["secret_arn"]).get("SecretString")
-    except Exception:  # noqa: BLE001
-        return None
+        p = subprocess.run(cmd, env={**os.environ, **_coder_env()},
+                           capture_output=True, text=True, timeout=timeout, check=False)
+    except FileNotFoundError as exc:
+        raise RuntimeError("coder CLI not installed on the panel host") from exc
+    if p.returncode != 0:
+        raise RuntimeError(f"coder {' '.join(args)} failed: {p.stderr.strip() or p.stdout.strip()}")
+    if not json_out:
+        return p.stdout
+    try:
+        return json.loads(p.stdout) if p.stdout.strip() else {}
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"coder {args} returned non-JSON: {p.stdout[:200]}") from exc
 
 
 def _dump_uri_for_run(run_id: Optional[str], explicit: Optional[str]) -> Optional[str]:
-    """Resolve the masked-dump S3 URI: explicit wins, else derive from the run's
-    result (produce_dump stores a presigned GET; we prefer a plain s3:// URI the
-    instance role can read, recorded on the run result as masked_dump_s3_uri)."""
+    """Resolve the masked-dump S3 URI: explicit wins, else the run's result."""
     if explicit:
         return explicit
     if not run_id:
@@ -112,326 +117,164 @@ def _dump_uri_for_run(run_id: Optional[str], explicit: Optional[str]) -> Optiona
 
 
 def _resolve_odoo_image(source_run_id: Optional[str], s: dict) -> Optional[str]:
-    """The provenance-baked Odoo image the env should run. A run's own image
-    (captured at mask time) wins so the code matches the masked data exactly;
-    otherwise fall back to the configured image, resolving the account id if the
-    config helper could not (no AWS_ACCOUNT_ID in env)."""
+    """Provenance-baked Odoo image: a run's own image wins, else configured."""
     if source_run_id:
         run = store.get_run(source_run_id)
         if run:
             img = (run.get("result") or {}).get("odoo_image")
             if img:
                 return img
-    if s.get("odoo_image"):
-        return s["odoo_image"]
-    proj = config.get("PROJECT")
-    e = config.environments_cfg()
-    tag = e.get("odoo_image_tag", "latest")
-    if proj:
-        try:
-            acct = boto3.client("sts", region_name=_region()).get_caller_identity()["Account"]
-            return f"{acct}.dkr.ecr.{_region()}.amazonaws.com/{proj}/odoo:{tag}"
-        except Exception:  # noqa: BLE001
-            return None
-    return None
-
-
-def _authorize_ip(ec2, sg_id: str, ip: str, ports) -> None:
-    """Authorize a single IP (a.b.c.d or CIDR) on the env SG for the given TCP
-    ports. Each port is authorized independently so an already-present rule on
-    one port (e.g. a second env from the same IP) does not prevent the others
-    from being added — AWS rejects a multi-rule batch atomically on the first
-    duplicate, which would otherwise silently drop the still-missing ports."""
-    cidr = ip.strip()
-    if not cidr:
-        return
-    if "/" not in cidr:
-        cidr = f"{cidr}/32"
-    for p in ports:
-        perm = {
-            "IpProtocol": "tcp", "FromPort": int(p), "ToPort": int(p),
-            "IpRanges": [{"CidrIp": cidr, "Description": "odoo-synth-env user access"}],
-        }
-        try:
-            ec2.authorize_security_group_ingress(GroupId=sg_id, IpPermissions=[perm])
-        except Exception as exc:  # noqa: BLE001
-            if "InvalidPermission.Duplicate" not in str(exc):
-                raise
-
-
-def _revoke_ip(sg_id: str, ip: str, ports) -> None:
-    cidr = ip.strip()
-    if not cidr:
-        return
-    if "/" not in cidr:
-        cidr = f"{cidr}/32"
-    ec2 = boto3.client("ec2", region_name=_region())
-    for p in ports:
-        perm = {
-            "IpProtocol": "tcp", "FromPort": int(p), "ToPort": int(p),
-            "IpRanges": [{"CidrIp": cidr}],
-        }
-        try:
-            ec2.revoke_security_group_ingress(GroupId=sg_id, IpPermissions=[perm])
-        except Exception:  # noqa: BLE001
-            pass
-
-
-def launch(env_id: str, source_run_id: Optional[str], issue: Optional[str],
-           dump_s3_uri: Optional[str], repo_url: Optional[str],
-           repo_branch: Optional[str], profile_id: Optional[str] = None,
-           allow_ip: Optional[str] = None,
-           ssh_public_key: Optional[str] = None) -> None:
-    """Background worker: create secret, launch instance, poll until reachable."""
-    s = config.environments_settings()
-    try:
-        if not config.environments_configured():
-            raise RuntimeError(
-                "developer environments are not configured (set ENV_AMI_ID, "
-                "ENV_SG_ID, and the other environments.* values)")
-
-        profile = store.get_profile(profile_id) if profile_id else None
-
-        dump = _dump_uri_for_run(source_run_id, dump_s3_uri)
-        if profile:
-            # profile drives the image + addons so code matches the masked data.
-            odoo_img = profile.get("image_uri") or _resolve_odoo_image(source_run_id, s)
-            r_url = repo_url or profile.get("addons_git_url") or s.get("repo_url")
-            r_branch = repo_branch or profile.get("addons_git_ref") or s.get("repo_branch")
-            git_token_secret = profile.get("git_token_secret") or s.get("git_token_secret")
-        else:
-            odoo_img = _resolve_odoo_image(source_run_id, s)
-            r_url = repo_url or s.get("repo_url")
-            r_branch = repo_branch or s.get("repo_branch")
-            git_token_secret = s.get("git_token_secret")
-        store.update_environment(
-            env_id, status="provisioning", dump_s3_uri=dump,
-            odoo_image=odoo_img, repo_url=r_url, repo_branch=r_branch,
-        )
-
-        password = _gen_password()
-        secret_arn = _create_secret(env_id, password, s)
-        store.update_environment(env_id, secret_arn=secret_arn)
-
-        conf_extra = (profile.get("odoo_conf_extra") if profile else "") or ""
-        user_data = _render_user_data(
-            env_id, issue or "", dump or "", secret_arn, odoo_img or "",
-            r_url or "", r_branch or "", git_token_secret or "", s,
-            odoo_conf_extra=conf_extra, ssh_public_key=ssh_public_key or "",
-        )
-        # EC2 caps user-data at 16384 bytes (pre-base64). cloud-init transparently
-        # decompresses gzip'd user-data, so compress to make room for the SSH key
-        # and other injected config.
-        user_data_bytes = gzip.compress(user_data.encode("utf-8"))
-
-        ec2 = boto3.client("ec2", region_name=_region())
-
-        # Per-env firewall: open the SG to the user's IP for Odoo, code-server
-        # and SSH (Remote-SSH deep link needs port 22). Recorded so teardown
-        # can revoke it.
-        if allow_ip:
-            ports = [s["odoo_port"], s["code_port"], 22]
-            try:
-                _authorize_ip(ec2, s["security_group_id"], allow_ip, ports)
-                store.update_environment(env_id, allow_ip=allow_ip)
-            except Exception as exc:  # noqa: BLE001
-                raise RuntimeError(f"could not authorize IP {allow_ip}: {exc}")
-        run_kwargs = {
-            "ImageId": s["ami_id"],
-            "InstanceType": s["instance_type"],
-            "MinCount": 1,
-            "MaxCount": 1,
-            "UserData": user_data_bytes,
-            "TagSpecifications": [{
-                "ResourceType": "instance",
-                "Tags": [
-                    {"Key": "Name", "Value": f"odoo-synth-env-{env_id}"},
-                    {"Key": "odoo-synth:env", "Value": env_id},
-                    {"Key": "odoo-synth:issue", "Value": issue or ""},
-                    {"Key": "odoo-synth:managed", "Value": "true"},
-                ],
-            }],
-        }
-        # networking
-        net = {"DeviceIndex": 0, "Groups": [s["security_group_id"]],
-               "AssociatePublicIpAddress": s["assign_public_ip"]}
-        if s.get("subnet_id"):
-            net["SubnetId"] = s["subnet_id"]
-        run_kwargs["NetworkInterfaces"] = [net]
-        if s.get("instance_profile"):
-            run_kwargs["IamInstanceProfile"] = {"Name": s["instance_profile"]}
-        if s.get("key_name"):
-            run_kwargs["KeyName"] = s["key_name"]
-
-        resp = ec2.run_instances(**run_kwargs)
-        instance_id = resp["Instances"][0]["InstanceId"]
-        store.update_environment(env_id, instance_id=instance_id, status="provisioning")
-
-        # poll for running + public IP
-        public_ip = None
-        for _ in range(60):
-            time.sleep(5)
-            d = ec2.describe_instances(InstanceIds=[instance_id])
-            inst = d["Reservations"][0]["Instances"][0]
-            state = inst["State"]["Name"]
-            public_ip = inst.get("PublicIpAddress")
-            if state == "running" and public_ip:
-                break
-            if state in ("terminated", "stopping", "stopped"):
-                raise RuntimeError(f"instance entered state {state} during boot")
-
-        if not public_ip and not s["assign_public_ip"]:
-            # private-only env: use private IP for the URL
-            public_ip = inst.get("PrivateIpAddress")
-
-        vscode_url = f"https://{public_ip}:{s['code_port']}/" if public_ip else None
-        odoo_url = f"https://{public_ip}:{s['odoo_port']}/" if public_ip else None
-        # Desktop VS Code Remote-SSH deep link (opens the workspace in the local
-        # VS Code app, like exe.dev). Works once the user's SSH key can reach the
-        # env as ssh_user (inject environments.ssh_public_key + open port 22).
-        ssh_user = s.get("ssh_user") or "dev"
-        vscode_remote_url = (
-            f"vscode://vscode-remote/ssh-remote+{ssh_user}@{public_ip}"
-            f"/home/{ssh_user}/workspace?windowId=_blank" if public_ip else None)
-        # The instance is up, but Odoo is not yet serving (DB restore + registry
-        # load). Record URLs but stay in "booting" until the boot script tags the
-        # instance ready (it polls Odoo's /web/health locally). This way the UI
-        # only shows "running" when the env is actually reachable.
-        store.update_environment(
-            env_id, status="booting", public_ip=public_ip,
-            vscode_url=vscode_url, odoo_url=odoo_url,
-            vscode_remote_url=vscode_remote_url,
-        )
-        _wait_until_ready(ec2, instance_id, env_id)
-    except Exception as exc:  # noqa: BLE001
-        store.update_environment(env_id, status="failed", error=str(exc))
-
-
-def _wait_until_ready(ec2, instance_id: str, env_id: str,
-                      timeout_s: int = 900, interval_s: int = 15) -> None:
-    """Poll the instance's odoo-synth:ready tag (set by the boot script once Odoo
-    answers HTTP) and flip the env to 'running' only then. Falls back to 'running'
-    after the timeout so an env is never stuck in 'booting'."""
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        time.sleep(interval_s)
-        # a teardown may have flipped the env; stop polling if so.
-        env = store.get_environment(env_id)
-        if not env or env.get("status") in ("terminated", "failed"):
-            return
-        try:
-            d = ec2.describe_instances(InstanceIds=[instance_id])
-            inst = d["Reservations"][0]["Instances"][0]
-            if inst["State"]["Name"] in ("terminated", "stopping", "stopped"):
-                store.update_environment(
-                    env_id, status="failed",
-                    error=f"instance {inst['State']['Name']} while booting")
-                return
-            tags = {t["Key"]: t["Value"] for t in inst.get("Tags", [])}
-            ready = tags.get("odoo-synth:ready")
-            if ready == "true":
-                store.update_environment(env_id, status="running")
-                return
-            if ready == "timeout":
-                store.update_environment(
-                    env_id, status="running",
-                    error="odoo slow to answer during boot; may need a moment")
-                return
-        except Exception:  # noqa: BLE001 — transient AWS errors, keep polling
-            continue
-    # never leave it stuck in booting
-    store.update_environment(env_id, status="running",
-                             error="readiness signal not received before timeout")
-
-
-def reconcile_booting(max_age_s: int = 1800) -> None:
-    """Reconcile envs stuck in 'booting'/'provisioning' by checking the instance
-    ready tag directly. This is what makes readiness robust across control-panel
-    restarts: the in-process poll thread dies on restart, but the boot script
-    still tags the instance, so we recover the true state on demand (e.g. when
-    the UI lists environments). Best-effort and cheap: only touches envs that are
-    still booting and have an instance id."""
-    try:
-        pending = [e for e in store.list_environments()
-                   if e.get("status") in ("booting", "provisioning")
-                   and e.get("instance_id")]
-    except Exception:  # noqa: BLE001
-        return
-    if not pending:
-        return
-    try:
-        ec2 = boto3.client("ec2", region_name=_region())
-        ids = [e["instance_id"] for e in pending]
-        d = ec2.describe_instances(InstanceIds=ids)
-    except Exception:  # noqa: BLE001
-        return
-    state_by_id = {}
-    for r in d.get("Reservations", []):
-        for inst in r.get("Instances", []):
-            state_by_id[inst["InstanceId"]] = inst
-    now = time.time()
-    for e in pending:
-        inst = state_by_id.get(e["instance_id"])
-        if not inst:
-            continue
-        st = inst["State"]["Name"]
-        if st in ("terminated", "stopping", "stopped"):
-            store.update_environment(e["id"], status="failed",
-                                     error=f"instance {st} while booting")
-            continue
-        tags = {t["Key"]: t["Value"] for t in inst.get("Tags", [])}
-        ready = tags.get("odoo-synth:ready")
-        if ready == "true":
-            store.update_environment(e["id"], status="running")
-        elif ready == "timeout":
-            store.update_environment(
-                e["id"], status="running",
-                error="odoo slow to answer during boot; may need a moment")
-        elif (now - (e.get("created_at") or now)) > max_age_s:
-            # fell through the safety net (e.g. panel restarted before the tag
-            # or the boot script could not tag) — don't strand it forever.
-            store.update_environment(
-                e["id"], status="running",
-                error="readiness signal not received; assuming ready after timeout")
-
-
+    return s.get("odoo_image")
 
 
 def create(source_run_id: Optional[str], issue: Optional[str],
            dump_s3_uri: Optional[str], repo_url: Optional[str] = None,
            repo_branch: Optional[str] = None,
-           profile_id: Optional[str] = None,
-           allow_ip: Optional[str] = None,
-           ssh_public_key: Optional[str] = None) -> str:
+           profile_id: Optional[str] = None) -> str:
+    """Create a Coder workspace for the env. Runs `coder create` with the
+    template parameters; the Coder server provisions the EC2 instance and the
+    agent's startup_script boots Odoo. The env id IS the workspace name, so the
+    panel and Coder share one key."""
+    if not config.environments_configured():
+        raise RuntimeError(
+            "developer environments are not configured (set CODER_URL and "
+            "CODER_SESSION_TOKEN, and ensure the odoo-synth-env template is "
+            "published to the Coder server)")
+    s = config.environments_settings()
+    profile = store.get_profile(profile_id) if profile_id else None
+    dump = _dump_uri_for_run(source_run_id, dump_s3_uri)
+    if profile:
+        odoo_img = profile.get("image_uri") or _resolve_odoo_image(source_run_id, s)
+        r_url = repo_url or profile.get("addons_git_url") or s.get("repo_url")
+        r_branch = repo_branch or profile.get("addons_git_ref") or s.get("repo_branch")
+        git_token_secret = profile.get("git_token_secret") or s.get("git_token_secret")
+        conf_extra = profile.get("odoo_conf_extra") or ""
+    else:
+        odoo_img = _resolve_odoo_image(source_run_id, s)
+        r_url = repo_url or s.get("repo_url")
+        r_branch = repo_branch or s.get("repo_branch")
+        git_token_secret = s.get("git_token_secret")
+        conf_extra = ""
+    conf_extra_b64 = base64.b64encode((conf_extra or "").encode()).decode()
+
     env_id = uuid.uuid4().hex[:10]
-    store.create_environment(env_id, source_run_id, issue, dump_s3_uri,
-                             repo_url=repo_url, repo_branch=repo_branch,
-                             profile_id=profile_id)
-    import threading
-    threading.Thread(
-        target=launch,
-        args=(env_id, source_run_id, issue, dump_s3_uri, repo_url, repo_branch,
-              profile_id, allow_ip, ssh_public_key),
-        daemon=True,
-    ).start()
+    store.create_environment(env_id, source_run_id, issue, dump,
+                             repo_url=r_url, repo_branch=r_branch,
+                             odoo_image=odoo_img, profile_id=profile_id)
+    store.update_environment(env_id, status="provisioning",
+                             odoo_image=odoo_img, repo_url=r_url, repo_branch=r_branch)
+
+    admin_password = _gen_password()
+    params = [
+        ("ami_id", s["ami_id"]),
+        ("instance_profile", s["instance_profile"]),
+        ("subnet_id", s["subnet_id"]),
+        ("security_group_id", s["security_group_id"]),
+        ("region", _region()),
+        ("instance_type", s["instance_type"]),
+        ("odoo_image", odoo_img or ""),
+        ("dump_s3_uri", dump or ""),
+        ("repo_url", r_url or ""),
+        ("repo_branch", r_branch or ""),
+        ("git_token_secret", git_token_secret or ""),
+        ("issue", issue or ""),
+        ("db_name", s.get("db_name") or "odoo"),
+        ("odoo_master_password",
+         config.get("ODOO_MASTER_PASSWORD", "change_me_master") or "change_me_master"),
+        ("odoo_conf_extra_b64", conf_extra_b64),
+        ("admin_password", admin_password),
+    ]
+    args = ["create", "-t", TEMPLATE_NAME, "-y", "--no-wait", env_id]
+    for k, v in params:
+        args += ["--parameter", f"{k}={v}"]
+    _run(args, json_out=False, timeout=120)
+    store.update_environment(env_id, workspace_name=env_id, status="provisioning",
+                            password=admin_password)
     return env_id
 
 
+# Coder workspace build status -> our env status.
+_STATUS_MAP = {
+    "pending": "provisioning", "starting": "provisioning", "building": "provisioning",
+    "running": "running", "stopped": "stopped", "stopping": "stopping",
+    "deleting": "terminated", "deleted": "terminated", "failed": "failed",
+    "canceling": "failed", "canceled": "failed",
+}
+
+
+def reconcile() -> None:
+    """Refresh env statuses from the Coder API. Called when the UI lists envs
+    so a panel restart recovers the true state -- the Coder server owns
+    lifecycle now, so this is a single API call, not per-env EC2 polling."""
+    try:
+        ws = _run(["list", "-a"], json_out=True, timeout=30)
+    except Exception:  # noqa: BLE001
+        return
+    by_name = {w.get("name"): w for w in (ws if isinstance(ws, list) else [])}
+    for e in store.list_environments():
+        name = e.get("workspace_name") or e.get("id")
+        w = by_name.get(name)
+        if not w:
+            if e.get("status") not in ("terminated", "failed"):
+                store.update_environment(e["id"], status="terminated",
+                                        error="workspace not found in Coder")
+            continue
+        latest = (w.get("latest_build") or {})
+        cs = _STATUS_MAP.get(latest.get("status", ""), e.get("status"))
+        if cs != e.get("status"):
+            store.update_environment(e["id"], status=cs)
+        # app URLs: Coder serves each app on its OWN origin (subdomain app
+        # hosting, CODER_WILDCARD_ACCESS_URL=*.host). This is REQUIRED for Odoo:
+        # its login form / assets use absolute server-root paths
+        # (/web/login, /web/session/authenticate, /web/static/...) that resolve
+        # against the app's own origin. With the old path proxy
+        # (@owner/ws/apps/slug) those hit the Coder dashboard origin and 404.
+        # The API exposes subdomain_name = "<app>--<ws>--<owner>"; the full host
+        # is "<subdomain_name>.<wildcard-base>" where wildcard-base is the
+        # CODER_URL host (the server's wildcard is "*.<that host>", so we
+        # prefix the subdomain name to the same host:port).
+        vscode = odoo = None
+        wuuid = w.get("id")
+        if wuuid:
+            d = _api(f"workspaces/{wuuid}?include_agents=true")
+            for r in (d.get("latest_build") or {}).get("resources", []):
+                for a in r.get("agents", []):
+                    for app in a.get("apps", []) or []:
+                        if not app.get("subdomain"):
+                            continue  # only subdomain apps are reachable for Odoo
+                        sd = app.get("subdomain_name")
+                        if not sd:
+                            continue
+                        u = _subdomain_url(sd)
+                        if app.get("slug") == "vscode": vscode = u
+                        if app.get("slug") == "odoo": odoo = u
+        store.update_environment(e["id"], vscode_url=vscode, odoo_url=odoo)
+
+
+def get_password(env_id: str) -> Optional[str]:
+    """The per-workspace password (Odoo admin + code-server), set by the panel
+    at create time as the `admin_password` template parameter and stored on the
+    env row. Returned directly (no Secrets Manager lookup needed)."""
+    env = store.get_environment(env_id)
+    return env.get("password") if env else None
+
+
 def teardown(env_id: str) -> None:
+    """Delete the Coder workspace (Coder terminates the EC2 instance + cleans
+    up the Terraform state). No per-env SG rule or secret to revoke -- those no
+    longer exist."""
     env = store.get_environment(env_id)
     if not env:
         raise ValueError("environment not found")
-    instance_id = env.get("instance_id")
-    if instance_id:
-        try:
-            ec2 = boto3.client("ec2", region_name=_region())
-            ec2.terminate_instances(InstanceIds=[instance_id])
-        except Exception:  # noqa: BLE001
-            pass
-    if env.get("secret_arn"):
-        _delete_secret(env["secret_arn"])
-    allow_ip = env.get("allow_ip")
-    if allow_ip:
-        s = config.environments_settings()
-        _revoke_ip(s["security_group_id"], allow_ip, [s["odoo_port"], s["code_port"], 22])
-    store.update_environment(env_id, status="terminated", vscode_url=None)
+    name = env.get("workspace_name") or env_id
+    try:
+        _run(["delete", "-y", name], json_out=False, timeout=120)
+    except Exception as exc:  # noqa: BLE001
+        store.update_environment(env_id, status="failed", error=str(exc))
+        return
+    store.update_environment(env_id, status="terminated",
+                             vscode_url=None, odoo_url=None)
+
+
+# Back-compat: the panel used to call `environments.reconcile_booting`.
+reconcile_booting = reconcile

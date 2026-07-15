@@ -156,9 +156,17 @@ install -d -m 700 /etc/coder
 if ! id coder >/dev/null 2>&1; then useradd -m -s /bin/bash coder; fi
 install -d -m 700 -o coder -g coder /home/coder/.config/coderv2
 install -d -m 700 -o coder -g coder /etc/coder
+# Subdomain app hosting: each coder_app gets its own origin
+# (<app>--<ws>--<owner>.<wildcard>). REQUIRED for Odoo, whose login form/assets
+# use absolute server-root paths (/web/login, /web/session/authenticate,
+# /web/static/...) that would otherwise resolve against the Coder dashboard
+# origin and 404. The Coder flag is --wildcard-access-url /
+# CODER_WILDCARD_ACCESS_URL (NOT CODER_APP_HOSTNAME, which is ignored).
+# nip.io gives wildcard DNS without a real domain: *.A.B.C.D.nip.io -> A.B.C.D.
 cat > /etc/coder/coder.env <<EENV
 CODER_ACCESS_URL=http://${MYIP}:8943
 CODER_HTTP_ADDRESS=0.0.0.0:8943
+CODER_WILDCARD_ACCESS_URL=*.${MYIP}.nip.io
 CODER_LOG_FILTER=debug
 EENV
 cat > /etc/systemd/system/coder-server.service <<'UNIT'
