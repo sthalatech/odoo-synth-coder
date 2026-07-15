@@ -71,7 +71,7 @@ data "coder_parameter" "region" {
   name         = "region"
   display_name = "AWS region."
   type         = "string"
-  default      = ""
+  default      = "us-east-1"
   order        = 5
 }
 
@@ -174,6 +174,9 @@ resource "coder_agent" "main" {
     echo "[env ${data.coder_workspace.me.id}] boot $(date -u +%FT%TZ) issue=${data.coder_parameter.issue.value}"
 
     REGION="${data.coder_parameter.region.value}"
+    if [ -z "$REGION" ]; then
+      REGION="$(curl -s http://169.254.169.254/latest/meta-data/placement/region 2>/dev/null || echo us-east-1)"
+    fi
     DUMP_S3_URI="${data.coder_parameter.dump_s3_uri.value}"
     ODOO_IMAGE="${data.coder_parameter.odoo_image.value}"
     REPO_URL="${data.coder_parameter.repo_url.value}"
@@ -224,7 +227,7 @@ resource "coder_agent" "main" {
     if [ -n "$REPO_URL" ]; then
       CLONE_URL="$REPO_URL"
       if [ -n "$GIT_TOKEN" ]; then
-        CLONE_URL="$(printf '%s' "$REPO_URL" | sed -E "s#https://#https://x-access-token:$$GIT_TOKEN@#")"
+        CLONE_URL="$(printf '%s' "$REPO_URL" | sed -E "s#https://#https://x-access-token:$GIT_TOKEN@#")"
       fi
       if sudo -u dev git clone "$CLONE_URL" "$REPO_DIR"; then
         if [ -n "$REPO_BRANCH" ]; then
@@ -422,8 +425,8 @@ resource "coder_app" "odoo" {
   url          = "http://localhost:18069"
   healthcheck {
     url       = "http://localhost:18069/web/login"
-    interval  = 15
-    threshold = 60
+    interval  = 10
+    threshold = 3
   }
 }
 
@@ -435,7 +438,7 @@ resource "coder_app" "vscode" {
   url          = "http://localhost:8443"
   healthcheck {
     url       = "http://localhost:8443/healthz"
-    interval  = 10
-    threshold = 30
+    interval  = 5
+    threshold = 3
   }
 }

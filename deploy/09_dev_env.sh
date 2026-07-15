@@ -55,20 +55,13 @@ if [ -z "$ENV_SG_ID" ] || [ "$ENV_SG_ID" = "None" ]; then
     --vpc-id "$VPC" --region "$AWS_REGION" --query GroupId --output text)"
 fi
 
-# ingress CIDR: default to the caller's public IP /32 (safest); override via env.
-if [ -z "${ENV_INGRESS_CIDR:-}" ]; then
-  MYIP="$(curl -fsS https://checkip.amazonaws.com 2>/dev/null | tr -d '[:space:]' || true)"
-  if [ -n "$MYIP" ]; then ENV_INGRESS_CIDR="$MYIP/32"; else ENV_INGRESS_CIDR="0.0.0.0/0"; fi
-fi
-log "env SG ingress CIDR: $ENV_INGRESS_CIDR"
-[ "$ENV_INGRESS_CIDR" = "0.0.0.0/0" ] && \
-  log "WARNING: code-server/odoo will be reachable from the whole internet"
-
-auth(){ aws ec2 authorize-security-group-ingress --region "$AWS_REGION" "$@" >/dev/null 2>&1 || true; }
-auth --group-id "$ENV_SG_ID" --protocol tcp --port 8443 --cidr "$ENV_INGRESS_CIDR"  # code-server
-auth --group-id "$ENV_SG_ID" --protocol tcp --port 8069 --cidr "$ENV_INGRESS_CIDR"  # odoo
-auth --group-id "$ENV_SG_ID" --protocol tcp --port 22   --cidr "$ENV_INGRESS_CIDR"  # break-glass ssh
+# No inbound rules: the Coder agent dials OUT to the Coder server, and the
+# developer reaches the workspace via Coder's Wireguard tunnel. The SG is
+# egress-only (AWS default egress), so workspace VMs need no public IP and no
+# per-env ingress rules. (The Coder server's own SG, opened on 8943, is
+# created separately by deploy/11_coder_server.sh.)
 put_state ENV_SG_ID "$ENV_SG_ID"
+log "env SG=$ENV_SG_ID (egress-only; Coder tunnel brokers access)"
 
 # a subnet for launches (first default subnet)
 ENV_SUBNET_ID="$(subnet_ids | awk '{print $1}')"
@@ -99,7 +92,8 @@ fi
 POLICY_JSON="$(python3 - "$AWS_REGION" "$ACCOUNT_ID" "$DUMP_S3_BUCKET" "$DUMP_S3_PREFIX" "$PROJECT" "$TOKEN_SECRET_ARN" <<'PY'
 import json, sys
 region, acct, bucket, prefix, project, token_arn = sys.argv[1:7]
-secret_arns = [f"arn:aws:secretsmanager:{region}:{acct}:secret:{project}/env/*"]
+secret_arns = [f"arn:aws:secretsmanager:{region}:{acct}:secret:{project}/env/*",
+                  f"arn:aws:secretsmanager:{region}:{acct}:secret:{project}/profile/*"]
 if token_arn:
     secret_arns.append(token_arn)
 doc = {
