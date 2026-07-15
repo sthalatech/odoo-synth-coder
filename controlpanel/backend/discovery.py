@@ -69,10 +69,10 @@ def _register_taskdef(ecs, profile: dict, put_url: str) -> tuple[str, str, str, 
     ]
     # dump-slimming knobs (saved per-profile in mask_inputs) -> read by
     # gen_masking.py inside the discovery container when it builds the profile.
+    # NOTE: subset_days is a MASK-time knob (the masker prunes rows after
+    # restore), so it is NOT passed here -- only exclude_table_data affects the
+    # generated greenmask profile.
     mi = profile.get("mask_inputs") or {}
-    sd = mi.get("subset_days")
-    if sd not in (None, "", 0, "0"):
-        env.append(kv("GM_SUBSET_DAYS", sd))
     etd = mi.get("exclude_table_data")
     if etd not in (None, ""):
         env.append(kv("GM_EXCLUDE_TABLE_DATA", etd))

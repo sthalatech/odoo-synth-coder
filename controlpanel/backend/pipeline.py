@@ -180,6 +180,14 @@ def _register_mask_taskdef(ecs, src: dict, tgt: dict, params: dict,
     if mask_rules_url:
         env.append(kv("MASK_RULES_URL", mask_rules_url))
 
+    # dump slimming: keep only the last N days of transactional tables. Applied
+    # by the masker AFTER restore via a generic FK-cascading DELETE (greenmask's
+    # dump-time subset can't handle Odoo's cyclic schema). Saved per-profile in
+    # mask_inputs.
+    sd = params.get("subset_days")
+    if sd not in (None, "", 0, "0"):
+        env.append(kv("GM_SUBSET_DAYS", sd))
+
     # optional SSH tunnel to reach the source through a bastion
     if params.get("ssh_enabled") and params.get("ssh_bastion"):
         b = parse_bastion(params["ssh_bastion"])

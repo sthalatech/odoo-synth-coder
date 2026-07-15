@@ -336,8 +336,7 @@ def main() -> int:
         log(f"masking_plan (greenmask): tables={mstats['tables']} "
             f"columns={mstats['columns']} "
             f"exclude_table_data={mstats.get('exclude_table_data', 0)} "
-            f"subset_tables={mstats.get('subset_tables', 0)} "
-            f"subset_days={mstats.get('subset_days', 0)}")
+            f"(row subsetting applied at mask time via GM_SUBSET_DAYS)")
     except Exception as exc:  # noqa: BLE001
         log(f"WARN: masking plan generation failed: {exc}")
 

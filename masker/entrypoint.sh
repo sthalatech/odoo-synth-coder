@@ -130,6 +130,140 @@ GOT="$($PSQL_T -A -t -c "SELECT to_regclass('public.res_partner');" || true)"
 [ "$GOT" = "res_partner" ] || { echo "[masker] ERROR restore verification failed"; exit 1; }
 say "restore verified (res_partner present)."
 
+# 4b. dump slimming: keep only the last GM_SUBSET_DAYS days of high-volume
+#     TRANSACTIONAL tables, then cascade-clean orphans so the DB stays
+#     referentially intact + Odoo-loadable. Done HERE (post-restore) rather than
+#     in greenmask because greenmask's dump-time subset engine panics on Odoo's
+#     cyclic schema ("more than one cycle group found in SCC"). This generic SQL
+#     approach works on any schema regardless of FK cycles.
+GM_SUBSET_DAYS="${GM_SUBSET_DAYS:-}"
+case "${GM_SUBSET_DAYS,,}" in ""|none|off|false|0) SUBSET_N="";; *) SUBSET_N="$GM_SUBSET_DAYS";; esac
+if [ -n "$SUBSET_N" ] && [ "$SUBSET_N" -gt 0 ] 2>/dev/null; then
+  say "dump slimming: pruning transactional rows older than ${SUBSET_N} days ..."
+
+  # Root transactional tables -> candidate date columns in priority order. The
+  # first column that actually exists (date/timestamp) is used; tables/columns
+  # absent from the source are skipped, so this stays general across Odoo
+  # versions/modules. Master data (partners, products, journals, companies) is
+  # never a root here -- it is referenced BY these tables and is retained.
+  declare -A SUBSET_ROOTS=(
+    [sale_order]="date_order create_date"
+    [sale_order_line]="create_date"
+    [account_move]="date invoice_date create_date"
+    [account_move_line]="date create_date"
+    [purchase_order]="date_order create_date"
+    [purchase_order_line]="create_date"
+    [stock_picking]="scheduled_date date_done create_date"
+    [stock_move]="date create_date"
+    [stock_move_line]="date create_date"
+    [pos_order]="date_order create_date"
+    [pos_order_line]="create_date"
+    [mrp_production]="date_start create_date"
+    [crm_lead]="create_date"
+    [calendar_event]="start create_date"
+    [project_task]="create_date"
+    [hr_attendance]="check_in create_date"
+    [mail_message]="date create_date"
+    [mail_tracking_value]="create_date"
+    [bus_bus]="create_date"
+  )
+
+  # Tables the greenmask profile already dumped schema-only (exclude-table-data):
+  # their emptiness is intentional, so the orphan sweep must NOT delete/null rows
+  # that merely reference them. Parsed straight from the rendered config.
+  EXCLUDED_TABLES=""
+  if [ -f /tmp/greenmask.yml ]; then
+    EXCLUDED_TABLES="$(grep -oE '^[[:space:]]*-[[:space:]]*public\.[a-zA-Z0-9_]+' /tmp/greenmask.yml \
+      | sed -E 's/.*public\.//' | sort -u)"
+  fi
+  EXCL_ARR="ARRAY["
+  first=1
+  for t in $EXCLUDED_TABLES; do
+    [ $first -eq 1 ] && first=0 || EXCL_ARR="${EXCL_ARR},"
+    EXCL_ARR="${EXCL_ARR}'${t}'"
+  done
+  EXCL_ARR="${EXCL_ARR}]::text[]"
+
+  # Build the per-root DELETE statements (resolve the date column live).
+  DELETES=""
+  for tbl in "${!SUBSET_ROOTS[@]}"; do
+    exists="$($PSQL_T -A -t -c "SELECT to_regclass('public.${tbl}')" 2>/dev/null || true)"
+    [ "$exists" = "$tbl" ] || [ "$exists" = "public.${tbl}" ] || continue
+    for col in ${SUBSET_ROOTS[$tbl]}; do
+      hit="$($PSQL_T -A -t -c "SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='${tbl}' AND column_name='${col}' AND data_type IN ('date','timestamp without time zone','timestamp with time zone') LIMIT 1" 2>/dev/null || true)"
+      if [ "$hit" = "1" ]; then
+        # keep rows with a NULL date (drafts/incomplete) -- only prune dated-old rows.
+        DELETES="${DELETES}
+    DELETE FROM public.${tbl} WHERE ${col} IS NOT NULL AND ${col} < (now() - interval '${SUBSET_N} days');"
+        say "  prune root: ${tbl} on ${col}"
+        break
+      fi
+    done
+  done
+
+  if [ -z "$DELETES" ]; then
+    say "dump slimming: no matching transactional tables found; nothing to prune."
+  else
+    # One atomic pass: disable FK/user triggers for speed, delete old root rows,
+    # then repeatedly clean orphaned references to a fixpoint (NULL nullable FKs,
+    # DELETE NOT NULL children -- which may orphan their own children, hence the
+    # loop). FKs pointing at intentionally-emptied (excluded) tables are skipped.
+    $PSQL_T -v ON_ERROR_STOP=1 <<SQL
+BEGIN;
+SET LOCAL session_replication_role = replica;
+${DELETES}
+
+DO \$prune\$
+DECLARE
+  fk record;
+  n bigint;
+  total bigint;
+  passes int := 0;
+  excluded text[] := ${EXCL_ARR};
+BEGIN
+  LOOP
+    total := 0;
+    passes := passes + 1;
+    FOR fk IN
+      SELECT cl.relname AS child, att.attname AS child_col,
+             att.attnotnull AS notnull,
+             pcl.relname AS parent, patt.attname AS parent_col
+      FROM pg_constraint con
+      JOIN pg_class cl  ON cl.oid = con.conrelid AND cl.relnamespace = 'public'::regnamespace
+      JOIN pg_class pcl ON pcl.oid = con.confrelid
+      JOIN pg_attribute att  ON att.attrelid = con.conrelid  AND att.attnum = con.conkey[1]
+      JOIN pg_attribute patt ON patt.attrelid = con.confrelid AND patt.attnum = con.confkey[1]
+      WHERE con.contype = 'f'
+        AND cardinality(con.conkey) = 1
+        AND NOT (pcl.relname = ANY(excluded))
+    LOOP
+      IF fk.notnull THEN
+        EXECUTE format(
+          'DELETE FROM public.%I c WHERE c.%I IS NOT NULL AND NOT EXISTS '
+          '(SELECT 1 FROM public.%I p WHERE p.%I = c.%I)',
+          fk.child, fk.child_col, fk.parent, fk.parent_col, fk.child_col);
+      ELSE
+        EXECUTE format(
+          'UPDATE public.%I c SET %I = NULL WHERE c.%I IS NOT NULL AND NOT EXISTS '
+          '(SELECT 1 FROM public.%I p WHERE p.%I = c.%I)',
+          fk.child, fk.child_col, fk.child_col, fk.parent, fk.parent_col, fk.child_col);
+      END IF;
+      GET DIAGNOSTICS n = ROW_COUNT;
+      total := total + n;
+    END LOOP;
+    RAISE NOTICE 'orphan sweep pass % touched % rows', passes, total;
+    EXIT WHEN total = 0 OR passes >= 50;
+  END LOOP;
+END
+\$prune\$;
+COMMIT;
+SQL
+    say "dump slimming: prune + orphan sweep complete; reclaiming space ..."
+    $PSQL_T -c "VACUUM (ANALYZE);" >/dev/null 2>&1 || true
+    say "dump slimming done."
+  fi
+fi
+
 # 5. neutralize (guard each table: modules like fetchmail/payment may be absent)
 #    each step is individually toggleable via NEUTRALIZE_* env vars.
 say "neutralizing (mail=${NEUTRALIZE_MAIL} fetchmail=${NEUTRALIZE_FETCHMAIL} payment=${NEUTRALIZE_PAYMENT} smtp_param=${NEUTRALIZE_SMTP_PARAM} crons=${NEUTRALIZE_CRONS}) ..."
