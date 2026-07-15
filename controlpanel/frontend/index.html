@@ -188,6 +188,13 @@
               <label>greenmask jobs
                 <input type="number" id="pf_gm_jobs" min="1" max="16" placeholder="4" />
               </label>
+              <label>Keep last N days <span class="muted">(row subset of transactional tables; blank/0 = keep all)</span>
+                <input type="number" id="pf_subset_days" min="1" placeholder="all history" />
+              </label>
+              <label>Exclude table data <span class="muted">(empty these high-volume tables; blank = smart default, 'none' = keep all)</span>
+                <input type="text" id="pf_exclude_table_data" placeholder="default (attachments, mail, logs)" />
+              </label>
+              <p class="muted small">Dump slimming is applied when discovery regenerates the masking profile. Re-run discover after changing these. The generated YAML stays fully editable in the masking editor.</p>
 
               <div class="form-actions">
                 <button type="submit" id="pf-save-btn">Save profile</button>

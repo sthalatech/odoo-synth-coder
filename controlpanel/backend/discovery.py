@@ -67,6 +67,15 @@ def _register_taskdef(ecs, profile: dict, put_url: str) -> tuple[str, str, str, 
         kv("GIT_TOKEN", profiles._get_secret(profile.get("git_token_secret"))),
         kv("DISCOVERY_PUT_URL", put_url),
     ]
+    # dump-slimming knobs (saved per-profile in mask_inputs) -> read by
+    # gen_masking.py inside the discovery container when it builds the profile.
+    mi = profile.get("mask_inputs") or {}
+    sd = mi.get("subset_days")
+    if sd not in (None, "", 0, "0"):
+        env.append(kv("GM_SUBSET_DAYS", sd))
+    etd = mi.get("exclude_table_data")
+    if etd not in (None, ""):
+        env.append(kv("GM_EXCLUDE_TABLE_DATA", etd))
     if conn.get("ssh_enabled") and conn.get("ssh_bastion"):
         b = pipeline.parse_bastion(conn["ssh_bastion"])
         env += [

@@ -209,7 +209,7 @@ def run_params(profile_id: str, overrides: Optional[dict[str, Any]] = None) -> d
 _MASK_KEYS = (
     "mask_profile", "admin_password", "gm_jobs", "neutralize_mail",
     "neutralize_fetchmail", "neutralize_payment", "neutralize_smtp_param",
-    "reset_admin_login", "produce_dump",
+    "reset_admin_login", "produce_dump", "subset_days", "exclude_table_data",
 )
 
 

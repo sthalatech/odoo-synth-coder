@@ -530,6 +530,8 @@ function fillProfileForm(p) {
   $("pf_enterprise_source").value = p.enterprise_source || "";
   $("pf_mask_profile").value = mi.mask_profile || "";
   $("pf_gm_jobs").value = mi.gm_jobs || "";
+  $("pf_subset_days").value = mi.subset_days || "";
+  $("pf_exclude_table_data").value = mi.exclude_table_data || "";
   $("profile-form-title").textContent = "Edit profile";
   $("pf-delete-btn").style.display = "";
   loadProfileImages(p.id);
@@ -577,6 +579,8 @@ function buildProfilePayload() {
     enterprise_source: $("pf_enterprise_source").value.trim() || null,
     mask_profile: $("pf_mask_profile").value || null,
     gm_jobs: parseInt($("pf_gm_jobs").value, 10) || null,
+    subset_days: parseInt($("pf_subset_days").value, 10) || null,
+    exclude_table_data: $("pf_exclude_table_data").value.trim() || null,
   };
   const dsn = $("pf_source_dsn").value.trim();
   if (dsn) body.source_dsn = dsn;

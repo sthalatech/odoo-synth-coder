@@ -129,6 +129,9 @@ class RunRequest(BaseModel):
     reset_admin_login: Optional[bool] = None
     # output
     produce_dump: Optional[bool] = None    # also produce a downloadable pg_dump
+    # dump slimming (applied at discovery: baked into the generated profile)
+    subset_days: Optional[int] = None      # keep only last N days of txn tables
+    exclude_table_data: Optional[str] = None  # comma-sep tables to empty (or 'none')
 
 
 class EnvironmentRequest(BaseModel):
@@ -180,6 +183,8 @@ class ProfileRequest(BaseModel):
     neutralize_smtp_param: Optional[bool] = None
     reset_admin_login: Optional[bool] = None
     produce_dump: Optional[bool] = None
+    subset_days: Optional[int] = None
+    exclude_table_data: Optional[str] = None
 
 
 class ImageDeleteRequest(BaseModel):
