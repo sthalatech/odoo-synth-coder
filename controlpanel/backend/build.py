@@ -29,6 +29,37 @@ TEMPLATE = (Path(__file__).resolve().parent.parent
             / "environments" / "builder-user-data.sh.tmpl")
 BUILD_CONTEXT = config.REPO_ROOT / "odoo"
 
+# Option E: the build runs as a Coder workspace from the odoo-synth-builder
+# template (same logic as builder-user-data.sh.tmpl, parameterized). The panel
+# keeps orchestration: package context, presign URLs, launch the workspace,
+# poll S3 for the result. Empty/unset => the legacy ephemeral-EC2 path.
+BUILDER_TEMPLATE = "odoo-synth-builder"
+
+
+def _builder_use_coder() -> bool:
+    """True if builds should run as Coder workspaces (the odoo-synth-builder
+    template) instead of the legacy hand-rolled ephemeral EC2. Enabled when the
+    Coder control plane is configured (CODER_URL + CODER_SESSION_TOKEN)."""
+    s = config.environments_settings()
+    return bool(s.get("coder_url") and s.get("coder_session_token"))
+
+
+def _coder_env() -> dict:
+    """Env for the coder CLI (server URL + session token + AWS creds). Mirrors
+    environments._coder_env so the builder workspace launches with the same
+    auth as dev envs."""
+    s = config.environments_settings()
+    env = {
+        "CODER_URL": s.get("coder_url") or "",
+        "CODER_SESSION_TOKEN": s.get("coder_session_token") or "",
+    }
+    for k in ("AWS_REGION", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+              "AWS_SESSION_TOKEN", "AWS_DEFAULT_REGION"):
+        v = config.get(k)
+        if v:
+            env[k] = v
+    return env
+
 
 def _region() -> str:
     return config.require("AWS_REGION")
@@ -176,6 +207,49 @@ def _launch_builder(user_data: str, image_uri: str, profile_id: str, s: dict) ->
     return resp["Instances"][0]["InstanceId"]
 
 
+def _launch_builder_workspace(image_uri: str, context_get: str, result_put: str,
+                               profile: dict, s: dict) -> str:
+    """Option E: launch the build as a Coder workspace from the
+    odoo-synth-builder template. The workspace's startup_script runs the same
+    build logic as builder-user-data.sh.tmpl (download context -> docker build
+    -> push to ECR -> PUT result JSON to S3 -> poweroff). Returns the
+    workspace name (the panel polls S3 for the result, exactly as before)."""
+    import os
+    import subprocess
+
+    base = s.get("odoo_image_base") or config.get("ODOO_IMAGE") or "odoo:17"
+    deps = " ".join(profile.get("python_deps") or [])
+    odoo_ref = (profile.get("odoo_git_ref")
+                or profile.get("odoo_series") or "")
+    params = [
+        ("ami_id", s.get("ami_id") or ""),
+        ("instance_profile", s.get("instance_profile") or ""),
+        ("subnet_id", s.get("subnet_id") or ""),
+        ("security_group_id", s.get("security_group_id") or ""),
+        ("region", _region()),
+        ("instance_type", s.get("instance_type") or "m5.xlarge"),
+        ("image_uri", image_uri),
+        ("context_get_url", context_get),
+        ("result_put_url", result_put),
+        ("odoo_image_base", base),
+        ("odoo_git_url", profile.get("odoo_git_url")
+         or "https://github.com/odoo/odoo"),
+        ("odoo_git_ref", odoo_ref),
+        ("custom_addons_git_url", profile.get("addons_git_url") or ""),
+        ("custom_addons_git_ref", profile.get("addons_git_ref") or ""),
+        ("python_deps", deps),
+        ("git_token_secret", profile.get("git_token_secret") or ""),
+        ("issue", profile.get("id") or ""),
+    ]
+    ws_name = f"build-{uuid.uuid4().hex[:8]}"
+    args = ["create", "-t", BUILDER_TEMPLATE, "-y", "--no-wait", ws_name]
+    for k, v in params:
+        args += ["--parameter", f"{k}={v}"]
+    subprocess.run(["coder", *args], env={**os.environ, **_coder_env()},
+                   check=True, capture_output=True, text=True, timeout=120)
+    return ws_name
+
+
 def _poll_result(get_url: str, emit: LogSink, timeout_s: int = 45 * 60) -> Optional[dict]:
     deadline = time.time() + timeout_s
     while time.time() < deadline:
@@ -214,13 +288,24 @@ def run_build(profile_id: str, emit: LogSink) -> dict:
 
     user_data = _render_user_data(image_uri, context_get, result_put, profile)
     s = _builder_settings()
-    emit(f"[panel] launching ephemeral builder ({s['instance_type']}) ...")
-    try:
-        iid = _launch_builder(user_data, image_uri, profile_id, s)
-    except Exception as exc:  # noqa: BLE001
-        store.update_profile(profile_id, image_status="failed", error=str(exc))
-        raise
-    emit(f"[panel] builder instance {iid} launched; waiting for image build+push ...")
+    use_coder = _builder_use_coder()
+    if use_coder:
+        emit(f"[panel] launching Coder builder workspace ({s['instance_type']}) ...")
+        try:
+            iid = _launch_builder_workspace(image_uri, context_get, result_put,
+                                            profile, s)
+        except Exception as exc:  # noqa: BLE001
+            store.update_profile(profile_id, image_status="failed", error=str(exc))
+            raise
+        emit(f"[panel] builder workspace {iid} launched; waiting for image build+push ...")
+    else:
+        emit(f"[panel] launching ephemeral builder ({s['instance_type']}) ...")
+        try:
+            iid = _launch_builder(user_data, image_uri, profile_id, s)
+        except Exception as exc:  # noqa: BLE001
+            store.update_profile(profile_id, image_status="failed", error=str(exc))
+            raise
+        emit(f"[panel] builder instance {iid} launched; waiting for image build+push ...")
 
     result = _poll_result(result_get, emit)
     if not result:

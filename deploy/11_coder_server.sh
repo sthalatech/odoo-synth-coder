@@ -81,9 +81,16 @@ if ! aws iam get-role --role-name "$CODER_ROLE" >/dev/null 2>&1; then
 fi
 ENV_ROLE_ARN="$(aws iam get-role --role-name "$ENV_INSTANCE_PROFILE" \
   --query 'Role.Arn' --output text 2>/dev/null || true)"
-POLICY_DOC="$(python3 - "$AWS_REGION" "$ACCOUNT_ID" "$ENV_ROLE_ARN" <<'PYDOC'
+# Option E: the Coder server also launches BUILDER workspaces, which assume
+# the odoo-synth-builder role (distinct from the env role -- ECR push + S3 +
+# Secrets + self-terminate). The server needs iam:PassRole on it too.
+BUILDER_ROLE="${BUILDER_ROLE:-$PROJECT-builder}"
+BUILDER_ROLE_ARN="$(aws iam get-role --role-name "$BUILDER_ROLE" \
+  --query 'Role.Arn' --output text 2>/dev/null || true)"
+POLICY_DOC="$(python3 - "$AWS_REGION" "$ACCOUNT_ID" "$ENV_ROLE_ARN" "$BUILDER_ROLE_ARN" <<'PYDOC'
 import json, sys
-region, acct, env_role_arn = sys.argv[1:4]
+region, acct, env_role_arn, builder_role_arn = sys.argv[1:5]
+pass_roles = [r for r in (env_role_arn, builder_role_arn) if r] or ["arn:aws:iam::*:role/*"]
 print(json.dumps({
   "Version": "2012-10-17",
   "Statement": [
@@ -93,9 +100,11 @@ print(json.dumps({
                 "ec2:CreateTags","ec2:DeleteTags"],
      "Resource": "*"},
     # PassRole targets the ROLE the workspace VM assumes (not its instance profile).
-    {"Sid": "PassEnvRole", "Effect": "Allow",
+    # Covers BOTH the dev-env role and the builder role so the Coder server can
+    # provision workspaces from the odoo-synth-env AND odoo-synth-builder templates.
+    {"Sid": "PassWorkspaceRoles", "Effect": "Allow",
      "Action": ["iam:PassRole"],
-     "Resource": [env_role_arn] if env_role_arn else ["arn:aws:iam::*:role/*"]},
+     "Resource": pass_roles},
     {"Sid": "SsmAmiLookup", "Effect": "Allow",
      "Action": ["ssm:GetParameters"],
      "Resource": ["arn:aws:ssm:*:*:parameter/aws/service/canonical/*"]},
