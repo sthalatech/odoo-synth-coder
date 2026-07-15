@@ -334,7 +334,8 @@ def main() -> int:
         import gen_masking
         masking_plan, mstats = gen_masking.generate_plan(installed)
         log(f"masking_plan (greenmask): tables={mstats['tables']} "
-            f"columns={mstats['columns']}")
+            f"columns={mstats['columns']} "
+            f"exclude_table_data={mstats.get('exclude_table_data', 0)}")
     except Exception as exc:  # noqa: BLE001
         log(f"WARN: masking plan generation failed: {exc}")
 

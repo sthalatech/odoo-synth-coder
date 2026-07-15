@@ -143,6 +143,85 @@ _SKIP_TABLES = {
 }
 
 
+# High-volume, low-value tables whose ROW DATA we drop from the dump (schema is
+# kept, so Odoo still boots -- these are logs, chatter/mail history, attachments,
+# transient/queue data). This trims the bulk of an Odoo DB (attachments + mail
+# are usually the largest tables) without touching business records like
+# partners / orders / invoices. Emitted as pg_dump ``--exclude-table-data`` so
+# the table exists but comes back empty.
+#
+# FK SAFETY: emptying a table breaks restore if a *retained* table has a foreign
+# key pointing into it (the post-data FK constraint fails). So this is only a
+# CANDIDATE set -- the actual exclusions are narrowed at generation time to the
+# largest subset that is closed under "is referenced by" (see _safe_exclude_data),
+# using the live FK graph. That keeps it correct across Odoo versions/modules
+# without hardcoding a specific schema. Override per-source with the env var
+# GM_EXCLUDE_TABLE_DATA (comma-separated table names, or "none" to disable).
+_DEFAULT_EXCLUDE_TABLE_DATA = {
+    # attachments / binaries -- typically the single largest table
+    "ir_attachment", "message_attachment_rel",
+    # mail / chatter history -- high volume, no business value in a dev replica
+    "mail_message", "mail_message_res_partner_rel",
+    "mail_message_res_partner_needaction_rel",
+    "mail_message_res_partner_starred_rel",
+    "mail_notification", "mail_tracking_value", "mail_followers",
+    "mail_message_reaction", "mail_message_schedule",
+    "mail_mail", "mail_mail_res_partner_rel", "mail_activity",
+    # technical logs / transient / bus
+    "ir_logging", "bus_bus", "bus_presence", "ir_cron_trigger",
+    "base_import_import", "base_import_mapping", "web_editor_converter_test",
+    "auditlog_log", "queue_job",  # common OCA high-volume tables (if present)
+}
+
+
+def _safe_exclude_data(schema: dict[str, dict[str, dict]],
+                       candidates: set[str]) -> tuple[list[str], list[str]]:
+    """Narrow ``candidates`` to the largest subset safe to empty: for every
+    excluded table, EVERY table that has a foreign key into it must also be
+    excluded (else the retained child's FK constraint fails on restore). We take
+    the maximal subset closed under the "referenced-by" relation by iteratively
+    dropping any candidate that has a referencer outside the set.
+
+    Returns (safe_to_exclude_sorted, dropped_for_fk_safety_sorted). Only tables
+    present in the live schema are considered."""
+    present = {t for t in candidates if t in schema}
+    # reverse FK graph: target_table -> {tables that reference it}
+    referencers: dict[str, set[str]] = {}
+    for tbl, cols in schema.items():
+        for meta in cols.values():
+            tgt = meta.get("fk_target")
+            if tgt:
+                referencers.setdefault(tgt, set()).add(tbl)
+
+    safe = set(present)
+    dropped: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for tbl in sorted(safe):
+            # tables referencing tbl that are NOT themselves excluded => unsafe
+            outside = {r for r in referencers.get(tbl, set())
+                       if r != tbl and r not in safe}
+            if outside:
+                safe.discard(tbl)
+                dropped.add(tbl)
+                changed = True
+    return sorted(safe), sorted(dropped)
+
+
+def _exclude_candidates() -> set[str] | None:
+    """Resolve the exclude-table-data candidate set. Env GM_EXCLUDE_TABLE_DATA
+    overrides the default: a comma-separated table list, or "none"/"off" to
+    disable data exclusion entirely (returns None)."""
+    raw = os.environ.get("GM_EXCLUDE_TABLE_DATA")
+    if raw is None:
+        return set(_DEFAULT_EXCLUDE_TABLE_DATA)
+    val = raw.strip()
+    if val.lower() in ("none", "off", "false", ""):
+        return None
+    return {t.strip() for t in val.split(",") if t.strip()}
+
+
 def transformer_for(column: str, dtype: str, fk_target: str | None,
                     unique: bool = False) -> dict | None:
     """Return a greenmask transformer dict for a column, or None to leave it.
@@ -234,15 +313,25 @@ def generate_plan(installed_modules: list[str], _baseline_dir=None) -> tuple[str
                 n_cols += 1
         if tlist:
             table_transformers[table] = tlist
-    yaml_text = _render_greenmask(table_transformers)
-    return yaml_text, {"tables": len(table_transformers), "columns": n_cols}
+    # high-volume tables to dump schema-only (rows dropped), narrowed to the
+    # FK-safe subset so the restore never fails on an orphaned foreign key.
+    candidates = _exclude_candidates()
+    exclude_data: list[str] = []
+    dropped_unsafe: list[str] = []
+    if candidates:
+        exclude_data, dropped_unsafe = _safe_exclude_data(schema, candidates)
+    yaml_text = _render_greenmask(table_transformers, exclude_data, dropped_unsafe)
+    return yaml_text, {"tables": len(table_transformers), "columns": n_cols,
+                       "exclude_table_data": len(exclude_data)}
 
 
 def _q(v: str) -> str:
     return '"' + str(v).replace('"', '\\"') + '"'
 
 
-def _render_greenmask(table_transformers: dict[str, list[dict]]) -> str:
+def _render_greenmask(table_transformers: dict[str, list[dict]],
+                      exclude_table_data: list[str] | None = None,
+                      dropped_unsafe: list[str] | None = None) -> str:
     lines: list[str] = [
         "# greenmask masking profile (auto-generated during provenance discovery).",
         "# Transformers were derived from the LIVE source schema: PII-shaped text",
@@ -264,8 +353,21 @@ def _render_greenmask(table_transformers: dict[str, list[dict]]) -> str:
         "  pg_dump_options:",
         '    dbname: "host=${SOURCE_DB_HOST} port=${SOURCE_DB_PORT} user=${SOURCE_DB_USER} password=${SOURCE_DB_PASSWORD} dbname=${SOURCE_DB_NAME}"',
         "    jobs: ${GM_JOBS}",
-        "  transformation:",
     ]
+    if exclude_table_data:
+        lines.append(
+            "    # Row data dropped for these high-volume tables (schema kept so")
+        lines.append(
+            "    # Odoo still boots). Narrowed to the FK-safe subset. Edit freely.")
+        lines.append("    exclude-table-data:")
+        for t in exclude_table_data:
+            lines.append(f"      - public.{t}")
+    if dropped_unsafe:
+        lines.append(
+            "    # NOT excluded (a retained table has a FK into them; emptying")
+        lines.append(
+            f"    #   would break restore): {', '.join(dropped_unsafe)}")
+    lines.append("  transformation:")
     for table in sorted(table_transformers):
         lines.append("    - schema: public")
         lines.append(f"      name: {table}")
