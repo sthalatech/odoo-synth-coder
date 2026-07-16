@@ -384,7 +384,31 @@ resource "coder_agent" "main" {
         fi
         MOUNT_ARGS="-v $${REPO_DIR}:/mnt/live:rw -e EXTRA_ADDONS_PATH=$EXTRA"
       fi
-      docker rm -f env-odoo >/dev/null 2>&1 || true
+      # Default SSO config placeholders: the acme_sso_auth_generic addon reads
+      # config['sso_api_secret'] etc. from odoo.conf [options] (Odoo's config.load()
+      # copies every [options] key -- even unregistered ones -- into self.options).
+      # The masked dump has none, so without these keys the /website_sso auto-redirect
+      # template raises KeyError and the whole login flow 500s. If the profile didn't
+      # supply ODOO_CONF_EXTRA_B64 (or it lacks the sso_* keys), inject dummy values
+      # so the template renders. These are NOT real secrets -- dev-only placeholders.
+      if ! printf '%s' "$ODOO_CONF_EXTRA_B64" | base64 -d 2>/dev/null | grep -q '^sso_api_secret *='; then
+        SSO_DEFAULT='sso_api_secret = dev_placeholder_secret
+sso_api_key = dev_placeholder_key
+sso_api_system_token = dev_placeholder_token
+sso_legal_entity = IF
+sso_login_action = 0
+sso_login_force_consent = 1
+sso_login_url = https://sso.example.invalid/
+sso_login_info_endpoint = https://sso.example.invalid/info
+sso_pms_endpoint = https://pms.example.invalid'
+        SSO_B64="$(printf '%s' "$SSO_DEFAULT" | base64 -w0)"
+        if [ -n "$ODOO_CONF_EXTRA_B64" ]; then
+          ODOO_CONF_EXTRA_B64="$(printf '%s\n%s' "$ODOO_CONF_EXTRA_B64" "$SSO_DEFAULT" | base64 -w0)"
+        else
+          ODOO_CONF_EXTRA_B64="$SSO_B64"
+        fi
+      fi
+            docker rm -f env-odoo >/dev/null 2>&1 || true
       docker run -d --name env-odoo --network "$NET" \
         -p 127.0.0.1:18069:8069 \
         -e TARGET_DB_HOST=env-db -e TARGET_DB_PORT=5432 -e TARGET_DB_NAME="$DB_NAME" \
@@ -444,7 +468,7 @@ PY
     # from env vars -- it NEVER prints the passwords themselves. Served by a
     # tiny python http.server bound to 127.0.0.1:8090; Coder proxies it through
     # the authenticated tunnel (owner-only by default).
-    cat > /home/dev/workspace/env-info.html <<HTML
+    cat > /home/dev/workspace/index.html <<HTML
 <!doctype html><html><head><meta charset="utf-8">
 <title>odoo-synth env guide</title>
 <style>
@@ -539,7 +563,7 @@ echo "$$ODOO_MASTER_PASSWORD"
 </ul>
 </body></html>
 HTML
-    chown dev:dev /home/dev/workspace/env-info.html 2>/dev/null || true
+    chown dev:dev /home/dev/workspace/index.html 2>/dev/null || true
 
     cat > /etc/systemd/system/env-info.service <<EISVC
 [Unit]
@@ -580,7 +604,7 @@ EISVC
 - Odoo runs in the env-odoo docker container (host port 127.0.0.1:18069).
 - Postgres runs in the env-db container (host 127.0.0.1:5432, user/db odoo, password odoo).
 - Boot log: /var/log/odoo-synth-env.log .
-- Env Guide page: http://localhost:8090/env-info.html (repo branch + DB name are listed there).
+- Env Guide page: http://localhost:8090/ (the Env Guide app on the workspace page).
 
 ## Running / restarting Odoo
 - Restart after changing addons: docker restart env-odoo
@@ -739,11 +763,11 @@ resource "coder_app" "env_info" {
   slug         = "env-guide"
   display_name = "Env Guide"
   icon         = "/icon/info.svg"
-  url          = "http://localhost:8090/env-info.html"
+  url          = "http://localhost:8090/"
   subdomain    = true
   share        = "owner"
   healthcheck {
-    url       = "http://localhost:8090/env-info.html"
+    url       = "http://localhost:8090/"
     interval  = 10
     threshold = 3
   }
