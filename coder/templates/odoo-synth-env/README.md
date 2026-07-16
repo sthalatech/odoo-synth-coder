@@ -21,11 +21,16 @@ the env hydrates and serves Odoo automatically.
 
 ## Parameters you must supply
 
-- `repo_url` *(required)* — HTTPS git URL of your addons repo.
+- `repo_url` *(required)* — git URL of your addons repo. Use an **SSH URL**
+  (`git@github.com:org/repo.git`) to authenticate with **your own Coder SSH
+  key** — the workspace agent injects `$GIT_SSH_COMMAND` so private repos you
+  have access to clone with no stored token. (Add your Coder public key to
+  GitHub as a deploy/user key — see your Coder user settings -> "Git
+  authentication".) An HTTPS URL also works but then needs `git_token_secret`.
 - `repo_branch` *(required)* — branch / tag / commit to check out.
-- `git_token_secret` *(optional)* — Secrets Manager secret id of a GitHub
-  token, if the repo is private. Without it the clone is skipped and Odoo runs
-  from image-baked addons only.
+- `git_token_secret` *(optional)* — only used when `repo_url` is HTTPS. Secrets
+  Manager secret id of a GitHub token for cloning a private HTTPS repo. SSH
+  URLs ignore this and use your Coder key instead.
 - `odoo_image`, `dump_s3_uri` — the preset fills these; override only if you
   know what you're doing.
 
