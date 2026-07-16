@@ -12,6 +12,7 @@ Runs the masker Fargate task in-process so we can tail its CloudWatch logs live.
 """
 from __future__ import annotations
 import json
+import threading
 import time
 import uuid
 from typing import Callable, Optional
@@ -251,17 +252,38 @@ def _launch_runner(image_uri: str, env_file_get_url: str, env_keys: list[str],
     return ws_name
 
 
-def _tail_runner(ws_name: str, emit: LogSink, timeout: float = 7200.0) -> None:
-    """Tail the runner workspace's Coder logs live into the panel's run-log
-    SSE stream (via `coder logs -f`). Returns when the workspace powers off or
-    the timeout elapses. The runner's exit code is read from the result.json it
-    PUTs to S3 (see _poll_runner_result), not from the log stream."""
+def _delete_runner(ws_name: str, emit: Optional[LogSink] = None) -> None:
+    """Delete a runner workspace once its result has been collected. The
+    workspace powers itself off on completion; this tears down the (now
+    stopped) EC2 instance + Coder record so we don't accumulate idle VMs.
+    Best-effort: a failure here is logged, not raised."""
+    import os
+    import subprocess
+
+    try:
+        subprocess.run(["coder", "delete", ws_name, "-y"],
+                       env={**os.environ, **_coder_env()},
+                       check=True, capture_output=True, text=True, timeout=120)
+        if emit is not None:
+            emit(f"[panel] runner workspace {ws_name} deleted")
+    except Exception as exc:  # noqa: BLE001
+        if emit is not None:
+            emit(f"[panel] runner workspace {ws_name} cleanup failed: {exc}")
+
+
+def _tail_runner(ws_name: str, emit: LogSink, timeout: float = 7200.0,
+                stop: Optional[threading.Event] = None) -> None:
+    """Stream the runner workspace's Coder logs into the panel's run-log SSE.
+
+    Uses `coder logs -f` via a long-lived Popen so lines stream incrementally.
+    `coder logs -f` doesn't always follow the agent's startup_script stdout
+    reliably (it can stall after the provisioner phase), so this is best-effort
+    UX -- the authoritative completion signal comes from _poll_runner_result.
+    Stops when `stop` is set, the timeout elapses, or the stream EOFs."""
     import os
     import subprocess
 
     deadline = time.time() + timeout
-    # `coder logs -f` streams startup_script + container stdout (prefixed
-    # [container]). It exits when the workspace stops (poweroff).
     try:
         p = subprocess.Popen(
             ["coder", "logs", "-f", ws_name],
@@ -271,20 +293,26 @@ def _tail_runner(ws_name: str, emit: LogSink, timeout: float = 7200.0) -> None:
         assert p.stdout is not None
         for line in p.stdout:
             emit(line.rstrip("\n"))
-            if time.time() > deadline:
+            if time.time() > deadline or (stop is not None and stop.is_set()):
                 p.terminate()
                 break
-        p.wait(timeout=30)
+        p.wait(timeout=10)
     except Exception as exc:  # noqa: BLE001
         emit(f"[panel] log tail ended: {exc}")
+    finally:
+        try:
+            p.terminate()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _poll_runner_result(get_url: str, emit: LogSink,
-                        deadline: float = 7200.0) -> Optional[dict]:
+                        timeout: float = 7200.0) -> Optional[dict]:
     """Poll the runner's result.json marker on S3 until it appears or the
-    deadline elapses. Returns the parsed dict or None on timeout."""
+    timeout elapses. Returns the parsed dict or None on timeout."""
     import urllib.request
 
+    deadline = time.time() + timeout
     while time.time() < deadline:
         try:
             with urllib.request.urlopen(get_url, timeout=30) as r:  # noqa: S310
@@ -308,12 +336,31 @@ def run_runner(image_name: str, env_pairs: list[tuple[str, object]],
     emit(f"[panel] launching Coder runner workspace ({image_name}, {phase}) ...")
     ws_name = _launch_runner(image_uri, env_get, env_keys, put_url, phase)
     emit(f"[panel] runner workspace {ws_name} launched; streaming logs ...")
-    _tail_runner(ws_name, emit)
+    # Tail the Coder logs in a background thread while the main thread polls
+    # S3 for the result.json marker. `coder logs -f` can stall after the
+    # provisioner phase (it doesn't reliably follow the agent's startup_script
+    # stdout), so the result is authoritative -- the tail is best-effort UX.
+    tail_done = threading.Event()
+    tail_thread = threading.Thread(
+        target=_tail_runner, args=(ws_name, emit, 7200.0, tail_done), daemon=True)
+    tail_thread.start()
     result = _poll_runner_result(get_url, emit)
+    # Give the tail a moment to flush any trailing lines, then let it end.
+    tail_done.set()
+    tail_thread.join(timeout=10)
+    _delete_runner(ws_name, emit)
     if not result:
-        return {"exit_code": 1, "error": "runner result.json not found (timeout)"}
+        return {"exit_code": 1, "error": "runner result.json not found (timeout)",
+                "task_arn": ws_name}
     exit_code = int(result.get("exit_code", 1))
     out: dict = {"exit_code": exit_code, "task_arn": ws_name}
+    # `coder logs -f` can stall after the provisioner phase and miss the
+    # [container]/[runner] lines, so emit the runner's own log_tail from the
+    # result.json as a fallback so the user sees what the container did.
+    log_tail = result.get("log_tail") or ""
+    if log_tail:
+        for line in log_tail.splitlines():
+            emit(line)
     if exit_code != 0:
         out["error"] = result.get("error") or f"runner exited {exit_code}"
     return out
