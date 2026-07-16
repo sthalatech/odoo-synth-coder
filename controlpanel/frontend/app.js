@@ -10,7 +10,7 @@ let envTable = null;
 let ENV_CONFIG = null;
 
 /* ===== Router ===== */
-const ROUTES = ["overview", "new", "profiles", "runs", "environments"];
+const ROUTES = ["overview", "new", "profiles", "runs", "environments", "users"];
 function currentRoute() {
   const h = (location.hash || "").replace(/^#\/?/, "").split("/")[0];
   return ROUTES.includes(h) ? h : "overview";
@@ -26,6 +26,7 @@ function navigate() {
   if (route === "profiles") loadProfilesList();
   if (route === "runs") loadRuns();
   if (route === "environments") loadEnvironments();
+  if (route === "users") loadUsers();
 }
 window.addEventListener("hashchange", navigate);
 
@@ -889,6 +890,63 @@ document.addEventListener("click", async (e) => {
   }
 });
 
+/* ===== Users (Coder multi-user) ===== */
+let usersTable = null;
+async function loadUsers() {
+  try {
+    const { users } = await (await fetch("/api/users")).json();
+    const cols = [
+      { title: "username", field: "username", width: 140, formatter: (c) => `<span class="mono">${c.getValue() || "—"}</span>` },
+      { title: "email", field: "email", widthGrow: 2 },
+      { title: "name", field: "full_name", widthGrow: 1, formatter: (c) => c.getValue() || "—" },
+      { title: "status", field: "status", width: 100, formatter: (c) => `<span class="st-${c.getValue()}">${c.getValue()}</span>` },
+      { title: "roles", field: "roles", width: 100, formatter: (c) => (c.getValue() || []).join(", ") || "—" },
+    ];
+    if (!usersTable) {
+      usersTable = new Tabulator("#users-table", {
+        layout: "fitColumns", height: "auto",
+        pagination: true, paginationSize: 20, paginationCounter: "rows",
+        placeholder: "No users", columns: cols,
+      });
+      usersTable.on("tableBuilt", () => usersTable.setData(users));
+    } else {
+      usersTable.setColumns(cols);
+      usersTable.setData(users);
+    }
+  } catch (e) {
+    if (usersTable) usersTable.setData([]);
+  }
+}
+
+$("user-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const email = $("user-email").value.trim();
+  const password = $("user-password").value;
+  const msg = $("user-create-msg");
+  msg.textContent = "creating…";
+  $("user-create-btn").disabled = true;
+  try {
+    const resp = await fetch("/api/users", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      msg.innerHTML = `<span class="st-failed">failed: ${err.detail || resp.status}</span>`;
+      return;
+    }
+    const { user } = await resp.json();
+    msg.innerHTML = `<span class="st-succeeded">created ${user.username} (${user.email}) — they can now log in at the Coder dashboard</span>`;
+    $("user-email").value = ""; $("user-password").value = "";
+    loadUsers();
+  } catch (err) {
+    msg.innerHTML = `<span class="st-failed">failed: ${err}</span>`;
+  } finally {
+    $("user-create-btn").disabled = false;
+  }
+});
+$("users-refresh").addEventListener("click", loadUsers);
+
 loadConfig().then(navigate);
 loadProfiles();
 loadRuns();
@@ -903,4 +961,5 @@ setInterval(() => {
   if (currentRoute() === "overview") renderOverview();
   if (currentRoute() === "environments") loadEnvironments();
   if (currentRoute() === "profiles") loadProfilesList();
+  if (currentRoute() === "users") loadUsers();
 }, 10000);

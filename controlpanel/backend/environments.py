@@ -18,6 +18,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import secrets
 import string
 import subprocess
@@ -84,6 +85,32 @@ def _api(path: str) -> dict:
             return json.loads(r.read())
     except Exception:  # noqa: BLE001
         return {}
+
+
+def _api_send(path: str, method: str = "POST", body: dict | None = None) -> dict:
+    """Call the Coder HTTP API with a request body (POST/PUT/DELETE). Raises
+    RuntimeError with the server's message on a non-2xx so the panel surfaces
+    the real error (e.g. 'email already taken')."""
+    url = f"{config.get('CODER_URL','').rstrip('/')}/api/v2/{path.lstrip('/')}"
+    tok = config.get_fresh("CODER_SESSION_TOKEN", "") or ""
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method,
+                                 headers={"Coder-Session-Token": tok,
+                                          "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            raw = r.read()
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as exc:
+        msg = f"coder {method} {path} -> HTTP {exc.code}"
+        try:
+            d = json.loads(exc.read().decode())
+            msg = d.get("message") or msg
+        except Exception:  # noqa: BLE001
+            pass
+        raise RuntimeError(msg) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"coder {method} {path} failed: {exc}") from exc
 
 def _run(args: list, *, json_out: bool = True, timeout: int = 60):
     """Run a `coder` CLI command, returning parsed JSON (or stdout)."""
@@ -278,3 +305,50 @@ def teardown(env_id: str) -> None:
 
 # Back-compat: the panel used to call `environments.reconcile_booting`.
 reconcile_booting = reconcile
+
+
+# ---------------------------------------------------------------------------
+# Coder users (multi-user: create/list via the coder CLI)
+# ---------------------------------------------------------------------------
+
+def _default_org_id() -> str:
+    """The default org id (the panel creates users in the default org)."""
+    orgs = _api("organizations")
+    if isinstance(orgs, list) and orgs:
+        return orgs[0].get("id", "")
+    if isinstance(orgs, dict) and orgs.get("organizations"):
+        return orgs["organizations"][0].get("id", "")
+    return ""
+
+
+def list_users() -> list:
+    """List Coder users via the HTTP API (admin sees all)."""
+    d = _api("users")
+    if isinstance(d, list):
+        return d
+    if isinstance(d, dict) and "users" in d:
+        return d["users"]
+    return []
+
+
+def create_user(email: str, password: str = "") -> dict:
+    """Create a Coder user (member, default org) via the HTTP API. The new
+    user can immediately log in and create their own workspaces; their apps
+    are owner-private by default (sharing_level=owner)."""
+    if not email or "@" not in email:
+        raise ValueError("a valid email is required")
+    if not password:
+        raise ValueError("a password is required (SMTP reset is not configured)")
+    org_id = _default_org_id()
+    if not org_id:
+        raise RuntimeError("no Coder organization found to add the user to")
+    # Coder requires a username; derive one from the email local-part, made
+    # Coder-username-safe (lowercase alnum, max 32 chars).
+    username = re.sub(r"[^a-z0-9]", "", email.split("@", 1)[0].lower())[:32] or "user"
+    body = {
+        "email": email,
+        "password": password,
+        "username": username,
+        "organization_ids": [org_id],
+    }
+    return _api_send("users", method="POST", body=body)

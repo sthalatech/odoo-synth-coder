@@ -26,6 +26,7 @@
         <a class="nav-item" data-route="profiles" href="#/profiles"><span class="nav-ico">◈</span> Profiles</a>
         <a class="nav-item" data-route="runs" href="#/runs"><span class="nav-ico">≣</span> Runs</a>
         <a class="nav-item" data-route="environments" href="#/environments"><span class="nav-ico">▢</span> Environments</a>
+        <a class="nav-item" data-route="users" href="#/users"><span class="nav-ico">👥</span> Users</a>
       </nav>
 
       <div class="sidebar-foot">
@@ -265,6 +266,32 @@
         <div class="panel">
           <h2>Environments</h2>
           <div id="environments"></div>
+        </div>
+      </section>
+
+      <!-- Users (Coder multi-user) -->
+      <section id="page-users" class="page">
+        <header class="page-head">
+          <h1>Users</h1>
+          <button class="secondary" id="users-refresh" type="button">Refresh</button>
+        </header>
+        <p class="muted small">Coder is the auth + access boundary. Each user gets their own private workspaces (apps are owner-only by default); they opt into sharing per-app from the Coder dashboard.</p>
+        <div class="panel">
+          <h2>Create user</h2>
+          <form id="user-form" class="env-form">
+            <label>Email
+              <input type="email" id="user-email" placeholder="alice@example.com" required />
+            </label>
+            <label>Initial password
+              <input type="text" id="user-password" placeholder="temp password (user can change later)" required />
+            </label>
+            <button type="submit" id="user-create-btn">Create user</button>
+          </form>
+          <p id="user-create-msg" class="muted small"></p>
+        </div>
+        <div class="panel">
+          <h2>Users</h2>
+          <div id="users-table"></div>
         </div>
       </section>
     </main>

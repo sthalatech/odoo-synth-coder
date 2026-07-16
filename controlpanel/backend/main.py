@@ -187,6 +187,11 @@ class ImageDeleteRequest(BaseModel):
     image_uri: str
 
 
+class UserCreateRequest(BaseModel):
+    email: str
+    password: Optional[str] = None  # optional; Coder can reset via email if SMTP configured
+
+
 class MaskingRulesRequest(BaseModel):
     masking_rules: Optional[str] = None
 
@@ -519,6 +524,52 @@ def _caller_ip(request: Request) -> Optional[str]:
 def api_whoami(request: Request) -> dict:
     """Return the caller's public IP so the UI can pre-fill the allow-IP field."""
     return {"ip": _caller_ip(request)}
+
+
+# ---------------------------------------------------------------------------
+# Coder users (multi-user: admin can create/list users from the UI)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/users")
+def api_list_users() -> dict:
+    """List Coder users. Requires the panel's CODER_SESSION_TOKEN to be an
+    admin token (it is, by default)."""
+    try:
+        users = environments.list_users()
+    except RuntimeError as exc:
+        raise HTTPException(502, str(exc))
+    out = []
+    for u in users or []:
+        roles = u.get("roles") or []
+        role_names = [r for r in roles if isinstance(r, str)] or                      [r.get("name") for r in roles if isinstance(r, dict)]
+        out.append({
+            "id": u.get("id"),
+            "username": u.get("username"),
+            "email": u.get("email"),
+            "full_name": u.get("name") or u.get("full_name"),
+            "status": u.get("status"),
+            "roles": role_names,
+            "created_at": u.get("created_at"),
+        })
+    return {"users": out}
+
+
+@app.post("/api/users")
+def api_create_user(req: UserCreateRequest) -> dict:
+    """Create a Coder user (member, default org). They can immediately log in
+    and create their own workspaces; their apps are owner-private by default."""
+    try:
+        u = environments.create_user(req.email, req.password or "")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(502, str(exc))
+    return {"user": {
+        "id": u.get("id"),
+        "username": u.get("username"),
+        "email": u.get("email"),
+        "status": u.get("status"),
+    }}
 
 
 @app.post("/api/environments")
