@@ -269,8 +269,14 @@ resource "coder_agent" "main" {
       -e POSTGRES_PASSWORD="$PGPASS" -e POSTGRES_USER=odoo \
       -e POSTGRES_DB="$DB_NAME" -p 127.0.0.1:5432:5432 \
       -v /var/lib/env-db:/var/lib/postgresql/data postgres:16
+    # Wait for the *database* (not just the server) to accept connections.
+    # pg_isready returns OK once postgres accepts any connection, but the
+    # POSTGRES_DB is still being created by the entrypoint; a psql -d $DB_NAME
+    # at that instant fails ("database ... does not exist"), and under
+    # `set -euo pipefail` that kills the whole startup script (race that
+    # intermittently broke workspace creation).
     for _ in $(seq 1 60); do
-      docker exec env-db pg_isready -U odoo -d "$DB_NAME" >/dev/null 2>&1 && break
+      docker exec env-db psql -U odoo -d "$DB_NAME" -tAc "select 1" >/dev/null 2>&1 && break
       sleep 2
     done
 
@@ -283,7 +289,7 @@ resource "coder_agent" "main" {
     # Odoo 500s). So only restore when the target DB is empty (first boot);
     # on restart we keep the developer in-progress data untouched.
     if [ -n "$DUMP_S3_URI" ]; then
-      TBL_COUNT=$(docker exec env-db psql -U odoo -d "$DB_NAME" -tAc "select count(*) from pg_tables where schemaname = current_schema()" 2>/dev/null)
+      TBL_COUNT=$(docker exec env-db psql -U odoo -d "$DB_NAME" -tAc "select count(*) from pg_tables where schemaname = current_schema()" 2>/dev/null || echo 0)
       TBL_COUNT=$${TBL_COUNT:-0}
       if [ "$TBL_COUNT" -gt 0 ] 2>/dev/null; then
         echo "[env] target DB already seeded -- keeping existing data"
