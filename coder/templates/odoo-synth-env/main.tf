@@ -251,13 +251,29 @@ resource "coder_agent" "main" {
       sleep 2
     done
 
-    # --- 2. seed from the masked dump ---
+    # --- 2. seed from the masked dump (first boot only; idempotent) ---
+    # The env-db volume PERSISTS across workspace stop/start, and the
+    # startup_script re-runs on every agent boot. Re-running pg_restore into a
+    # DB that already holds the dump corrupts it (pg_restore --clean drops a
+    # table but its composite TYPE survives, then CREATE TABLE collides on the
+    # type -> already-exists / duplicate-key errors -> half-dropped DB ->
+    # Odoo 500s). So only restore when the target DB is empty (first boot);
+    # on restart we keep the developer in-progress data untouched.
     if [ -n "$DUMP_S3_URI" ]; then
-      aws s3 cp "$DUMP_S3_URI" /tmp/masked.dump --region "$REGION"
-      docker exec -i env-db pg_restore -U odoo -d "$DB_NAME" \
-        --no-owner --no-privileges --clean --if-exists --disable-triggers \
-        < /tmp/masked.dump || true
-      rm -f /tmp/masked.dump
+      TBL_COUNT=$(docker exec env-db psql -U odoo -d "$DB_NAME" -tAc "select count(*) from pg_tables where schemaname = current_schema()" 2>/dev/null)
+      TBL_COUNT=$${TBL_COUNT:-0}
+      if [ "$TBL_COUNT" -gt 0 ] 2>/dev/null; then
+        echo "[env] target DB already seeded -- keeping existing data"
+      else
+        echo "[env] downloading masked dump from S3 ..."
+        aws s3 cp "$DUMP_S3_URI" /tmp/masked.dump --region "$REGION"
+        echo "[env] restoring masked dump into local postgres ..."
+        docker exec -i env-db pg_restore -U odoo -d "$DB_NAME" \
+          --no-owner --no-privileges --disable-triggers \
+          < /tmp/masked.dump || true
+        rm -f /tmp/masked.dump
+        echo "[env] dump restore complete"
+      fi
     fi
 
     # --- 3. GitHub token (private addons clone) ---
