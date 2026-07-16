@@ -1,0 +1,48 @@
+# odoo-synth env
+
+A developer environment running Odoo against a masked copy of a production
+database, with an addons repo live-mounted for development.
+
+## What you get
+
+- **Odoo** (image-baked addons) on `127.0.0.1:18069`, hydrated from a masked
+  dump into a **local Postgres 16** container (`env-db`).
+- **Your addons repo** cloned to `/home/dev/workspace/repo` and bind-mounted
+  into Odoo at `/mnt/live` (read-write). Edit on the host; restart Odoo to
+  reload.
+- **VS Code in the browser** (code-server) and an SSH/terminal.
+- An **Env Guide** app on the workspace page with all commands and locations.
+
+## Create with the preset
+
+The default preset **"Latest masked profile"** pre-fills the Odoo image, the
+masked dump URI, and the `your-addons` addons repo + ref. Click **Create** and
+the env hydrates and serves Odoo automatically.
+
+## Parameters you must supply
+
+- `repo_url` *(required)* — HTTPS git URL of your addons repo.
+- `repo_branch` *(required)* — branch / tag / commit to check out.
+- `git_token_secret` *(optional)* — Secrets Manager secret id of a GitHub
+  token, if the repo is private. Without it the clone is skipped and Odoo runs
+  from image-baked addons only.
+- `odoo_image`, `dump_s3_uri` — the preset fills these; override only if you
+  know what you're doing.
+
+## Once it's running
+
+Open the **Env Guide** app on the workspace page — it documents containers,
+repo mount, how to start/stop Odoo, how to reach Postgres, where the logs are,
+and how to retrieve your passwords from env vars (passwords are never printed
+in the guide). Quick reference:
+
+```bash
+docker logs -f env-odoo                      # Odoo logs
+docker exec -it env-db psql -U odoo -d odoo  # Postgres shell
+docker restart env-odoo                      # reload addons
+echo "$CODER_ENV_ADMIN_PASSWORD"             # Odoo admin + code-server pw
+```
+
+Odoo admin login is `admin`. The DB volume persists across workspace
+stop/start; the masked dump is restored only on first boot, so your in-progress
+data is kept on restart.

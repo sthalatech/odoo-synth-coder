@@ -105,15 +105,18 @@ data "coder_parameter" "repo_url" {
   name         = "repo_url"
   display_name = "Addons repo cloned + live-mounted into Odoo."
   type         = "string"
-  default      = ""
-  order        = 8
+  # Required: a workspace with no addons repo is useless for development, and
+  # the empty-default case produced broken envs when created from the dashboard.
+  # Coder treats a parameter with NO default as required -- the dashboard
+  # create form blocks submission until it is filled. The default preset
+  # pre-fills this so one-click create still works.
+  order = 8
 }
 
 data "coder_parameter" "repo_branch" {
   name         = "repo_branch"
   display_name = "Branch/tag/commit of the addons repo."
   type         = "string"
-  default      = ""
   order        = 9
 }
 
@@ -174,11 +177,14 @@ data "coder_parameter" "admin_password" {
 data "coder_workspace_preset" "default_profile" {
   default     = true
   name        = "Latest masked profile"
-  description = "Odoo + local Postgres hydrated from the newest masked dump (profile prof_749c8a90)."
+  description = "Odoo + local Postgres hydrated from the newest masked dump, with the your-addons addons repo live-mounted for development."
   parameters = {
     odoo_image    = "123456789012.dkr.ecr.us-east-1.amazonaws.com/odoo-synth/odoo:prof_749c8a90-fc88dea8aeef"
     dump_s3_uri   = "s3://odoo-synth-dumps-123456789012/masked-dumps/b6ad9d1f24e9/masked.dump"
-    instance_type = "t3.large"
+    repo_url        = "https://github.com/your-org/your-addons"
+    repo_branch     = "08f788e827dd1b8e00984c33efafb0e1e96d1eca"
+    git_token_secret = "odoo-synth/profile/prof_749c8a90/git-token"
+    instance_type   = "t3.large"
   }
 }
 
@@ -421,10 +427,136 @@ CSUNIT
     systemctl daemon-reload
     systemctl enable --now code-server
 
-    # --- 7. port-forwards Coder opens so the dev reaches odoo + code-server ---
+    # --- 7. in-env info page (Env Guide app) ---------------------------------
+    # A secret-free, generated HTML page the dev opens from the workspace page
+    # ("Env Guide" app). Documents where the repo lives, how to control the
+    # Odoo/postgres containers, where logs are, and how to retrieve passwords
+    # from env vars -- it NEVER prints the passwords themselves. Served by a
+    # tiny python http.server bound to 127.0.0.1:8090; Coder proxies it through
+    # the authenticated tunnel (owner-only by default).
+    cat > /home/dev/workspace/env-info.html <<HTML
+<!doctype html><html><head><meta charset="utf-8">
+<title>odoo-synth env guide</title>
+<style>
+  body{font:15px/1.55 -apple-system,Segoe UI,sans-serif;max-width:880px;margin:2em auto;padding:0 1.5em;color:#222;background:#fafafa}
+  h1{font-size:1.5em;border-bottom:2px solid #777;padding-bottom:.2em}
+  h2{font-size:1.15em;margin-top:1.6em;color:#335}
+  pre,code{background:#eee;border:1px solid #ddd;border-radius:3px}
+  pre{padding:.8em;overflow:auto;font-size:13px}
+  code{padding:.1em .3em}
+  .k{display:inline-block;min-width:11em;font-weight:600}
+  table{border-collapse:collapse;width:100%}
+  td,th{border:1px solid #ddd;padding:.3em .6em;text-align:left;vertical-align:top}
+  th{background:#eee}
+</style></head><body>
+<h1>odoo-synth environment guide</h1>
+<p>Everything running in this workspace, where it lives, and how to drive it.</p>
+
+<h2>Containers (docker)</h2>
+<table>
+<tr><th>name</th><th>purpose</th><th>host port</th></tr>
+<tr><td><code>env-odoo</code></td><td>Odoo server (image-baked addons)</td><td>127.0.0.1:18069 &rarr; 8069</td></tr>
+<tr><td><code>env-db</code></td><td>local Postgres 16 (hydrated from masked dump)</td><td>127.0.0.1:5432</td></tr>
+</table>
+
+<h2>Addons repo (live-mounted)</h2>
+<p>
+  <span class="k">repo:</span> <code>$${REPO_URL:-&lt;not set&gt;}</code><br>
+  <span class="k">ref:</span> <code>$${REPO_BRANCH:-&lt;not set&gt;}</code><br>
+  <span class="k">host path:</span> <code>/home/dev/workspace/repo</code><br>
+  <span class="k">inside odoo:</span> <code>/mnt/live</code> (bind-mount, read-write)
+</p>
+<p>Edit addons on the host under <code>/home/dev/workspace/repo/&lt;addon&gt;</code>;
+Odoo sees them at <code>/mnt/live/&lt;addon&gt;</code>. Restart Odoo to pick up
+manifest or Python changes:</p>
+<pre>docker restart env-odoo</pre>
+
+<h2>Control the Odoo service</h2>
+<pre># start / stop / restart
+docker start  env-odoo
+docker stop   env-odoo
+docker restart env-odoo
+
+# tail Odoo logs (live)
+docker logs -f env-odoo
+
+# last 100 lines / errors only
+docker logs --tail 100 env-odoo
+docker logs env-odoo 2&gt;&amp;1 | grep ERROR
+
+# run odoo CLI (e.g. install an addon into the current DB)
+docker exec -it env-odoo odoo -d $${DB_NAME} -i my_addon --stop-after-init
+</pre>
+
+<h2>Postgres access</h2>
+<pre># psql inside the DB container
+docker exec -it env-db psql -U odoo -d $${DB_NAME}
+
+# from the host (port forwarded to 127.0.0.1:5432)
+PGPASSWORD=odoo psql -h 127.0.0.1 -U odoo -d $${DB_NAME}
+
+# quick counts
+docker exec env-db psql -U odoo -d $${DB_NAME} -tAc \
+  "select count(*) from res_partner"
+</pre>
+
+<h2>Logs</h2>
+<table>
+<tr><th>what</th><th>where</th></tr>
+<tr><td>Odoo runtime log</td><td><code>docker logs env-odoo</code> (stdout, no file)</td></tr>
+<tr><td>env boot / dump restore / clone</td><td><code>/var/log/odoo-synth-env.log</code></td></tr>
+<tr><td>addon pip install</td><td><code>/home/dev/workspace/pip-addons.log</code> (if a repo was cloned)</td></tr>
+</table>
+
+<h2>Passwords &amp; credentials</h2>
+<p>Passwords are <strong>not</strong> printed here. Retrieve them from the
+workspace environment, in a terminal on this host:</p>
+<pre># Odoo admin + code-server password
+echo "$$CODER_ENV_ADMIN_PASSWORD"
+
+# Odoo DB master password
+echo "$$ODOO_MASTER_PASSWORD"
+</pre>
+<p>Odoo admin login is <code>admin</code>. The same ADMIN_PASSWORD unlocks the
+VS Code (code-server) web app.</p>
+
+<h2>code-server (browser VS Code)</h2>
+<p>Open from the workspace page; password is <code>$$CODER_ENV_CODE_PASSWORD</code>
+(retrieve as above). Config: <code>/home/dev/.config/code-server/config.yaml</code>.</p>
+
+<h2>Notes</h2>
+<ul>
+  <li>The DB volume (<code>/var/lib/env-db</code>) persists across workspace
+      stop/start; the masked dump is restored only on first boot.</li>
+  <li>If the addons repo is private, set <code>git_token_secret</code> (a
+      Secrets Manager GitHub token) at create time; otherwise the clone is
+      skipped and Odoo runs from image-baked addons only.</li>
+</ul>
+</body></html>
+HTML
+    chown dev:dev /home/dev/workspace/env-info.html 2>/dev/null || true
+
+    cat > /etc/systemd/system/env-info.service <<EISVC
+[Unit]
+Description=odoo-synth env info page (localhost)
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=simple
+User=dev
+WorkingDirectory=/home/dev/workspace
+ExecStart=/usr/bin/python3 -m http.server 8090 --bind 127.0.0.1
+Restart=always
+[Install]
+WantedBy=multi-user.target
+EISVC
+    systemctl daemon-reload
+    systemctl enable --now env-info
+
+    # --- 8. port-forwards Coder opens so the dev reaches odoo + code-server ---
     # `coder_port` resources below tell Coder to proxy these through the tunnel.
 
-    # --- 8. readiness: block startup until Odoo answers HTTP ---
+    # --- 9. readiness: block startup until Odoo answers HTTP ---
     if [ -n "$ODOO_IMAGE" ]; then
       for _ in $(seq 1 72); do
         code="$(curl -s -o /dev/null -w '%%{http_code}' --max-time 5 http://127.0.0.1:18069/web/login 2>/dev/null || echo 000)"
@@ -520,6 +652,24 @@ resource "coder_app" "vscode" {
   healthcheck {
     url       = "http://localhost:8443/healthz"
     interval  = 5
+    threshold = 3
+  }
+}
+
+# Env Guide: a secret-free HTML page served from inside the workspace
+# (127.0.0.1:8090 by python http.server) documenting containers, repo mount,
+# odoo/postgres control, logs, and how to retrieve passwords. Owner-only.
+resource "coder_app" "env_info" {
+  agent_id      = coder_agent.main.id
+  slug          = "env-guide"
+  display_name  = "Env Guide"
+  icon          = "/icon/info.svg"
+  url           = "http://localhost:8090/env-info.html"
+  subdomain     = true
+  share         = "owner"
+  healthcheck {
+    url       = "http://localhost:8090/env-info.html"
+    interval  = 10
     threshold = 3
   }
 }
