@@ -185,6 +185,14 @@ data "coder_workspace_preset" "default_profile" {
     dump_s3_uri      = "s3://odoo-synth-dumps-123456789012/masked-dumps/b6ad9d1f24e9/masked.dump"
     git_token_secret = "odoo-synth/profile/prof_749c8a90/git-token"
     instance_type    = "t3.large"
+    # Base64 of the profile's discovery-derived odoo.conf extras: every config
+    # key the source addons reference (config['...']), with empty values, so
+    # custom addons (SSO, ACL, sentry, ...) don't KeyError->500 in the masked
+    # dev replica. Same value the panel passes via odoo_conf_extra_b64; baked
+    # into the preset so the Coder-direct create flow matches the panel flow.
+    # Regenerate from the profile when the image/dump preset values change:
+    #   sqlite3 controlpanel/backend/controlpanel.db ... | base64
+    odoo_conf_extra_b64 = "YmxpbmtfcGFzc3dvcmQgPQpibGlua191c2VybmFtZSA9CmN1c3RvbV9hY2xfZW5kcG9pbnQgPQpjdXN0b21fYWNsX3NraXBfbW9kZWxzID0KZW5hYmxlX2N1c3RvbV9hY2wgPQplbmFibGVfY3VzdG9tX2FjbF9zZWFyY2ggPQpmYWNhZGVfYXV0aG9yaXphdGlvbl90b2tlbiA9CmZvcm1fZmllbGRfZGVmcyA9CmdlbWluaV9hcGlfa2V5ID0KczNfYXdzX2FjY2Vzc19rZXlfaWQgPQpzM19hd3NfcmVnaW9uID0KczNfYXdzX3NlY3JldF9hY2Nlc3Nfa2V5ID0KczNfYnVja2V0X25hbWUgPQpzZW50cnlfZW5hYmxlZCA9CnNlbnRyeV9leGNsdWRlX2xvZ2dlcnMgPQpzZW50cnlfaW5jbHVkZV9jb250ZXh0ID0Kc2VudHJ5X29kb29fZGlyID0Kc2VudHJ5X3JlbGVhc2UgPQpzZW50cnlfdHJhbnNwb3J0ID0Kc3NvX2FwaV9rZXkgPQpzc29fYXBpX3NlY3JldCA9CnNzb19hcGlfc3lzdGVtX3Rva2VuID0Kc3NvX2xlZ2FsX2VudGl0eSA9CnNzb19sb2dpbl9hY3Rpb24gPQpzc29fbG9naW5fZm9yY2VfY29uc2VudCA9CnNzb19sb2dpbl9pbmZvX2VuZHBvaW50ID0Kc3NvX2xvZ2luX3VybCA9CnNzb19wbXNfZW5kcG9pbnQgPQpzeXN0ZW1fdG9rZW4gPQo="
   }
 }
 
@@ -384,31 +392,7 @@ resource "coder_agent" "main" {
         fi
         MOUNT_ARGS="-v $${REPO_DIR}:/mnt/live:rw -e EXTRA_ADDONS_PATH=$EXTRA"
       fi
-      # Default SSO config placeholders: the acme_sso_auth_generic addon reads
-      # config['sso_api_secret'] etc. from odoo.conf [options] (Odoo's config.load()
-      # copies every [options] key -- even unregistered ones -- into self.options).
-      # The masked dump has none, so without these keys the /website_sso auto-redirect
-      # template raises KeyError and the whole login flow 500s. If the profile didn't
-      # supply ODOO_CONF_EXTRA_B64 (or it lacks the sso_* keys), inject dummy values
-      # so the template renders. These are NOT real secrets -- dev-only placeholders.
-      if ! printf '%s' "$ODOO_CONF_EXTRA_B64" | base64 -d 2>/dev/null | grep -q '^sso_api_secret *='; then
-        SSO_DEFAULT='sso_api_secret = dev_placeholder_secret
-sso_api_key = dev_placeholder_key
-sso_api_system_token = dev_placeholder_token
-sso_legal_entity = IF
-sso_login_action = 0
-sso_login_force_consent = 1
-sso_login_url = https://sso.example.invalid/
-sso_login_info_endpoint = https://sso.example.invalid/info
-sso_pms_endpoint = https://pms.example.invalid'
-        SSO_B64="$(printf '%s' "$SSO_DEFAULT" | base64 -w0)"
-        if [ -n "$ODOO_CONF_EXTRA_B64" ]; then
-          ODOO_CONF_EXTRA_B64="$(printf '%s\n%s' "$ODOO_CONF_EXTRA_B64" "$SSO_DEFAULT" | base64 -w0)"
-        else
-          ODOO_CONF_EXTRA_B64="$SSO_B64"
-        fi
-      fi
-            docker rm -f env-odoo >/dev/null 2>&1 || true
+      docker rm -f env-odoo >/dev/null 2>&1 || true
       docker run -d --name env-odoo --network "$NET" \
         -p 127.0.0.1:18069:8069 \
         -e TARGET_DB_HOST=env-db -e TARGET_DB_PORT=5432 -e TARGET_DB_NAME="$DB_NAME" \
