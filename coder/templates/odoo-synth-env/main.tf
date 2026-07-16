@@ -49,7 +49,7 @@ data "coder_parameter" "ami_id" {
   name         = "ami_id"
   display_name = "Thin golden AMI (ubuntu + docker + awscli)."
   type         = "string"
-  default      = "ami-0012da855702815c4"
+  default      = "ami-0892f045efd9c011d"
   order        = 1
 }
 
@@ -558,6 +558,64 @@ EISVC
     systemctl daemon-reload
     systemctl enable --now env-info
 
+    # --- 7. Claude Code (preinstalled in the golden AMI at /opt/claude-code) -
+    # Served over a web terminal (ttyd) as the "Claude Code" Coder app so the
+    # dev can drive it from the workspace page. The Anthropic API key is NOT
+    # stored here -- it comes from the user's Coder user secret named
+    # `anthropic-api-key` (env ANTHROPIC_API_KEY), which Coder injects into the
+    # agent env automatically. If the user hasn't created that secret, the env
+    # still boots; Claude will simply error at first use with a clear message.
+    # The Claude setup is wrapped in a subshell with set +e + || true so a
+    # failure here (bad flag, missing binary on an old AMI, etc.) can NEVER
+    # abort the startup script -- the Odoo readiness loop below must still run.
+    ( set +e
+    if [ -x /usr/local/bin/claude ]; then
+      install -d -o dev -g dev /home/dev/.local/bin
+      ln -sf /usr/local/bin/claude /home/dev/.local/bin/claude 2>/dev/null
+      cat > /home/dev/workspace/CLAUDE.md <<'CMDOC'
+# odoo-synth environment (Claude Code project guide)
+
+## Where things are
+- Addons repo (your working copy): /home/dev/workspace/repo , bind-mounted into Odoo at /mnt/live .
+- Odoo runs in the env-odoo docker container (host port 127.0.0.1:18069).
+- Postgres runs in the env-db container (host 127.0.0.1:5432, user/db odoo, password odoo).
+- Boot log: /var/log/odoo-synth-env.log .
+- Env Guide page: http://localhost:8090/env-info.html (repo branch + DB name are listed there).
+
+## Running / restarting Odoo
+- Restart after changing addons: docker restart env-odoo
+- Install/upgrade an addon: docker exec env-odoo odoo -d odoo -u <addon> --stop-after-init
+- Tail logs: docker logs -f env-odoo
+
+## Notes
+- The DB is seeded from a masked production dump -- data is fake/masked, safe to mutate.
+- Your git pushes use your Coder SSH key; no token needed for SSH URLs.
+CMDOC
+      chown dev:dev /home/dev/workspace/CLAUDE.md 2>/dev/null || true
+
+      # ttyd serves a login shell for dev that drops into the repo and launches
+      # claude. Bound to 127.0.0.1; the Coder app proxies it through the tunnel.
+      cat > /etc/systemd/system/claude-code.service <<CCSVC
+[Unit]
+Description=Claude Code web terminal (ttyd)
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=simple
+User=root
+Environment=HOME=/root
+ExecStart=/usr/bin/ttyd -i 127.0.0.1 -p 8091 -t fontSize=14 sudo -u dev HOME=/home/dev bash -lc 'cd /home/dev/workspace && claude'
+Restart=always
+[Install]
+WantedBy=multi-user.target
+CCSVC
+      systemctl daemon-reload
+      systemctl enable --now claude-code
+    else
+      echo "[env] claude binary not found on AMI -- skipping Claude Code app"
+    fi
+    ) || echo "[env] claude-code setup failed; continuing (Claude app may be unavailable)"
+
     # --- 8. port-forwards Coder opens so the dev reaches odoo ---
     # `coder_port` resources below tell Coder to proxy these through the tunnel.
 
@@ -661,5 +719,23 @@ resource "coder_app" "env_info" {
     url       = "http://localhost:8090/env-info.html"
     interval  = 10
     threshold = 3
+  }
+}
+
+# Claude Code: a web terminal (ttyd) serving the `claude` CLI for the dev.
+# The Anthropic API key is the user's Coder user secret `anthropic-api-key`
+# (env ANTHROPIC_API_KEY), injected by Coder -- nothing in the template.
+resource "coder_app" "claude_code" {
+  agent_id      = coder_agent.main.id
+  slug          = "claude-code"
+  display_name  = "Claude Code"
+  icon          = "/icon/terminal.svg"
+  url           = "http://localhost:8091"
+  subdomain     = true
+  share         = "owner"
+  healthcheck {
+    url       = "http://localhost:8091"
+    interval  = 10
+    threshold = 5
   }
 }
