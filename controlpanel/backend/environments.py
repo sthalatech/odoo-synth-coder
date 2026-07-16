@@ -233,7 +233,7 @@ def reconcile() -> None:
         # is "<subdomain_name>.<wildcard-base>" where wildcard-base is the
         # CODER_URL host (the server's wildcard is "*.<that host>", so we
         # prefix the subdomain name to the same host:port).
-        vscode = odoo = None
+        odoo = None
         wuuid = w.get("id")
         if wuuid:
             d = _api(f"workspaces/{wuuid}?include_agents=true")
@@ -246,9 +246,10 @@ def reconcile() -> None:
                         if not sd:
                             continue
                         u = _subdomain_url(sd)
-                        if app.get("slug") == "vscode": vscode = u
                         if app.get("slug") == "odoo": odoo = u
-        store.update_environment(e["id"], vscode_url=vscode, odoo_url=odoo)
+        # VS Code is no longer surfaced as a panel url -- users open it via the
+        # Coder dashboard's native vscode:// deeplink (session-authenticated).
+        store.update_environment(e["id"], odoo_url=odoo)
 
 
 def get_password(env_id: str) -> Optional[str]:
@@ -272,8 +273,7 @@ def teardown(env_id: str) -> None:
     except Exception as exc:  # noqa: BLE001
         store.update_environment(env_id, status="failed", error=str(exc))
         return
-    store.update_environment(env_id, status="terminated",
-                             vscode_url=None, odoo_url=None)
+    store.update_environment(env_id, status="terminated", odoo_url=None)
 
 
 # Back-compat: the panel used to call `environments.reconcile_booting`.

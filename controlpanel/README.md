@@ -127,12 +127,42 @@ Setup (one-time):
 
 From the **Environments** page (or a run's *create env* action): pick a mask run
 that produced a dump, optionally override the addons repo/branch → an instance
-boots, restores the masked DB, runs Odoo, and starts code-server. The `vscode`
-column links to the editor, `odoo` to the masked app. Tear down when the issue
-closes.
+boots, restores the masked DB, runs Odoo, and starts code-server. The `odoo`
+column links to the masked app; **VS Code is opened via Coder's native
+`vscode://` deeplink from the Coder dashboard** (session-authenticated, so no
+separate password prompt) -- the panel does not generate its own VS Code link.
 
-> Per-env auth is a random Secrets-Manager password today; put an
-> org-restricted `oauth2-proxy` in front for production.
+## Multi-user + per-user isolation
+
+Coder is the auth + access boundary for developer environments. The server
+uses Coder's built-in **password auth** (the default; no `--auth` flag).
+
+- **Each workspace's apps default to `sharing_level = owner`** (Coder's DB
+  default), so only the workspace's owner (and admins) can open its Odoo / VS
+  Code apps. No template config is needed for privacy -- it's the default.
+- A regular user (member of the default org) can create their own workspaces
+  from the org's templates (`odoo-synth-env` / `builder` / `runner`) and only
+  ever see/open their own workspaces' apps.
+- **Sharing is opt-in, per app, by the owner** from the Coder dashboard: open
+  the workspace -> click an app -> *Share* -> `authenticated` (any logged-in
+  user) / `organization` (org members) / `public` (no auth). Nothing is shared
+  unless the owner chooses it.
+
+Add a user (run as admin):
+
+```
+deploy/coder_users.sh add alice@example.com 'hunter2'   # create + set password
+deploy/coder_users.sh list                              # verify
+deploy/coder_users.sh roles alice@example.com member    # (default is member)
+```
+
+The new user logs into the Coder dashboard, picks a template, and launches
+their own workspace -- private to them by default, shareable on demand.
+
+> The Coder server's SG is currently `0.0.0.0/0` on the coder port. For a
+> tighter blast radius, restrict it to your CIDRs (you lose access from
+> arbitrary networks). The per-workspace code-server password remains as
+> defense-in-depth for the browser app path.
 
 ## Masker knobs (env, honored by `masker/entrypoint.sh`)
 

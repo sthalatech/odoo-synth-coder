@@ -428,14 +428,13 @@ def api_start_run(req: RunRequest) -> dict:
 @app.get("/api/runs")
 def api_list_runs() -> dict:
     runs = store.list_runs()
-    # attach the developer-environment vscode url (if any) for each run
+    # attach the developer-environment status (if any) for each run.
+    # VS Code is opened via Coder's native vscode:// deeplink from the Coder
+    # dashboard (session-authenticated, no separate url), so we no longer
+    # surface a per-env vscode_url here.
     by_run = store.environments_by_run()
     for r in runs:
         env = by_run.get(r["id"])
-        if env and env.get("vscode_url"):
-            res = r.get("result") or {}
-            res["vscode_url"] = env["vscode_url"]
-            r["result"] = res
         if env:
             r["environment"] = {"id": env["id"], "status": env["status"]}
     return {"runs": runs}

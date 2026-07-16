@@ -76,10 +76,9 @@ function runColumns(withOp) {
       formatter: (c) => linkCell(c.getValue(), "open") },
     { title: "dump", field: "masked_dump_url", hozAlign: "center", width: 100,
       formatter: (c) => linkCell(c.getValue(), "download") },
-    { title: "vscode", field: "vscode_url", hozAlign: "center", width: 120,
+    { title: "env", field: "env_status", hozAlign: "center", width: 120,
       formatter: (c) => {
         const d = c.getRow().getData();
-        if (d.vscode_url) return linkCell(d.vscode_url, "open");
         if (d.env_status) return `<span class="muted">${d.env_status}…</span>`;
         if (d.masked_dump_url) {
           return `<a href="#" class="mk-env" data-run="${d.id}" onclick="event.stopPropagation()">create env</a>`;
@@ -95,7 +94,7 @@ function runRow(r) {
   return {
     id: r.id, operation: r.operation, status: r.status, exit_code: r.exit_code,
     started_at: r.started_at, target_url: res.target_url,
-    masked_dump_url: res.masked_dump_url, vscode_url: res.vscode_url,
+    masked_dump_url: res.masked_dump_url,
     env_status: r.environment && r.environment.status !== "running"
       ? r.environment.status : null,
   };
@@ -205,7 +204,6 @@ function showResult(run, pane = "new") {
   const lines = [];
   if (r.target_url) lines.push(`Masked UI: <a href="${r.target_url}" target="_blank">${r.target_url}</a>`);
   if (r.masked_dump_url) lines.push(`Masked dump: <a href="${r.masked_dump_url}" target="_blank">download pg_dump</a>`);
-  if (r.vscode_url) lines.push(`VS Code: <a href="${r.vscode_url}" target="_blank">open editor</a>`);
   if (r.error) lines.push(`<span class="st-failed">Error: ${r.error}</span>`);
   if (typeof r.exit_code === "number") lines.push(`Exit code: <b>${r.exit_code}</b>`);
   if (lines.length) { el.innerHTML = lines.join("<br>"); el.classList.remove("hidden"); }
@@ -740,8 +738,6 @@ function envColumns() {
       formatter: (c) => (c.getValue() ? `<span class="mono">${c.getValue()}</span>` : "—") },
     { title: "status", field: "status", width: 120,
       formatter: (c) => `<span class="st-${c.getValue()}">${c.getValue()}</span>` },
-    { title: "vscode", field: "vscode_url", hozAlign: "center", width: 100,
-      formatter: (c) => linkCell(c.getValue(), "browser") },
     { title: "odoo", field: "odoo_url", hozAlign: "center", width: 100,
       formatter: (c) => linkCell(c.getValue(), "open") },
     { title: "password", field: "id", hozAlign: "center", width: 100, headerSort: false,
