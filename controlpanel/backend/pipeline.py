@@ -536,18 +536,25 @@ def run_operation(operation: str, params: dict, emit: LogSink) -> dict:
         raise ValueError("source database URL (postgresql://…) is required")
     src = parse_dsn(dsn)
 
-    # DESTINATION: managed masked DB on RDS (from config)
+    # DESTINATION (Option E): mask restores into a THROWAWAY local postgres on
+    # the runner workspace (see odoo-synth-runner main.tf), NOT the shared RDS,
+    # so no two envs share a DB and re-masking never clobbers another env. The
+    # runner overrides TARGET_DB_* to point at its local `runner-db` container,
+    # so the RDS destination is no longer required for the Coder path. We still
+    # resolve it for the legacy ECS path (which needs a real target).
     tgt = config.destination()
-    if not tgt.get("host"):
+    if not use_coder and not tgt.get("host"):
         raise RuntimeError("destination not configured (check RDS_ENDPOINT / config.yml)")
 
-    # optional downloadable masked dump
+    # The masked pg_dump is the PRIMARY artifact: each env hydrates its own
+    # local DB from it (see odoo-synth-env main.tf). Always produce it unless
+    # the caller explicitly disabled it.
     masked_dump_get_url = None
     masked_dump_put_url = None
     masked_dump_s3_uri = None
-    if params.get("produce_dump"):
+    if params.get("produce_dump", True):
         masked_dump_put_url, masked_dump_get_url, masked_dump_s3_uri = _presign_masked_dump()
-        emit("[panel] masked dump download requested; will upload pg_dump to S3")
+        emit("[panel] masked dump artifact will be uploaded to S3 (envs hydrate from it)")
 
     # per-source editable greenmask profile (generated during discovery)
     mask_rules_url = _upload_mask_rules(params.get("mask_rules") or "")

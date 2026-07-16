@@ -250,6 +250,23 @@ def _launch_builder_workspace(image_uri: str, context_get: str, result_put: str,
     return ws_name
 
 
+def _delete_builder_workspace(ws_name: str, emit: LogSink) -> None:
+    """Delete the ephemeral builder workspace once its result has been
+    collected. The workspace powers itself off on completion; this tears down
+    the (now stopped) EC2 instance + Coder record so we don't accumulate idle
+    builder VMs. Best-effort: a failure here is logged, not raised."""
+    import os
+    import subprocess
+
+    try:
+        subprocess.run(["coder", "delete", ws_name, "-y"],
+                       env={**os.environ, **_coder_env()},
+                       check=True, capture_output=True, text=True, timeout=120)
+        emit(f"[panel] builder workspace {ws_name} deleted")
+    except Exception as exc:  # noqa: BLE001
+        emit(f"[panel] builder workspace {ws_name} cleanup failed: {exc}")
+
+
 def _poll_result(get_url: str, emit: LogSink, timeout_s: int = 45 * 60) -> Optional[dict]:
     deadline = time.time() + timeout_s
     while time.time() < deadline:
@@ -308,6 +325,11 @@ def run_build(profile_id: str, emit: LogSink) -> dict:
         emit(f"[panel] builder instance {iid} launched; waiting for image build+push ...")
 
     result = _poll_result(result_get, emit)
+    # Option E: delete the ephemeral builder workspace now that its result is
+    # collected (success or failure). The workspace already powered itself off;
+    # this reclaims the EC2 instance + Coder record so idle VMs don't pile up.
+    if use_coder:
+        _delete_builder_workspace(iid, emit)
     if not result:
         store.update_profile(profile_id, image_status="failed",
                              error="builder timed out (no result)")

@@ -277,9 +277,34 @@ resource "coder_agent" "main" {
       done
     fi
 
+    # --- mask phase: a local postgres target (no shared RDS) --------------
+    # Option E isolation: each mask run restores into a THROWAWAY local
+    # postgres container on this workspace VM, not the shared managed RDS. The
+    # masker neutralizes + prunes there, then pg_dumps it out as the artifact
+    # envs hydrate from (MASKED_DUMP_PUT_URL). So no two envs share a DB, and
+    # re-masking never clobbers another environment. TARGET_DB_* from the panel
+    # (the RDS values) are overridden here and ignored for mask.
+    if [ "$PHASE" = "mask" ]; then
+      echo "[runner] starting local postgres target for mask ..."
+      docker rm -f runner-db >/dev/null 2>&1 || true
+      docker run -d --name runner-db --network host \
+        -e POSTGRES_PASSWORD=runner -e POSTGRES_USER=runner -e POSTGRES_DB=postgres \
+        -v /var/lib/runner-db:/var/lib/postgresql/data postgres:16 \
+        >/dev/null 2>&1 || { ERROR="local postgres start failed"; exit 1; }
+      for _ in $(seq 1 60); do
+        docker exec runner-db pg_isready -U runner >/dev/null 2>&1 && break
+        sleep 2
+      done
+      export TARGET_DB_HOST=127.0.0.1 TARGET_DB_PORT=5432
+      export TARGET_DB_USER=runner TARGET_DB_PASSWORD=runner TARGET_DB_NAME=masked
+      ENV_ARGS+=("-e" "TARGET_DB_HOST" "-e" "TARGET_DB_PORT" "-e" "TARGET_DB_USER" \
+                 "-e" "TARGET_DB_PASSWORD" "-e" "TARGET_DB_NAME")
+      echo "[runner] local postgres target ready (127.0.0.1:5432/masked as runner)."
+    fi
+
     # --- run the container -------------------------------------------------
-    # --network host so the container can reach the source/target DB and any
-    # SSH tunnel the entrypoint opens, exactly as the ECS task (awsvpc) did.
+    # --network host so the container can reach the source DB, the SSH tunnel
+    # the entrypoint opens, and the local runner-db sibling (mask phase).
     # Stream stdout+stderr to the Coder log (the panel tails `coder logs -f`).
     echo "[runner] running container (phase=$PHASE) ..."
     set +e
