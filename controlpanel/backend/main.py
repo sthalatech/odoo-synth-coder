@@ -198,13 +198,20 @@ class MaskingRulesRequest(BaseModel):
 @app.get("/api/config")
 def api_config() -> dict:
     dest = config.destination()
+    env = config.environments_settings()
+    coder_ok = bool(env.get("coder_url")) and bool(env.get("coder_session_token"))
     return {
         "project": config.get("PROJECT"),
         "region": config.get("AWS_REGION"),
         "destination_db": dest.get("dbname"),
         "destination_host": dest.get("host"),
         "masked_cluster": config.get("ECS_CLUSTER"),
-
+        # Option E: the build/mask/discovery compute moves to Coder workspaces
+        # when the panel is wired to a Coder server (CODER_URL +
+        # CODER_SESSION_TOKEN). When unset, the legacy ECS Fargate path runs.
+        "coder_url": env.get("coder_url") or None,
+        "coder_connected": coder_ok,
+        "compute": "coder" if coder_ok else "ecs",
     }
 
 

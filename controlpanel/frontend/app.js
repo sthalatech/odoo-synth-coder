@@ -42,6 +42,11 @@ async function loadConfig() {
     const parts = [];
     if (c.region) parts.push(`region <b>${c.region}</b>`);
     if (c.destination_db) parts.push(`destination <b>${c.destination_db}</b>`);
+    // Option E: show whether build/mask/discovery run on Coder workspaces or
+    // the legacy ECS Fargate path.
+    const compute = c.compute === "coder" ? "Coder" : "ECS Fargate";
+    const computeColor = c.compute === "coder" ? "#3b9" : "#f90";
+    parts.push(`compute <b style="color:${computeColor}">${compute}</b>`);
     $("infobar").innerHTML = parts.join("<br>");
   } catch (e) {
     $("infobar").textContent = "config unavailable";
