@@ -49,7 +49,7 @@ data "coder_parameter" "ami_id" {
   name         = "ami_id"
   display_name = "Thin golden AMI (ubuntu + docker + awscli)."
   type         = "string"
-  default      = "ami-0892f045efd9c011d"
+  default      = "ami-0e94ad593421c5023"
   order        = 1
 }
 
@@ -181,10 +181,10 @@ data "coder_workspace_preset" "default_profile" {
   name        = "Latest masked profile"
   description = "Odoo + local Postgres hydrated from the newest masked dump, with the internal-addons (uat) addons repo live-mounted for development."
   parameters = {
-    odoo_image    = "123456789012.dkr.ecr.us-east-1.amazonaws.com/odoo-synth/odoo:prof_749c8a90-fc88dea8aeef"
-    dump_s3_uri   = "s3://odoo-synth-dumps-123456789012/masked-dumps/b6ad9d1f24e9/masked.dump"
+    odoo_image       = "123456789012.dkr.ecr.us-east-1.amazonaws.com/odoo-synth/odoo:prof_749c8a90-fc88dea8aeef"
+    dump_s3_uri      = "s3://odoo-synth-dumps-123456789012/masked-dumps/b6ad9d1f24e9/masked.dump"
     git_token_secret = "odoo-synth/profile/prof_749c8a90/git-token"
-    instance_type   = "t3.large"
+    instance_type    = "t3.large"
   }
 }
 
@@ -590,6 +590,12 @@ EISVC
 ## Notes
 - The DB is seeded from a masked production dump -- data is fake/masked, safe to mutate.
 - Your git pushes use your Coder SSH key; no token needed for SSH URLs.
+
+## AI agents installed (on the AMI)
+- claude   -- Claude Code (Anthropic). API key from your Coder user secret `anthropic-api-key`.
+- opencode -- open-source agent. Web app on the workspace page; add a provider with: opencode auth
+- ralph    -- autonomous loop over an agent. e.g. ralph "fix the login 500" --agent claude-code --max-iterations 10
+              (agents: opencode, claude-code, codex, copilot, cursor-agent, qwen-code)
 CMDOC
       chown dev:dev /home/dev/workspace/CLAUDE.md 2>/dev/null || true
 
@@ -611,10 +617,31 @@ WantedBy=multi-user.target
 CCSVC
       systemctl daemon-reload
       systemctl enable --now claude-code
+
+      # OpenCode: same ttyd-served-TUI pattern as Claude Code, on a separate
+      # port (8092) so both apps can run side by side. OpenCode is a TUI by
+      # default; `ralph` can drive it (or Claude) in an autonomous loop.
+      ln -sf /usr/local/bin/opencode /home/dev/.local/bin/opencode 2>/dev/null
+      cat > /etc/systemd/system/opencode.service <<OCSVC
+[Unit]
+Description=OpenCode web terminal (ttyd)
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=simple
+User=root
+Environment=HOME=/root
+ExecStart=/usr/bin/ttyd -i 127.0.0.1 -p 8092 -t fontSize=14 sudo -u dev HOME=/home/dev bash -lc 'cd /home/dev/workspace && opencode'
+Restart=always
+[Install]
+WantedBy=multi-user.target
+OCSVC
+      systemctl daemon-reload
+      systemctl enable --now opencode
     else
-      echo "[env] claude binary not found on AMI -- skipping Claude Code app"
+      echo "[env] agent CLIs not found on AMI -- skipping Claude Code / OpenCode apps"
     fi
-    ) || echo "[env] claude-code setup failed; continuing (Claude app may be unavailable)"
+    ) || echo "[env] agent-app setup failed; continuing (Claude/OpenCode apps may be unavailable)"
 
     # --- 8. port-forwards Coder opens so the dev reaches odoo ---
     # `coder_port` resources below tell Coder to proxy these through the tunnel.
@@ -708,13 +735,13 @@ resource "coder_app" "odoo" {
 # (127.0.0.1:8090 by python http.server) documenting containers, repo mount,
 # odoo/postgres control, logs, and how to retrieve passwords. Owner-only.
 resource "coder_app" "env_info" {
-  agent_id      = coder_agent.main.id
-  slug          = "env-guide"
-  display_name  = "Env Guide"
-  icon          = "/icon/info.svg"
-  url           = "http://localhost:8090/env-info.html"
-  subdomain     = true
-  share         = "owner"
+  agent_id     = coder_agent.main.id
+  slug         = "env-guide"
+  display_name = "Env Guide"
+  icon         = "/icon/info.svg"
+  url          = "http://localhost:8090/env-info.html"
+  subdomain    = true
+  share        = "owner"
   healthcheck {
     url       = "http://localhost:8090/env-info.html"
     interval  = 10
@@ -726,15 +753,32 @@ resource "coder_app" "env_info" {
 # The Anthropic API key is the user's Coder user secret `anthropic-api-key`
 # (env ANTHROPIC_API_KEY), injected by Coder -- nothing in the template.
 resource "coder_app" "claude_code" {
-  agent_id      = coder_agent.main.id
-  slug          = "claude-code"
-  display_name  = "Claude Code"
-  icon          = "/icon/terminal.svg"
-  url           = "http://localhost:8091"
-  subdomain     = true
-  share         = "owner"
+  agent_id     = coder_agent.main.id
+  slug         = "claude-code"
+  display_name = "Claude Code"
+  icon         = "/icon/terminal.svg"
+  url          = "http://localhost:8091"
+  subdomain    = true
+  share        = "owner"
   healthcheck {
     url       = "http://localhost:8091"
+    interval  = 10
+    threshold = 5
+  }
+}
+
+# OpenCode: an open-source coding agent served over a web terminal (ttyd) on
+# :8092. Like Claude Code, it's owner-only and health-checked.
+resource "coder_app" "opencode" {
+  agent_id     = coder_agent.main.id
+  slug         = "opencode"
+  display_name = "OpenCode"
+  icon         = "/icon/terminal.svg"
+  url          = "http://localhost:8092"
+  subdomain    = true
+  share        = "owner"
+  healthcheck {
+    url       = "http://localhost:8092"
     interval  = 10
     threshold = 5
   }

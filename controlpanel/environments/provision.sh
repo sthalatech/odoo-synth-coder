@@ -62,14 +62,41 @@ rm -f /tmp/claude.tar.gz
 ln -sf "$CLAUDE_DIR/claude" /usr/local/bin/claude
 chmod +x "$CLAUDE_DIR/claude" /usr/local/bin/claude
 
+# --- Bun (runtime for ralph-wiggum) ----------------------------------------
+# Installed system-wide: binary at /opt/bun/bin/bun, symlinked on PATH.
+BUN_DIR="/opt/bun"
+curl -fsSL https://bun.sh/install | BUN_INSTALL="$BUN_DIR" bash
+ln -sf "$BUN_DIR/bin/bun" /usr/local/bin/bun
+ln -sf "$BUN_DIR/bin/bunx" /usr/local/bin/bunx 2>/dev/null || true
+
+# --- OpenCode (open-source coding agent; TUI + web + headless) -------------
+# Its installer hardcodes $HOME/.opencode/bin, so install under HOME=/opt to
+# get a system-wide binary, then symlink. --no-modify-path avoids editing
+# shell rc files during the bake.
+mkdir -p /opt
+# HOME=/opt must be on the bash (the consumer of the pipe), not curl,
+# so the installer writes to /opt/.opencode/bin rather than /root/.opencode/bin.
+curl -fsSL https://opencode.ai/install | HOME=/opt bash -s -- --no-modify-path
+ln -sf /opt/.opencode/bin/opencode /usr/local/bin/opencode
+
+# --- Ralph Wiggum (agentic loop over claude/opencode/codex/...) ------------
+# A Bun/TypeScript CLI installed as a global npm package via Bun. Requires at
+# least one agent CLI -- we have claude (+ opencode above) so the install
+# succeeds. `ralph "task" --agent claude-code` loops the agent autonomously.
+BUN_INSTALL="/opt/bun" PATH="/opt/bun/bin:$PATH"   bun add --global @th0rgal/ralph-wiggum
+ln -sf /opt/bun/bin/ralph /usr/local/bin/ralph
+
 # A dedicated unprivileged developer user owns the workspace and runs Odoo.
 if ! id dev >/dev/null 2>&1; then
   useradd -m -s /bin/bash dev
   usermod -aG docker dev
 fi
-# Make claude discoverable for the dev user's login shells.
+# Make the agent CLIs discoverable for the dev user's login shells.
 install -d -o dev -g dev /home/dev/.local/bin
-ln -sf /usr/local/bin/claude /home/dev/.local/bin/claude
+ln -sf /usr/local/bin/claude   /home/dev/.local/bin/claude
+ln -sf /usr/local/bin/opencode /home/dev/.local/bin/opencode
+ln -sf /usr/local/bin/ralph    /home/dev/.local/bin/ralph
+ln -sf /usr/local/bin/bun      /home/dev/.local/bin/bun
 printf 'export PATH="$HOME/.local/bin:$PATH"\n' >> /home/dev/.bashrc
 
 # Pre-pull the postgres image so first boot is fast. The provenance-baked odoo

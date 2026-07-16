@@ -10,8 +10,16 @@ database, with an addons repo live-mounted for development.
 - **Your addons repo** cloned to `/home/dev/workspace/repo` and bind-mounted
   into Odoo at `/mnt/live` (read-write). Edit on the host; restart Odoo to
   reload.
-- **VS Code in the browser** (code-server) and an SSH/terminal.
 - An **Env Guide** app on the workspace page with all commands and locations.
+- **AI coding agents** baked into the AMI and exposed as workspace apps:
+  - **Claude Code** — `claude` (Anthropic). Served as a web terminal app.
+    Set your Coder user secret `anthropic-api-key` (env `ANTHROPIC_API_KEY`)
+    and it's auto-injected into every workspace you own.
+  - **OpenCode** — `opencode` (open-source agent). Served as a web terminal
+    app; configure a provider with `opencode auth`.
+  - **Ralph Wiggum** — `ralph`, an autonomous agentic loop over any of the
+    agents above: e.g. `ralph "fix the login 500" --agent claude-code
+    --max-iterations 10`.
 
 ## Create with the preset
 
