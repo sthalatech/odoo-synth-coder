@@ -105,18 +105,20 @@ data "coder_parameter" "repo_url" {
   name         = "repo_url"
   display_name = "Addons repo cloned + live-mounted into Odoo."
   type         = "string"
-  # Required: a workspace with no addons repo is useless for development, and
-  # the empty-default case produced broken envs when created from the dashboard.
-  # Coder treats a parameter with NO default as required -- the dashboard
-  # create form blocks submission until it is filled. The default preset
-  # pre-fills this so one-click create still works.
-  order = 8
+  # Pre-filled with the default addons repo but EDITABLE in the create form
+  # (preset-provided values are locked by Coder; a parameter default is not,
+  # so we use default here instead of the preset for repo_url/repo_branch).
+  # A workspace with no addons repo is useless for dev, so the default is a
+  # real working repo rather than empty.
+  default = "https://github.com/your-org/internal-addons"
+  order   = 8
 }
 
 data "coder_parameter" "repo_branch" {
   name         = "repo_branch"
   display_name = "Branch/tag/commit of the addons repo."
   type         = "string"
+  default      = "uat"
   order        = 9
 }
 
@@ -177,12 +179,10 @@ data "coder_parameter" "admin_password" {
 data "coder_workspace_preset" "default_profile" {
   default     = true
   name        = "Latest masked profile"
-  description = "Odoo + local Postgres hydrated from the newest masked dump, with the your-addons addons repo live-mounted for development."
+  description = "Odoo + local Postgres hydrated from the newest masked dump, with the internal-addons (uat) addons repo live-mounted for development."
   parameters = {
     odoo_image    = "123456789012.dkr.ecr.us-east-1.amazonaws.com/odoo-synth/odoo:prof_749c8a90-fc88dea8aeef"
     dump_s3_uri   = "s3://odoo-synth-dumps-123456789012/masked-dumps/b6ad9d1f24e9/masked.dump"
-    repo_url        = "https://github.com/your-org/your-addons"
-    repo_branch     = "08f788e827dd1b8e00984c33efafb0e1e96d1eca"
     git_token_secret = "odoo-synth/profile/prof_749c8a90/git-token"
     instance_type   = "t3.large"
   }
