@@ -18,7 +18,7 @@ terraform {
   required_providers {
     coder = {
       source  = "coder/coder"
-      version = ">= 2.0"
+      version = ">= 2.2"
     }
     aws = {
       source  = "hashicorp/aws"
@@ -163,6 +163,35 @@ data "coder_parameter" "admin_password" {
   type         = "string"
   default      = "change-me"
   order        = 15
+}
+
+# --- Template presets --------------------------------------------------------
+# The Coder dashboard "Create workspace" flow shows these as one-click presets
+# with pre-filled parameter values, so a developer doesn't land on an empty
+# form and create a broken (no-image, no-dump) env. Pick a preset, click
+# create, and the workspace hydrates from the masked dump.
+
+data "coder_workspace_preset" "default_profile" {
+  default     = true
+  name        = "Latest masked profile"
+  description = "Odoo + local Postgres hydrated from the newest masked dump (profile prof_749c8a90)."
+  parameters = {
+    odoo_image    = "123456789012.dkr.ecr.us-east-1.amazonaws.com/odoo-synth/odoo:prof_749c8a90-fc88dea8aeef"
+    dump_s3_uri   = "s3://odoo-synth-dumps-123456789012/masked-dumps/b6ad9d1f24e9/masked.dump"
+    instance_type = "t3.large"
+  }
+}
+
+data "coder_workspace_preset" "default_with_repo" {
+  name        = "Latest masked profile + addons repo"
+  description = "Same as above, also live-mounting the internal-addons uat branch into Odoo for addon development."
+  parameters = {
+    odoo_image    = "123456789012.dkr.ecr.us-east-1.amazonaws.com/odoo-synth/odoo:prof_749c8a90-fc88dea8aeef"
+    dump_s3_uri   = "s3://odoo-synth-dumps-123456789012/masked-dumps/b6ad9d1f24e9/masked.dump"
+    repo_url      = "https://github.com/your-org/internal-addons"
+    repo_branch   = "uat"
+    instance_type = "t3.large"
+  }
 }
 
 provider "aws" {
