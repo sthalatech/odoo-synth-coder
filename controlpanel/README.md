@@ -5,8 +5,12 @@ The FastAPI web panel has been replaced by a single CLI: **`odoo-synth`**
 backend library modules** in `backend/` directly over an in-process call
 boundary — there is no HTTP server any more. Run history and logs are still
 persisted as YAML (profiles under `profiles/`, environments in `envs.yaml`)
-and on S3 (runs + logs), with Coder owning env lifecycle, so everything
-the panel tracked survives across CLI invocations.
+and on S3 (runs + logs, **and profiles**), with Coder owning env lifecycle, so
+everything the panel tracked survives across CLI invocations. Profile YAMLs
+are mirrored to S3 (`<dumps-bucket>/<prefix>/profiles/<id>.yaml`) so a profile
+created on one machine is visible on every other — this keeps the Coder template
+presets complete no matter which host publishes them; `profiles/` is a local
+cache that auto-populates from S3 on read.
 
 > **User management** is no longer exposed here — use the native Coder CLI:
 >   `coder users create alice@example.com` / `coder users list`.
@@ -81,6 +85,7 @@ controlpanel/
     build.py              provenance image build
     pipeline.py           mask op (Coder runner workspace)
     profile_store.py      one YAML file per profile under ../profiles/
+                          (mirrored to S3; local dir is a cache)
     run_store.py          S3-backed runs + logs (s3://bucket/.../runs/<id>/)
     env_store.py          one YAML file (envs.yaml): env linkage + password ARNs
     store.py              thin facade delegating to the three stores (no SQLite)
@@ -88,7 +93,8 @@ controlpanel/
     config.py             reads ../config.yaml + ../deploy/state.env
     environments.py       Coder workspace lifecycle (env create/teardown/list)
     envs.yaml             environment linkage (gitignored; status read live from Coder)
-    ../profiles/*.yaml    one YAML file per profile (the profile store)
+    ../profiles/*.yaml    one YAML file per profile (local cache of the
+                          S3-backed profile store)
 ```
 
 The panel server (`main.py`, `frontend/`, `Dockerfile`, `run_local.sh`) was
