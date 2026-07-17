@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate Coder workspace preset blocks from the profile store.
+"""Generate Coder workspace preset blocks from the profile + run stores.
 
 Emits Terraform `data "coder_workspace_preset"` blocks -- one per profile that
 has both a built Odoo image AND a successful mask run (so it has a masked dump
@@ -11,16 +11,22 @@ carrying its image, dump, git token secret, repo, and discovery-derived
 odoo.conf extras -- everything the panel used to pass. Adding a new repo+DB is
 now: build + mask it (via the CLI), then re-run `deploy/12_publish_template.sh`.
 
-Usage: python3 deploy/_gen_presets.py [profile_db_path]
+Stores (no-SQL thin architecture, no SQLite):
+  * profiles  -> controlpanel/backend/profile_store.py (one YAML per profile)
+  * runs/logs -> controlpanel/backend/run_store.py   (S3: params.json + logs)
+
+Usage: python3 deploy/_gen_presets.py
 """
 from __future__ import annotations
 import base64
-import json
-import sqlite3
 import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
+# allow running from a checkout without the package installed
+sys.path.insert(0, str(REPO / "controlpanel"))
+from backend import profile_store, run_store  # noqa: E402
+
 OUT = REPO / "coder" / "templates" / "odoo-synth-env" / "presets.tf"
 DEFAULT_INSTANCE = "t3.large"
 
@@ -30,65 +36,69 @@ def _hcl_string(s: str) -> str:
     return s.replace("\\", "\\\\").replace('"', '\\"')
 
 
+def _latest_mask_dump(profile_id: str) -> str | None:
+    """S3 URI of the masked dump from the most recent succeeded mask run for a
+    profile, or None if there isn't one yet.
+
+    Skips runs whose recorded dump URI is incomplete (some older runs stored
+    only the bucket+prefix, e.g. ``s3://.../masked-dumps/`` with no
+    ``<run>/masked.dump`` suffix) -- the env template needs the full object
+    key. Returns the newest *valid* URI."""
+    best: tuple[float, str] | None = None
+    for r in run_store.list_runs(limit=500):
+        if r.get("profile_id") != profile_id:
+            continue
+        if r.get("status") != "succeeded" or r.get("operation") != "mask":
+            continue
+        full = run_store.get_run(r["id"]) or {}
+        uri = (full.get("result") or {}).get("masked_dump_s3_uri")
+        if not uri or not uri.endswith("masked.dump"):
+            continue
+        ts = float(full.get("created_at") or 0)
+        if best is None or ts > best[0]:
+            best = (ts, uri)
+    return best[1] if best else None
+
+
 def main() -> int:
-    db = Path(sys.argv[1]) if len(sys.argv) > 1 else (
-        REPO / "controlpanel" / "backend" / "controlpanel.db")
-    if not db.exists():
-        sys.stderr.write(f"WARN: profile db not found at {db}; writing no presets\n")
-        OUT.write_text('# No profile store found; no presets generated.\n')
-        return 0
-
-    conn = sqlite3.connect(str(db))
-    conn.row_factory = sqlite3.Row
-    # profiles with a built image
-    profs = conn.execute(
-        "SELECT id, label, description, image_uri, odoo_conf_extra, "
-        "git_token_secret, addons_git_url, addons_git_ref "
-        "FROM profiles WHERE image_uri IS NOT NULL AND image_status IN ('built','ready','discovered')"
-    ).fetchall()
-
     blocks: list[str] = []
     seen = 0
-    for p in profs:
-        # latest successful mask run -> masked dump uri
-        row = conn.execute(
-            "SELECT result FROM runs WHERE profile_id=? AND status='succeeded' "
-            "AND result LIKE '%masked_dump_s3_uri%' "
-            "ORDER BY created_at DESC LIMIT 1", (p["id"],)).fetchone()
-        if not row:
-            continue  # no dump yet -> not preset-worthy
-        try:
-            res = json.loads(row["result"])
-        except Exception:
+    for p in profile_store.list_profiles(limit=500):
+        # needs a built image
+        if not p.get("image_uri"):
             continue
-        dump_uri = res.get("masked_dump_s3_uri")
+        if (p.get("image_status") or "") not in ("built", "ready", "discovered"):
+            continue
+        # needs a successful mask run with a dump
+        dump_uri = _latest_mask_dump(p["id"])
         if not dump_uri:
             continue
-        conf_extra = p["odoo_conf_extra"] or ""
+        conf_extra = p.get("odoo_conf_extra") or ""
         conf_b64 = base64.b64encode(conf_extra.encode()).decode()
-        label = (p["label"] or p["id"]).strip() or p["id"]
-        desc = (p["description"] or f"Profile {p['id']}").strip()
-        repo_url = p["addons_git_url"] or ""
-        repo_branch = p["addons_git_ref"] or ""
-        git_tok = p["git_token_secret"] or ""
+        label = (p.get("label") or p["id"]).strip() or p["id"]
+        desc = (p.get("description") or f"Profile {p['id']}").strip()
+        repo_url = p.get("addons_git_url") or ""
+        repo_branch = p.get("addons_git_ref") or ""
+        git_tok = p.get("git_token_secret") or ""
         seen += 1
+        res_id = p["id"].replace("-", "_").replace(".", "_")
         blocks.append(f'''# Preset for profile {p["id"]} (auto-generated by deploy/_gen_presets.py)
-data "coder_workspace_preset" "profile_{p["id"].replace("-","_").replace(".","_")}" {{
+data "coder_workspace_preset" "profile_{res_id}" {{
   default     = {"true" if seen == 1 else "false"}
   name        = "{_hcl_string(label)}"
   description = "{_hcl_string(desc)}"
   parameters = {{
-    odoo_image           = "{_hcl_string(p["image_uri"])}"
-    dump_s3_uri          = "{_hcl_string(dump_uri)}"
-    git_token_secret     = "{_hcl_string(git_tok)}"
-    instance_type        = "{DEFAULT_INSTANCE}"
-    odoo_conf_extra_b64  = "{conf_b64}"
+    odoo_image          = "{_hcl_string(p["image_uri"])}"
+    dump_s3_uri         = "{_hcl_string(dump_uri)}"
+    git_token_secret    = "{_hcl_string(git_tok)}"
+    instance_type       = "{DEFAULT_INSTANCE}"
+    odoo_conf_extra_b64 = "{conf_b64}"
 {f'    repo_url            = "{_hcl_string(repo_url)}"\n' if repo_url else ""}{f'    repo_branch         = "{_hcl_string(repo_branch)}"\n' if repo_branch else ""}  }}
 }}
 ''')
 
     header = ('# ----------------------------------------------------------------------\n'
-              '# Auto-generated by deploy/_gen_presets.py from the profile store.\n'
+              '# Auto-generated by deploy/_gen_presets.py from the profile + run stores.\n'
               '# Do not edit by hand -- re-run deploy/12_publish_template.sh to refresh.\n'
               '# One preset per profile that has a built image + a successful mask run.\n'
               '# ----------------------------------------------------------------------\n\n')
