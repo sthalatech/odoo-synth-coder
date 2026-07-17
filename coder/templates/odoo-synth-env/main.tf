@@ -171,30 +171,11 @@ data "coder_parameter" "admin_password" {
 }
 
 # --- Template presets --------------------------------------------------------
-# The Coder dashboard "Create workspace" flow shows these as one-click presets
-# with pre-filled parameter values, so a developer doesn't land on an empty
-# form and create a broken (no-image, no-dump) env. Pick a preset, click
-# create, and the workspace hydrates from the masked dump.
-
-data "coder_workspace_preset" "default_profile" {
-  default     = true
-  name        = "Latest masked profile"
-  description = "Odoo + local Postgres hydrated from the newest masked dump, with the internal-addons (uat) addons repo live-mounted for development."
-  parameters = {
-    odoo_image       = "123456789012.dkr.ecr.us-east-1.amazonaws.com/odoo-synth/odoo:prof_749c8a90-fc88dea8aeef"
-    dump_s3_uri      = "s3://odoo-synth-dumps-123456789012/masked-dumps/b6ad9d1f24e9/masked.dump"
-    git_token_secret = "odoo-synth/profile/prof_749c8a90/git-token"
-    instance_type    = "t3.large"
-    # Base64 of the profile's discovery-derived odoo.conf extras: every config
-    # key the source addons reference (config['...']), with empty values, so
-    # custom addons (SSO, ACL, sentry, ...) don't KeyError->500 in the masked
-    # dev replica. Same value the panel passes via odoo_conf_extra_b64; baked
-    # into the preset so the Coder-direct create flow matches the panel flow.
-    # Regenerate from the profile when the image/dump preset values change:
-    #   sqlite3 controlpanel/backend/controlpanel.db ... | base64
-    odoo_conf_extra_b64 = "YmxpbmtfcGFzc3dvcmQgPQpibGlua191c2VybmFtZSA9CmN1c3RvbV9hY2xfZW5kcG9pbnQgPQpjdXN0b21fYWNsX3NraXBfbW9kZWxzID0KZW5hYmxlX2N1c3RvbV9hY2wgPQplbmFibGVfY3VzdG9tX2FjbF9zZWFyY2ggPQpmYWNhZGVfYXV0aG9yaXphdGlvbl90b2tlbiA9CmZvcm1fZmllbGRfZGVmcyA9CmdlbWluaV9hcGlfa2V5ID0KczNfYXdzX2FjY2Vzc19rZXlfaWQgPQpzM19hd3NfcmVnaW9uID0KczNfYXdzX3NlY3JldF9hY2Nlc3Nfa2V5ID0KczNfYnVja2V0X25hbWUgPQpzZW50cnlfZW5hYmxlZCA9CnNlbnRyeV9leGNsdWRlX2xvZ2dlcnMgPQpzZW50cnlfaW5jbHVkZV9jb250ZXh0ID0Kc2VudHJ5X29kb29fZGlyID0Kc2VudHJ5X3JlbGVhc2UgPQpzZW50cnlfdHJhbnNwb3J0ID0Kc3NvX2FwaV9rZXkgPQpzc29fYXBpX3NlY3JldCA9CnNzb19hcGlfc3lzdGVtX3Rva2VuID0Kc3NvX2xlZ2FsX2VudGl0eSA9CnNzb19sb2dpbl9hY3Rpb24gPQpzc29fbG9naW5fZm9yY2VfY29uc2VudCA9CnNzb19sb2dpbl9pbmZvX2VuZHBvaW50ID0Kc3NvX2xvZ2luX3VybCA9CnNzb19wbXNfZW5kcG9pbnQgPQpzeXN0ZW1fdG9rZW4gPQo="
-  }
-}
+# Presets are auto-generated from the profile store by deploy/_gen_presets.py
+# into presets.tf (one preset per profile that has a built image + a successful
+# mask run). `deploy/12_publish_template.sh` regenerates them before each push.
+# A new repo+DB becomes a one-click preset after: build + mask via the CLI,
+# then re-publish the template.
 
 provider "aws" {
   region = data.coder_parameter.region.value

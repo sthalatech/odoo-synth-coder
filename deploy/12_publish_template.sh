@@ -13,6 +13,11 @@ TPL_DIR="$HERE/coder/templates/odoo-synth-env"
 [ -n "${CODER_URL:-}" ] || { log "CODER_URL not set; run deploy/11_coder_server.sh first"; exit 1; }
 [ -n "${CODER_SESSION_TOKEN:-}" ] || { log "CODER_SESSION_TOKEN not set; run 'coder login $CODER_URL' first"; exit 1; }
 
+# Regenerate workspace presets from the profile store (one preset per profile
+# with a built image + a successful mask run) before pushing, so the Coder
+# dashboard "Create workspace" flow shows every available masked profile.
+python3 "$HERE/deploy/_gen_presets.py" || log "WARN: preset generation failed (continuing)"
+
 log "publishing Coder template $TPL_NAME from $TPL_DIR ..."
 cd "$TPL_DIR"
 # --directory is required: without it the CLI uploads a 0-byte source archive
