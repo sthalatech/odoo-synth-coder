@@ -81,17 +81,17 @@ controlpanel/
     pipeline.py           mask op (ECS Fargate or Coder runner)
     store.py              SQLite persistence (runs + logs + envs + profiles)
     seed.py               best-effort starter profile
-    config.py             reads ../config.env + ../deploy/state.env + config.yml
+    config.py             reads ../config.yaml + ../deploy/state.env
     environments.py       Coder workspace lifecycle (env create/teardown/list)
     controlpanel.db       the SQLite store (read by the CLI)
-  config.yml              mask profiles + neutralize defaults + env settings
 ```
 
 The panel server (`main.py`, `frontend/`, `Dockerfile`, `run_local.sh`) was
-removed. Infra values still come from the repo's
-[`../config.env`](../config.env) and [`../deploy/state.env`](../deploy/state.env)
-via `backend/config.py`; mask profiles + neutralize toggle defaults still come
-from [`config.yml`](config.yml) — no config duplication, nothing hardcoded.
+removed. Infra values, mask profiles, neutralize defaults, and environment
+launch settings ALL come from the repo's single
+[`../config.yaml`](../config.yaml) via `backend/config.py` (with
+[`../config.example.yaml`](../config.example.yaml) as the documented template).
+No config duplication, nothing hardcoded.
 
 ## Masker knobs (env, honored by `masker/entrypoint.sh`)
 

@@ -1,9 +1,10 @@
-"""Configuration loader: reads the repo's config.env and deploy/state.env so the
-control panel uses the exact same infra values as the shell pipeline. No values
-are duplicated here — this is the single source of truth for both.
+"""Configuration loader: reads the repo's config.yaml (single source of truth;
+falls back to legacy config.env) and deploy/state.env so the backend uses the
+exact same infra values as the shell pipeline. No values are duplicated here.
 
-Also loads controlpanel/config.yml (connection profiles, mask profiles, restore
-source types, neutralize defaults) — the community-release, no-hardcoding config.
+config.yaml also carries the structured sections the old controlpanel/config.yml
+held (destination, mask_profiles, neutralize_defaults, environments) — now
+consolidated into the one file. ``panel()`` returns those sections as a dict.
 """
 from __future__ import annotations
 import os
@@ -15,7 +16,8 @@ import yaml
 # controlpanel/backend/config.py -> repo root is two levels up
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PANEL_DIR = Path(__file__).resolve().parents[1]
-PANEL_CONFIG = PANEL_DIR / "config.yml"
+YAML_CONFIG = REPO_ROOT / "config.yaml"
+LEGACY_PANEL_CONFIG = PANEL_DIR / "config.yml"
 
 
 def _parse_env_file(path: Path) -> dict[str, str]:
@@ -112,14 +114,56 @@ def require(key: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# panel config.yml (destination, mask profiles, neutralize defaults)
+# structured panel sections (destination, mask profiles, neutralize defaults,
+# environments) — now consolidated into config.yaml. Falls back to the legacy
+# controlpanel/config.yml for back-compat if config.yaml has no such section.
 # ---------------------------------------------------------------------------
 
 @lru_cache(maxsize=1)
+def _yaml_doc() -> dict:
+    if YAML_CONFIG.exists():
+        try:
+            return yaml.safe_load(YAML_CONFIG.read_text()) or {}
+        except Exception:  # noqa: BLE001 — malformed yaml shouldn't crash config
+            return {}
+    return {}
+
+
+@lru_cache(maxsize=1)
 def panel() -> dict:
-    if not PANEL_CONFIG.exists():
-        return {}
-    return yaml.safe_load(PANEL_CONFIG.read_text()) or {}
+    """The structured config sections. config.yaml is the source of truth; the
+    legacy controlpanel/config.yml overlays only keys not present in config.yaml
+    (so an old config.yml still works, but config.yaml wins).
+
+    Normalizes the mask-related keys to a flat top-level shape
+    (``mask_profiles``, ``neutralize_defaults``, ``reset_admin_login``) whether
+    they are authored nested under ``mask:`` (the documented example form) or at
+    the top level (the older config.yml form)."""
+    doc = _yaml_doc()
+    out: dict = {}
+    for k in ("destination", "mask_profiles", "neutralize_defaults",
+              "reset_admin_login", "environments", "aws"):
+        if k in doc:
+            out[k] = doc[k]
+    # nested-under-mask normalization (config.example.yaml form)
+    mask = doc.get("mask", {}) or {}
+    if "profiles" in mask:
+        out.setdefault("mask_profiles", mask["profiles"])
+    if "neutralize_defaults" in mask:
+        out.setdefault("neutralize_defaults", mask["neutralize_defaults"])
+    if "reset_admin_login" in mask:
+        out.setdefault("reset_admin_login", mask["reset_admin_login"])
+    if "gm_jobs" in mask and isinstance(out.get("neutralize_defaults"), dict):
+        out["neutralize_defaults"].setdefault("gm_jobs", mask["gm_jobs"])
+    # legacy overlay (only keys missing from config.yaml)
+    if LEGACY_PANEL_CONFIG.exists():
+        try:
+            legacy = yaml.safe_load(LEGACY_PANEL_CONFIG.read_text()) or {}
+        except Exception:  # noqa: BLE001
+            legacy = {}
+        for k, v in legacy.items():
+            out.setdefault(k, v)
+    return out
 
 
 def _resolve_conn(c: dict) -> dict:
@@ -170,14 +214,30 @@ def neutralize_defaults() -> dict:
 
 
 def dump_s3_bucket() -> str | None:
+    """The S3 bucket for masked dumps + build/discovery artifacts.
+
+    config.yaml is the source of truth: ``mask.dumps_bucket`` (a direct value).
+    Falls back to the legacy ``aws.dump_s3_bucket[_env]`` panel keys, then the
+    resolved ``DUMP_S3_BUCKET`` env var (set by the YAML loader's alias).
+    """
+    doc = _yaml_doc()
+    mask = doc.get("mask", {}) or {}
+    if mask.get("dumps_bucket"):
+        return str(mask["dumps_bucket"])
     aws = panel().get("aws", {}) or {}
     if aws.get("dump_s3_bucket"):
-        return aws["dump_s3_bucket"]
+        return str(aws["dump_s3_bucket"])
     env_name = aws.get("dump_s3_bucket_env")
-    return get(env_name) if env_name else None
+    if env_name:
+        return get(env_name)
+    return get("DUMP_S3_BUCKET")
 
 
 def dump_s3_prefix() -> str:
+    doc = _yaml_doc()
+    mask = doc.get("mask", {}) or {}
+    if mask.get("dumps_prefix"):
+        return str(mask["dumps_prefix"]).strip("/")
     aws = panel().get("aws", {}) or {}
     return aws.get("dump_s3_prefix", "masked-dumps")
 

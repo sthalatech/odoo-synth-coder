@@ -3,7 +3,7 @@
 # Golden-AMI provisioner for odoo-synth developer environments.
 #
 # Run this ONCE on a fresh Ubuntu 22.04/24.04 instance, then bake an AMI from
-# it (aws ec2 create-image). The AMI id goes into config.yml (environments.
+# it (aws ec2 create-image). The AMI id goes into config.yaml (environments.
 # ami_id / ami_id_env). Per-environment boot work (seed DB, start code-server)
 # is done by user-data.sh.tmpl at launch time, so this only installs the
 # static toolchain that every environment shares.

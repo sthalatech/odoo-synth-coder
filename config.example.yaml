@@ -52,6 +52,18 @@ database:
   source_master_user: odoo
   source_master_password: { ref: env:SOURCE_DB_MASTER_PASSWORD }
 
+# The masked destination DB. Phase B (RDS removal): no managed RDS -- the masker
+# runs a postgres:16 sidecar and restores into a throwaway in-task DB on
+# 127.0.0.1; host is supplied by the masker task, so it is blank here. The Coder
+# runner path ignores this (its own local runner-db). Creds resolve from the
+# database.* env vars (TARGET_DB_NAME / TARGET_DB_USER / TARGET_DB_PASSWORD).
+destination:
+  label: "Masked DB (ephemeral in-task postgres)"
+  port: 5432
+  dbname_env: TARGET_DB_NAME
+  user_env: TARGET_DB_USER
+  password_env: TARGET_DB_PASSWORD
+
 build:
   # ECR repo for the provenance-baked odoo image (<acct>.dkr.ecr.<region>/<project>/odoo)
   ecr_repo: odoo-synth/odoo
@@ -97,6 +109,27 @@ coder:
   # Per-user Coder secret name holding the Anthropic API key for Claude Code in
   # dev workspaces. Created via `coder secrets add anthropic-api-key ...`.
   anthropic_secret_name: anthropic-api-key
+
+# Developer environments (Coder workspaces). Ephemeral, isolated workspaces
+# launched per GitHub issue by the Coder server (deploy/11_coder_server.sh),
+# seeded from a masked pg_dump. The Coder template launches one EC2 instance per
+# workspace from the golden AMI -- no public IP, no per-env SG/secret; access is
+# brokered via the Coder server's Wireguard tunnel. *_env values are env-var
+# NAMES resolved at runtime so each deployment points at its own resources.
+environments:
+  enabled: true
+  coder_url_env: CODER_URL                      # set by 11_coder_server.sh
+  coder_session_token_env: CODER_SESSION_TOKEN  # API token from `coder login`
+  ami_id_env: ENV_AMI_ID                        # golden AMI id (09_dev_env.sh)
+  instance_type: t3.large
+  subnet_id_env: ENV_SUBNET_ID                  # default-VPC subnet for workspace VMs
+  security_group_id_env: ENV_SG_ID             # env SG (egress only; Coder tunnel)
+  instance_profile_env: ENV_INSTANCE_PROFILE    # IAM: S3 dump read + ECR pull
+  db_name: odoo                                 # local DB name seeded from the dump
+  odoo_image_tag: latest                        # resolves to <acct>.../odoo:<tag>
+  repo_url_env: ENV_REPO_URL                    # addons repo (default: addons.custom_git_url)
+  repo_branch_env: ENV_REPO_BRANCH              # default: addons.custom_git_ref
+  git_token_secret_env: ENV_GIT_TOKEN_SECRET    # optional: Secrets Manager arn for private repo clone
 
 # Resolved at install time into deploy/state.env (do not hand-edit here).
 # These are written by the deploy scripts; listed for documentation only.

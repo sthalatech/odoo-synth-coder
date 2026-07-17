@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 import traceback
@@ -50,12 +51,28 @@ def _err(msg: str) -> None:
 def _emit_sink(run_id: str):
     """Return an `emit(line)` callable that prints to stdout AND persists the
     line to the run's log table (mirrors the panel's _worker emit-sink, but
-    synchronous and immediate — no flush thread needed)."""
+    synchronous and immediate — no flush thread needed).
+
+    Never raises: a dead stdout (e.g. the CLI's pipe closed because the
+    foreground process was killed/timeboxed) must NOT abort the run -- the
+    pipeline keeps running on the Coder runner/ECS and the result is still
+    written to the store. BrokenPipeError is swallowed and stdout is rewired
+    to /dev/null so further prints are no-ops instead of raising."""
+    stdout_dead = False
+
     def emit(line: str) -> None:
-        try:
-            print(line, flush=True)
-        except Exception:  # noqa: BLE001 — never let printing kill the run
-            pass
+        nonlocal stdout_dead
+        if not stdout_dead:
+            try:
+                print(line, flush=True)
+            except BrokenPipeError:
+                stdout_dead = True
+                try:
+                    sys.stdout = open(os.devnull, "w")
+                except Exception:  # noqa: BLE001
+                    pass
+            except Exception:  # noqa: BLE001 — never let printing kill the run
+                pass
         try:
             store.append_logs(run_id, [line])
         except Exception:  # noqa: BLE001
@@ -76,6 +93,7 @@ def _run_sync(operation: str, params: dict, profile_id: Optional[str],
     store.update_run(run_id, status="running", started_at=time.time())
     emit = _emit_sink(run_id)
     exit_code = 1
+    result: dict = {}
     try:
         if operation == "discover":
             dres = discovery.run_discovery(params["profile_id"], emit)
@@ -86,16 +104,18 @@ def _run_sync(operation: str, params: dict, profile_id: Optional[str],
         else:
             result = pipeline.run_operation(operation, params, emit)
         exit_code = int(result.get("exit_code", 1) or 1)
-        status = "succeeded" if exit_code == 0 else "failed"
-        store.update_run(
-            run_id,
-            status=status,
-            task_arn=result.get("task_arn"),
-            exit_code=exit_code,
-            result=result,
-            finished_at=time.time(),
-        )
-        _err(f"\n[odoo-synth] run {run_id} -> {status} (exit {exit_code})")
+    except BrokenPipeError:
+        # The CLI's stdout pipe was closed (e.g. the foreground process was
+        # killed/timeboxed). The pipeline keeps running on the runner/ECS and
+        # the op may have completed -- record whatever result we have. If we
+        # never got a result, leave the run "running" so a later `run show`
+        # reflects the true state once the backend finishes.
+        if result:
+            exit_code = int(result.get("exit_code", 1) or 1)
+            status = "succeeded" if exit_code == 0 else "failed"
+            store.update_run(run_id, status=status, task_arn=result.get("task_arn"),
+                             exit_code=exit_code, result=result, finished_at=time.time())
+        return exit_code
     except Exception as exc:  # noqa: BLE001
         emit(f"[odoo-synth] ERROR: {exc}")
         store.update_run(
@@ -105,7 +125,20 @@ def _run_sync(operation: str, params: dict, profile_id: Optional[str],
             finished_at=time.time(),
         )
         _err(f"\n[odoo-synth] run {run_id} -> failed: {exc}")
-        exit_code = 1
+        return 1
+    status = "succeeded" if exit_code == 0 else "failed"
+    store.update_run(
+        run_id,
+        status=status,
+        task_arn=result.get("task_arn"),
+        exit_code=exit_code,
+        result=result,
+        finished_at=time.time(),
+    )
+    try:
+        _err(f"\n[odoo-synth] run {run_id} -> {status} (exit {exit_code})")
+    except BrokenPipeError:
+        pass
     return exit_code
 
 
@@ -162,6 +195,8 @@ def _require_profile(profile_id: str) -> dict:
 def _add_ssh_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--ssh-enabled", action="store_true", default=None,
                    help="enable SSH tunnel to the source")
+    p.add_argument("--no-ssh", dest="ssh_enabled", action="store_false", default=None,
+                   help="disable SSH tunnel (override a profile's stored tunnel for this run)")
     p.add_argument("--ssh-bastion", metavar="USER@HOST[:PORT]", default=None,
                    help="bastion host for the SSH tunnel")
     p.add_argument("--ssh-key", metavar="PATH", default=None,
@@ -460,18 +495,44 @@ def cmd_run_mask(args) -> int:
         if not prof:
             _err(f"profile not found: {args.profile}")
             return 2
+        # Bastion overrides: --ssh-enabled/--ssh-bastion/--ssh-key on the CLI
+        # override the profile's stored SSH tunnel settings. A profile may be
+        # created without a bastion and later run through one (or vice versa).
+        overrides: dict = {"produce_dump": True}
+        if args.ssh_enabled is not None:
+            overrides["ssh_enabled"] = bool(args.ssh_enabled)
+        if args.ssh_bastion is not None:
+            if args.ssh_enabled is None and not (prof.get("source_conn") or {}).get("ssh_enabled"):
+                # --ssh-bastion implies --ssh-enabled if neither was set
+                overrides["ssh_enabled"] = True
+            try:
+                pipeline.parse_bastion(args.ssh_bastion)
+            except Exception as exc:  # noqa: BLE001
+                _err(f"invalid bastion: {exc}")
+                return 2
+            overrides["ssh_bastion"] = args.ssh_bastion
+        if args.ssh_key is not None:
+            overrides["ssh_key"] = _read_ssh_key(args.ssh_key)
+        # consistency check: if SSH ends up enabled, bastion + key must be present
         try:
-            params = profiles.run_params(
-                args.profile, overrides={"produce_dump": True})
+            params = profiles.run_params(args.profile, overrides=overrides)
         except (KeyError, ValueError) as exc:
             _err(f"cannot run profile: {exc}")
             return 2
+        if params.get("ssh_enabled"):
+            if not params.get("ssh_bastion"):
+                _err("SSH tunnel enabled but no bastion set (use --ssh-bastion)")
+                return 2
+            if not params.get("ssh_key"):
+                _err("SSH tunnel enabled but no key set (use --ssh-key)")
+                return 2
         stored = {
             "operation": "mask",
             "profile_id": args.profile,
             "mask_profile": params.get("mask_profile"),
             "source_present": True,
             "ssh_enabled": bool(params.get("ssh_enabled")),
+            "ssh_bastion": params.get("ssh_bastion"),
             "produce_dump": bool(params.get("produce_dump")),
             "odoo_image": prof.get("image_uri"),
         }
@@ -483,6 +544,7 @@ def cmd_run_mask(args) -> int:
             "mask_profile": params.get("mask_profile"),
             "source_present": bool(params.get("source_dsn")),
             "ssh_enabled": bool(params.get("ssh_enabled")),
+            "ssh_bastion": params.get("ssh_bastion"),
             "produce_dump": bool(params.get("produce_dump")),
             "admin_password_set": bool(params.get("admin_password")),
         }
