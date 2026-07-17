@@ -14,7 +14,7 @@ for t in $(aws ecs list-tasks --cluster "$ECS_CLUSTER" --region "$R" --query 'ta
   aws ecs stop-task --cluster "$ECS_CLUSTER" --task "$t" --region "$R" >/dev/null 2>&1 || true
 done
 
-log "deleting ALB + target group ..."
+log "deleting ALB + target group (legacy masked Odoo service) ..."
 ALB_ARN="$(aws elbv2 describe-load-balancers --names "$PROJECT-alb" --region "$R" \
   --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null || true)"
 if [ -n "$ALB_ARN" ] && [ "$ALB_ARN" != "None" ]; then
@@ -31,11 +31,14 @@ TG_ARN="$(aws elbv2 describe-target-groups --names "$PROJECT-tg" --region "$R" \
 [ -n "$TG_ARN" ] && [ "$TG_ARN" != "None" ] && \
   aws elbv2 delete-target-group --target-group-arn "$TG_ARN" --region "$R" >/dev/null 2>&1 || true
 
-log "deleting RDS instance ..."
-if aws rds describe-db-instances --db-instance-identifier "$RDS_INSTANCE_ID" --region "$R" >/dev/null 2>&1; then
+# RDS-free (Phase B): no managed RDS to delete. The masked DB only ever lived
+# transiently inside the masker task; the legacy masked-RDS instance (if one
+# still exists from an older deploy) is best-effort cleaned here.
+if [ -n "${RDS_INSTANCE_ID:-}" ] && \
+   aws rds describe-db-instances --db-instance-identifier "$RDS_INSTANCE_ID" --region "$R" >/dev/null 2>&1; then
   aws rds delete-db-instance --db-instance-identifier "$RDS_INSTANCE_ID" \
     --skip-final-snapshot --delete-automated-backups --region "$R" >/dev/null 2>&1 || true
-  log "waiting for RDS deletion ..."
+  log "waiting for legacy RDS deletion ..."
   aws rds wait db-instance-deleted --db-instance-identifier "$RDS_INSTANCE_ID" --region "$R" 2>/dev/null || true
 fi
 aws rds delete-db-subnet-group --db-subnet-group-name "$PROJECT-subnets" --region "$R" >/dev/null 2>&1 || true

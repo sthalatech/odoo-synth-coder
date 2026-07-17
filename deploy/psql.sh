@@ -1,18 +1,25 @@
 #!/usr/bin/env bash
-# one-off psql runner. Targets the MASKED RDS by default, or the SOURCE RDS when
-# the 3rd arg is 'source'. Usage: bash deploy/psql.sh "SQL" [db] [source|masked]
+# one-off psql runner. Runs `psql` inside a Fargate task (masker image has the
+# client) against a Postgres host you specify via env vars. RDS-free (Phase B):
+# there is no longer a managed masked RDS or a source-stack RDS to target by
+# default, so the host/creds MUST be supplied in the env.
+#
+# Usage: bash deploy/psql.sh "SQL" [db]
+# Required env: PSQL_HOST (or RDS_ENDPOINT/SRC_RDS_ENDPOINT for legacy runs),
+# PSQL_USER, PSQL_PASSWORD. Defaults for user/password/dbname fall back to the
+# shared TARGET_DB_* / SOURCE_DB_* config vars.
 source "$(dirname "$0")/lib.sh"
 : "${EXEC_ARN:?}"
-SQL="${1:?need SQL}"; TARGET="${3:-masked}"
+SQL="${1:?need SQL}"
 
-if [ "$TARGET" = "source" ]; then
-  : "${SRC_RDS_ENDPOINT:?run source/02_rds.sh}"
-  HOST="$SRC_RDS_ENDPOINT"; USER="$SOURCE_DB_MASTER_USER"; PW="$SOURCE_DB_MASTER_PASSWORD"; SG="$SRC_TASK_SG"; CL="$SOURCE_ECS_CLUSTER"; LG="/ecs/$PROJECT-source"
-else
-  : "${RDS_ENDPOINT:?}"
-  HOST="$RDS_ENDPOINT"; USER="$TARGET_DB_USER"; PW="$TARGET_DB_PASSWORD"; SG="$TASK_SG"; CL="$ECS_CLUSTER"; LG="/ecs/$PROJECT"
-fi
-DB="${2:-$TARGET_DB_NAME}"
+HOST="${PSQL_HOST:-${RDS_ENDPOINT:-${SRC_RDS_ENDPOINT:-}}}"
+[ -n "$HOST" ] || { log "ERROR: set PSQL_HOST (no managed RDS to default to)" >&2; exit 1; }
+USER="${PSQL_USER:-$TARGET_DB_USER}"
+PW="${PSQL_PASSWORD:-$TARGET_DB_PASSWORD}"
+DB="${2:-${PSQL_DB:-$TARGET_DB_NAME}}"
+SG="${TASK_SG:?run 03_network.sh}"
+CL="${ECS_CLUSTER}"
+LG="/ecs/$PROJECT"
 B64="$(printf '%s' "$SQL" | base64 -w0)"
 
 python3 - "$PROJECT" "$EXEC_ARN" "$ECR" "$HOST" "$USER" "$PW" "$DB" "$AWS_REGION" "$B64" "$LG" > /tmp/td-psql.json <<'PY'

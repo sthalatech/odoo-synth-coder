@@ -1,9 +1,9 @@
 # odoo-synth control panel
 
 A thin web UI over the existing masking pipeline. It triggers the same AWS
-Fargate tasks the shell scripts run (`deploy/07_mask.sh`,
-`deploy/source/restore_dump.sh`), streams the container's CloudWatch logs live to
-the browser, and shows the source/target Odoo URLs when a run finishes.
+Fargate tasks the shell scripts run (`deploy/07_mask.sh`), streams the
+container's CloudWatch logs live to the browser, and shows the masked-dump
+download link when a run finishes.
 
 ## What it does
 
@@ -12,12 +12,11 @@ One operation: **mask**.
 - **Source** = a live Postgres database you point at with a connection URL
   (`postgresql://user:pass@host:5432/dbname`), entered per run. greenmask dumps
   and masks it directly.
-- **Destination** = always created by us on the configured RDS (resolved
-  server-side from env) and dropped + recreated on each run. You are **not**
-  asked where it goes.
-- **Output** = the masked DB is served by the managed Odoo (target URL). You can
-  optionally tick "produce a downloadable pg_dump of the masked DB" to get a
-  presigned download link in the result.
+- **Destination** = a throwaway in-task postgres (`postgres:16` sidecar in
+  the masker task); no managed RDS. Dropped + recreated on each run. You are
+  **not** asked where it goes.
+- **Output** = a downloadable `pg_dump` of the masked DB (presigned S3 link in
+  the result); each dev environment hydrates its own local DB from it.
 
 All non-infra options are driven by [config.yml](config.yml): the managed
 **destination** (secrets resolved server-side from env vars — never sent to the

@@ -1,24 +1,22 @@
 #!/usr/bin/env bash
-# Full pipeline. The independent SOURCE stack must exist first (deploy/source/run.sh)
-# so the masker has a database to read. RDS + image build are the long poles.
+# Full pipeline. RDS-free (Phase B): no managed RDS; the masker runs a
+# postgres:16 sidecar and restores into a throwaway in-task DB. The persistent
+# artifact is the masked pg_dump in S3. The source DB is the user's prod DSN
+# (set via the control panel per run); image build is the long pole.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # Validate config (config.yaml or legacy config.env) before touching AWS.
 bash deploy/00_validate_config.sh
 bash deploy/01_ecr.sh
 bash deploy/03_network.sh
-bash deploy/04_rds.sh
 bash deploy/05_cluster.sh
 bash deploy/02_build_push.sh
 # Ephemeral-builder IAM (role + instance-profile) used by the profile image
 # build path. One-time, idempotent, account-level — same category as ECR/IAM.
 bash deploy/10_builder.sh
-# Source stack (persistent). Skipped automatically if it already exists.
-if ! grep -q '^SRC_RDS_ENDPOINT=' deploy/state.env 2>/dev/null; then
-  bash deploy/source/run.sh
-fi
+# Mask: dumps+masks the source (prod DSN) -> throwaway in-task postgres ->
+# uploads the masked pg_dump to S3. SOURCE_DB_HOST/creds must be in the env.
 bash deploy/07_mask.sh
-bash deploy/08_odoo_service.sh
 # Developer-environment control plane: Coder server (one EC2) + publish the
 # odoo-synth-env template to it. Requires `coder login` once (interactive).
 bash deploy/11_coder_server.sh
