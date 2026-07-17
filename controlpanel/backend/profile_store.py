@@ -31,7 +31,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ruamel.yaml import YAML
+import yaml
 
 # profiles/ lives at the repo root (one level above controlpanel/).
 _PROFILES_DIR = Path(__file__).resolve().parents[2] / "profiles"
@@ -94,12 +94,28 @@ _NESTED = {
 _NESTED_REV = {v: k for k, v in _NESTED.items()}
 
 
-def _yaml() -> YAML:
-    y = YAML(typ="rt")  # round-trip: preserves comments + literal blocks
-    y.preserve_quotes = True
-    y.width = 1000
-    y.default_flow_style = False
-    return y
+class _LiteralDumper(yaml.SafeDumper):
+    """SafeDumper that emits multi-line strings as literal block scalars
+    (``|``) so masking_rules / odoo_conf_extra stay human-readable, and
+    keeps long strings on one line (no folding)."""
+
+
+def _str_representer(dumper, data):
+    if "\n" in data:
+        return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="|")
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data)
+
+
+_LiteralDumper.add_representer(str, _str_representer)
+
+
+def _dump_yaml(doc: dict, fh) -> None:
+    yaml.dump(doc, fh, Dumper=_LiteralDumper, default_flow_style=False,
+              width=1000, sort_keys=False, allow_unicode=True)
+
+
+def _load_yaml(text: str) -> dict:
+    return yaml.safe_load(text) or {}
 
 
 def _path(profile_id: str) -> Path:
@@ -171,8 +187,7 @@ def _read_raw(profile_id: str) -> dict[str, Any] | None:
     p = _path(profile_id)
     if not p.exists():
         return None
-    y = _yaml()
-    doc = y.load(p.read_text())
+    doc = _load_yaml(p.read_text())
     if doc is None:
         return None
     return _from_yaml_doc(dict(doc))
@@ -183,9 +198,8 @@ def _write(profile_id: str, fields: dict[str, Any]) -> None:
     preserving untouched keys + comments. ``masking_rules`` is emitted as a
     literal block scalar."""
     p = _path(profile_id)
-    y = _yaml()
     if p.exists():
-        doc = y.load(p.read_text()) or {}
+        doc = _load_yaml(p.read_text()) or {}
     else:
         doc = {}
     # apply updates to the nested structure in-place
@@ -203,16 +217,13 @@ def _write(profile_id: str, fields: dict[str, Any]) -> None:
         elif k in _NESTED:
             sec, key = _NESTED[k]
             doc.setdefault(sec, {})[key] = v
-        elif k in ("masking_rules", "odoo_conf_extra") and isinstance(v, str):
-            # literal block scalar for multi-line YAML/text
-            from ruamel.yaml.scalarstring import LiteralScalarString
-            doc[k] = LiteralScalarString(v if v.endswith("\n") else v + "\n")
         else:
+            # pyyaml's _LiteralDumper emits multi-line strings (masking_rules,
+            # odoo_conf_extra) as literal block scalars automatically.
             doc[k] = v
     _PROFILES_DIR.mkdir(parents=True, exist_ok=True)
-    p.write_text("")
     with p.open("w") as fh:
-        y.dump(doc, fh)
+        _dump_yaml(doc, fh)
 
 
 def create_profile(profile_id: str, label: str, **fields: Any) -> None:

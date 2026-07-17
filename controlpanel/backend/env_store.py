@@ -20,32 +20,44 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ruamel.yaml import YAML
+import yaml
 
 _ENVS_PATH = Path(__file__).resolve().parent / "envs.yaml"
 _LOCK = threading.Lock()
 
 
-def _yaml() -> YAML:
-    y = YAML(typ="rt")
-    y.preserve_quotes = True
-    y.width = 1000
-    y.default_flow_style = False
-    return y
+class _LiteralDumper(yaml.SafeDumper):
+    pass
+
+
+def _str_representer(dumper, data):
+    if "\n" in data:
+        return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="|")
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data)
+
+
+_LiteralDumper.add_representer(str, _str_representer)
+
+
+def _load_yaml(text: str) -> dict:
+    return yaml.safe_load(text) or {}
+
+
+def _dump_yaml(doc: dict, fh) -> None:
+    yaml.dump(doc, fh, Dumper=_LiteralDumper, default_flow_style=False,
+              width=1000, sort_keys=False, allow_unicode=True)
 
 
 def _read() -> dict[str, dict[str, Any]]:
     if not _ENVS_PATH.exists():
         return {}
-    y = _yaml()
-    doc = y.load(_ENVS_PATH.read_text()) or {}
+    doc = _load_yaml(_ENVS_PATH.read_text())
     return dict(doc)
 
 
 def _write(envs: dict[str, dict[str, Any]]) -> None:
-    y = _yaml()
     with _ENVS_PATH.open("w") as fh:
-        y.dump(envs, fh)
+        _dump_yaml(envs, fh)
 
 
 def create_environment(env_id: str, source_run_id: str | None, issue: str | None,
