@@ -36,6 +36,26 @@ def _hcl_string(s: str) -> str:
     return s.replace("\\", "\\\\").replace('"', '\\"')
 
 
+def _strip_empty_values(text: str) -> str:
+    """Drop ``key =`` lines whose value is empty (nothing after ``=``).
+
+    Keeps comments, blank lines, and any key with a non-empty value (values
+    may contain spaces or ``=``). See the call site for why this is needed.
+    """
+    import re
+    out = []
+    for ln in text.splitlines():
+        # ``key =`` with only whitespace after the = -> skip
+        if re.match(r"^\s*[A-Za-z0-9_.]+\s*=\s*$", ln):
+            continue
+        out.append(ln)
+    # preserve a single trailing newline if the input had one
+    res = "\n".join(out)
+    if text.endswith("\n") and out:
+        res += "\n"
+    return res
+
+
 def _latest_mask_dump(profile_id: str) -> str | None:
     """S3 URI of the masked dump from the most recent succeeded mask run for a
     profile, or None if there isn't one yet.
@@ -73,7 +93,15 @@ def main() -> int:
         dump_uri = _latest_mask_dump(p["id"])
         if not dump_uri:
             continue
-        conf_extra = p.get("odoo_conf_extra") or ""
+        # Strip ``key =`` lines with empty values: Odoo's config parser
+        # type-checks every option, and an empty string fails for int/bool
+        # options (e.g. ``limit_time_real_cron =`` aborts startup with
+        # ``invalid integer value: ''`` before any addon runs). Discovery seeds
+        # these as placeholders for keys the source DB reads; an empty value
+        # is no help to addons (they read config via dict lookup, which returns
+        # None/default when the key is absent) and it crashes Odoo. Keep lines
+        # with a real value, comments, and blanks.
+        conf_extra = _strip_empty_values(p.get("odoo_conf_extra") or "")
         conf_b64 = base64.b64encode(conf_extra.encode()).decode()
         label = (p.get("label") or p["id"]).strip() or p["id"]
         desc = (p.get("description") or f"Profile {p['id']}").strip()

@@ -48,11 +48,28 @@ CONF
 # Per-profile extra odoo.conf options (base64-encoded newline-delimited
 # key = value lines). Some source deployments read custom config keys from
 # odoo.conf (e.g. an SSO addon doing config['sso_api_secret']); without the key
-# defined, Odoo raises KeyError and the page 500s. Injecting the keys (even
-# empty) lets those addons load in the masked dev replica.
+# defined, Odoo raises KeyError and the page 500s. Injecting a key WITH A VALUE
+# lets those addons load in the masked dev replica.
+#
+# IMPORTANT: lines with an empty value (``key =``) are STRIPPED here. Odoo's
+# config parser type-checks every option (int/bool/string), and an empty string
+# fails for typed options -- e.g. ``limit_time_real_cron =`` aborts startup
+# with ``invalid integer value: ''`` before any addon runs. An empty placeholder
+# never helped addons anyway: addons read config via ``config['key']`` (a dict
+# lookup that returns None/default if the key is absent), so omitting an empty
+# key is equivalent to present-but-empty for addon code, and it keeps Odoo
+# booting. Discovery seeds these placeholders; the generator + this filter drop
+# them at render time.
 if [ -n "${ODOO_CONF_EXTRA_B64:-}" ]; then
   echo "[odoo] appending profile odoo.conf extras"
-  printf '%s' "${ODOO_CONF_EXTRA_B64}" | base64 -d >> /etc/odoo/odoo.conf 2>/dev/null \
+  # Decode + drop lines whose value is empty (``key =`` with nothing after =).
+  # Odoo's config parser type-checks every option, and an empty string fails
+  # for int/bool options (e.g. ``limit_time_real_cron =`` -> crash). Keep
+  # comments, blank lines, and any key with a non-empty value. Use sed (not
+  # awk word-splitting) so values containing spaces / = survive intact.
+  printf '%s' "${ODOO_CONF_EXTRA_B64}" | base64 -d 2>/dev/null \
+    | sed -E '/^[[:space:]]*[A-Za-z0-9_.]+[[:space:]]*=[[:space:]]*$/d' \
+    >> /etc/odoo/odoo.conf 2>/dev/null \
     || echo "[odoo] WARN: could not decode ODOO_CONF_EXTRA_B64"
 fi
 
