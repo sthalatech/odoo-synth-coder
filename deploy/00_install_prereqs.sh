@@ -137,6 +137,10 @@ cat <<'NEXT'
 
 == Prerequisites installed. Next steps ==
 
+These steps set up the CLI to run against an EXISTING deployment (no AWS infra
+is provisioned). To stand the stack up in a fresh AWS account instead, run
+`bash deploy/run_all.sh` (see README.md "Deploy the full pipeline").
+
 1. Authenticate to AWS (one of):
      aws configure                       # interactive; writes ~/.aws/credentials
    OR export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_REGION

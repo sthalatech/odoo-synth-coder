@@ -24,9 +24,13 @@ prod DB ──mask──▶ masked pg_dump in S3 ──build──▶ ECR image 
 | `config.yaml` | The single source of truth (gitignored — secrets). |
 | `deploy/state.env` | AWS resource ids/endpoints resolved by the deploy scripts (gitignored). |
 
-## Quick start
+## Quick start: run the CLI locally
 
-### 1. Install prerequisites (local machine)
+You want this if the AWS stack is **already deployed** and you just want to run
+`./cli/odoo-synth` from your machine against it. This installs local tools and
+config only — it does **not** provision or modify any AWS infrastructure.
+
+### 1. Install prerequisites
 
 ```bash
 bash deploy/00_install_prereqs.sh
@@ -58,11 +62,12 @@ $EDITOR config.yaml      # fill in: aws.region, odoo.git_ref, addons.*,
 real secrets. Any value can be delegated to an env var or SSM Parameter Store
 via `{ ref: env:VAR }` or `{ ref: ssm:/path }` instead of inlining it.
 
-### 4. (Connecting to an existing deployment from a new machine)
+### 4. Point at the existing deployment
 
 Copy `deploy/state.env` from the deploy host. It carries the resolved AWS
 resource ids (AMI, subnets, SGs, Coder URL, ECR repo, etc.) the CLI overlays on
-`config.yaml`. If you're deploying fresh, `deploy/run_all.sh` writes it.
+`config.yaml`. **The CLI needs this to find the deployed resources.**
+(`deploy/run_all.sh` writes it during a fresh deploy — see the next section.)
 
 ### 5. Log into Coder (for build / env / run commands)
 
@@ -88,7 +93,14 @@ bash deploy/00_validate_config.sh    # checks config + AWS auth + CLI tools
 ./cli/odoo-synth profile list        # smoke test
 ```
 
-## Deploy the full pipeline (fresh AWS)
+---
+
+## Deploy the full pipeline to fresh AWS
+
+You want this **only** if you're standing the stack up in an AWS account for the
+first time (or rebuilding it). It provisions real infrastructure — ECR, VPC
+security groups, ECS clusters, the Coder server, etc. **Do not run this just to
+use the CLI locally** — for that, use the Quick start above.
 
 ```bash
 bash deploy/run_all.sh
@@ -96,7 +108,10 @@ bash deploy/run_all.sh
 
 Runs, in order: install prereqs → validate config → ECR → network → ECS cluster
 → build+push base Odoo image → builder IAM → mask source DB → Coder server →
-publish both Coder templates (`odoo-synth-env` and `odoo-synth-builder`).
+publish both Coder templates (`odoo-synth-env` and `odoo-synth-builder`). It
+writes `deploy/state.env` along the way, so afterwards you can run the CLI
+locally using the Quick-start steps (skipping step 4 — state.env already
+exists).
 
 Requires `coder login` once (interactive) before the publish step.
 
