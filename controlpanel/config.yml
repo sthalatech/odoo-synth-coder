@@ -4,8 +4,9 @@
 # Model:
 #   * SOURCE  = a live Postgres database the user points at (a connection URL/DSN
 #               entered per run). greenmask dumps + masks it directly.
-#   * DESTINATION = always (re)created by us on the configured RDS (resolved
-#               server-side from env). The user is NOT asked where it goes.
+#   * DESTINATION = always (re)created by us inside a throwaway in-task
+#               postgres (postgres:16 sidecar); no managed RDS. The user is NOT
+#               asked where it goes.
 #   * OUTPUT  = optionally also produce a downloadable pg_dump of the masked DB.
 
 aws:
@@ -14,11 +15,13 @@ aws:
   dump_s3_bucket_env: DUMP_S3_BUCKET
   dump_s3_prefix: masked-dumps
 
-# The masked destination DB (created on RDS). Host/creds resolved server-side
-# from these env vars; never shown to or entered by the user.
+# The masked destination DB. Phase B (RDS removal): there is no managed RDS --
+# the masker runs a postgres:16 sidecar and restores into a throwaway in-task
+# DB on 127.0.0.1 (the host is supplied by the masker task, not resolved here).
+# The Coder runner path ignores this entirely (its own local runner-db). The
+# legacy ECS path uses these creds for the sidecar; host is left blank.
 destination:
-  label: "Masked RDS (managed)"
-  host_env: RDS_ENDPOINT
+  label: "Masked DB (ephemeral in-task postgres)"
   port: 5432
   dbname_env: TARGET_DB_NAME
   user_env: TARGET_DB_USER

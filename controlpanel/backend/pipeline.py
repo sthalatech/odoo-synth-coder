@@ -434,26 +434,60 @@ def _mask_env_pairs(src: dict, tgt: dict, params: dict,
 def _register_mask_taskdef(ecs, src: dict, tgt: dict, params: dict,
                            masked_dump_put_url: Optional[str],
                            mask_rules_url: Optional[str] = None) -> tuple[str, str, str, str]:
+    """Register the legacy ECS masker task. Phase B (RDS removal): the task now
+    runs TWO containers in one awsvpc task -- a postgres:16 sidecar (`target-db`)
+    and the masker -- so the masker restores into a throwaway local postgres on
+    127.0.0.1 instead of a managed RDS. `tgt` provides user/password/dbname for
+    the sidecar; tgt["host"] is ignored (overridden to 127.0.0.1)."""
     proj = config.require("PROJECT")
     family = f"{proj}-mask"
     log_group = f"/ecs/{proj}"
     prefix, container = "mask", "masker"
 
-    env_pairs = _mask_env_pairs(src, tgt, params, masked_dump_put_url, mask_rules_url)
+    # masker env: same as the shared builder, but the target host is the sidecar.
+    tgt_local = dict(tgt, host="127.0.0.1")
+    env_pairs = _mask_env_pairs(src, tgt_local, params, masked_dump_put_url, mask_rules_url)
     env = [{"name": k, "value": str(v)} for k, v in env_pairs]
 
+    # bump task CPU/mem to fit postgres + masker (2x the configured task size).
+    cpu = str(int(config.get("TASK_CPU", "1024")) * 2)
+    mem = str(int(config.get("TASK_MEM", "2048")) * 2)
+
+    pg_env = [
+        {"name": "POSTGRES_PASSWORD", "value": str(tgt.get("password") or "")},
+        {"name": "POSTGRES_USER", "value": str(tgt.get("user") or "")},
+        {"name": "POSTGRES_DB", "value": "postgres"},
+    ]
     ecs.register_task_definition(
         family=family,
         networkMode="awsvpc",
         requiresCompatibilities=["FARGATE"],
-        cpu=config.get("TASK_CPU", "1024"),
-        memory=config.get("TASK_MEM", "2048"),
+        cpu=cpu,
+        memory=mem,
         executionRoleArn=config.require("EXEC_ARN"),
         containerDefinitions=[
+            {
+                "name": "target-db",
+                "image": "postgres:16",
+                "environment": pg_env,
+                "healthCheck": {
+                    "command": ["CMD-SHELL", f"pg_isready -U {tgt.get('user') or ''}"],
+                    "interval": 5, "timeout": 3, "retries": 10, "startPeriod": 10,
+                },
+                "logConfiguration": {
+                    "logDriver": "awslogs",
+                    "options": {
+                        "awslogs-group": log_group,
+                        "awslogs-region": _region(),
+                        "awslogs-stream-prefix": "mask-pg",
+                    },
+                },
+            },
             {
                 "name": container,
                 "image": f"{_ecr()}/{proj}/masker:latest",
                 "environment": env,
+                "dependsOn": [{"containerName": "target-db", "condition": "HEALTHY"}],
                 "logConfiguration": {
                     "logDriver": "awslogs",
                     "options": {
@@ -462,7 +496,7 @@ def _register_mask_taskdef(ecs, src: dict, tgt: dict, params: dict,
                         "awslogs-stream-prefix": prefix,
                     },
                 },
-            }
+            },
         ],
     )
     return family, container, log_group, prefix
@@ -505,8 +539,22 @@ def _tail_until_stopped(ecs, logs, cluster, task_arn, log_group, log_stream, emi
                 if t.get("lastStatus") == "STOPPED":
                     stopped = True
                     conts = t.get("containers", [])
-                    if conts and conts[0].get("exitCode") is not None:
-                        exit_code = conts[0]["exitCode"]
+                    # Two-container mask task: pick the masker's exit code, not
+                    # the postgres sidecar's (meaningless). Fall back to the
+                    # last container with an exitCode, then conts[0].
+                    masker = [c for c in conts if c.get("name") == "masker"]
+                    picked = None
+                    if masker and masker[0].get("exitCode") is not None:
+                        picked = masker[0]
+                    else:
+                        for c in reversed(conts):
+                            if c.get("exitCode") is not None:
+                                picked = c
+                                break
+                        if picked is None and conts:
+                            picked = conts[0]
+                    if picked is not None and picked.get("exitCode") is not None:
+                        exit_code = picked["exitCode"]
                     reason = t.get("stoppedReason")
                     if reason:
                         emit(f"[task stopped] {reason}")
@@ -543,8 +591,9 @@ def run_operation(operation: str, params: dict, emit: LogSink) -> dict:
     # so the RDS destination is no longer required for the Coder path. We still
     # resolve it for the legacy ECS path (which needs a real target).
     tgt = config.destination()
-    if not use_coder and not tgt.get("host"):
-        raise RuntimeError("destination not configured (check RDS_ENDPOINT / config.yml)")
+    if not use_coder and not (tgt.get("user") and tgt.get("password") and tgt.get("dbname")):
+        raise RuntimeError("destination not configured (set TARGET_DB_USER / "
+                           "TARGET_DB_PASSWORD / TARGET_DB_NAME in config)")
 
     # The masked pg_dump is the PRIMARY artifact: each env hydrates its own
     # local DB from it (see odoo-synth-env main.tf). Always produce it unless
@@ -579,9 +628,6 @@ def run_operation(operation: str, params: dict, emit: LogSink) -> dict:
         emit(f"[panel] runner exited with code {exit_code}")
         result: dict = {"task_arn": rr.get("task_arn"), "exit_code": exit_code}
         if exit_code == 0:
-            alb = config.get("ALB_DNS")
-            if alb:
-                result["target_url"] = f"http://{alb}/web/login"
             if masked_dump_get_url:
                 result["masked_dump_url"] = masked_dump_get_url
             if masked_dump_s3_uri:
@@ -630,9 +676,6 @@ def run_operation(operation: str, params: dict, emit: LogSink) -> dict:
 
     result: dict = {"task_arn": task_arn, "exit_code": exit_code}
     if exit_code == 0:
-        alb = config.get("ALB_DNS")
-        if alb:
-            result["target_url"] = f"http://{alb}/web/login"
         if masked_dump_get_url:
             result["masked_dump_url"] = masked_dump_get_url
         if masked_dump_s3_uri:
