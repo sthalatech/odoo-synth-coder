@@ -277,13 +277,13 @@ resource "coder_agent" "main" {
       done
     fi
 
-    # --- mask phase: a local postgres target (no shared RDS) --------------
-    # Option E isolation: each mask run restores into a THROWAWAY local
-    # postgres container on this workspace VM, not the shared managed RDS. The
-    # masker neutralizes + prunes there, then pg_dumps it out as the artifact
-    # envs hydrate from (MASKED_DUMP_PUT_URL). So no two envs share a DB, and
-    # re-masking never clobbers another environment. TARGET_DB_* from the panel
-    # (the RDS values) are overridden here and ignored for mask.
+    # --- mask phase: a local postgres target (no shared DB) ---------------
+    # Each mask run restores into a THROWAWAY local postgres container on this
+    # workspace VM. The masker neutralizes + prunes there, then pg_dumps it out
+    # as the artifact envs hydrate from (MASKED_DUMP_PUT_URL). So no two envs
+    # share a DB, and re-masking never clobbers another environment. The
+    # TARGET_DB_* from the panel are overridden here to point at this local
+    # container and ignored for mask.
     if [ "$PHASE" = "mask" ]; then
       echo "[runner] starting local postgres target for mask ..."
       docker rm -f runner-db >/dev/null 2>&1 || true

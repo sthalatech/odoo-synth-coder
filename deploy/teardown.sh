@@ -31,17 +31,8 @@ TG_ARN="$(aws elbv2 describe-target-groups --names "$PROJECT-tg" --region "$R" \
 [ -n "$TG_ARN" ] && [ "$TG_ARN" != "None" ] && \
   aws elbv2 delete-target-group --target-group-arn "$TG_ARN" --region "$R" >/dev/null 2>&1 || true
 
-# RDS-free (Phase B): no managed RDS to delete. The masked DB only ever lived
-# transiently inside the masker task; the legacy masked-RDS instance (if one
-# still exists from an older deploy) is best-effort cleaned here.
-if [ -n "${RDS_INSTANCE_ID:-}" ] && \
-   aws rds describe-db-instances --db-instance-identifier "$RDS_INSTANCE_ID" --region "$R" >/dev/null 2>&1; then
-  aws rds delete-db-instance --db-instance-identifier "$RDS_INSTANCE_ID" \
-    --skip-final-snapshot --delete-automated-backups --region "$R" >/dev/null 2>&1 || true
-  log "waiting for legacy RDS deletion ..."
-  aws rds wait db-instance-deleted --db-instance-identifier "$RDS_INSTANCE_ID" --region "$R" 2>/dev/null || true
-fi
-aws rds delete-db-subnet-group --db-subnet-group-name "$PROJECT-subnets" --region "$R" >/dev/null 2>&1 || true
+# RDS-free (Phase B): no managed RDS to delete. The masked/source DBs only
+# ever lived transiently inside the masker task or workspace-local postgres.
 
 log "deregistering task definitions ..."
 for fam in seed mask odoo psql verify users; do
@@ -55,9 +46,9 @@ log "deleting ECS cluster ..."
 aws ecs delete-cluster --cluster "$ECS_CLUSTER" --region "$R" >/dev/null 2>&1 || true
 
 log "deleting security groups ..."
-# RDS/task/alb order matters (dependencies); retry a couple times.
+# task/alb order matters (dependencies); retry a couple times.
 for pass in 1 2 3; do
-  for name in "$PROJECT-rds-sg" "$PROJECT-task-sg" "$PROJECT-alb-sg"; do
+  for name in "$PROJECT-task-sg" "$PROJECT-alb-sg"; do
     id="$(sg_id "$name")"
     [ -n "$id" ] && [ "$id" != "None" ] && \
       aws ec2 delete-security-group --group-id "$id" --region "$R" >/dev/null 2>&1 || true

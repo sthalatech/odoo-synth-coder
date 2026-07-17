@@ -197,10 +197,10 @@ def _resolve_conn(c: dict) -> dict:
 
 
 def destination() -> dict:
-    """The masked destination DB creds (user/password/dbname). Phase B (RDS
-    removal): there is no managed RDS -- the masker runs a postgres:16 sidecar
-    and the host is supplied by the task (127.0.0.1), so `host` is typically
-    empty here. Returns an empty host when RDS_ENDPOINT is unset (resilient)."""
+    """The masked destination DB creds (user/password/dbname). RDS-free (Phase
+    B): the masker runs a throwaway in-task postgres and the host is supplied
+    by the task (127.0.0.1), so `host` is typically empty here. Returns an
+    empty host when no host env var is set (resilient)."""
     d = panel().get("destination", {}) or {}
     return _resolve_conn(d)
 

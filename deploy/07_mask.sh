@@ -11,20 +11,13 @@
 # SOURCE: a real source DB must be configured. The primary profile flow points
 # the masker at the user's prod DSN directly (handled by the control panel);
 # this operator-run script reads SOURCE_DB_HOST from the env (set by the
-# caller). For backward compat, if the legacy source-stack endpoint
-# (SRC_RDS_ENDPOINT) or masked RDS endpoint (RDS_ENDPOINT) is present in state,
-# it is used (legacy compat). Otherwise the caller must export SOURCE_DB_HOST / creds.
+# caller). RDS-free (Phase B): there is no managed source/masked RDS to fall
+# back to, so the caller must export SOURCE_DB_HOST + creds.
 source "$(dirname "$0")/lib.sh"
 : "${EXEC_ARN:?run 05_cluster.sh}"
 
-# Resolve a source host: explicit SOURCE_DB_HOST wins, then the source stack,
-# then the legacy masked RDS endpoint (backward compat).
-SRC_HOST="${SOURCE_DB_HOST:-${SRC_RDS_ENDPOINT:-${RDS_ENDPOINT:-}}}"
-[ -n "$SRC_HOST" ] || {
-  log "ERROR: source DB not configured. Export" >&2
-  log "       SOURCE_DB_HOST (+ SOURCE_DB_USER/PASSWORD/NAME) pointing at your prod DSN." >&2
-  exit 1
-}
+: "${SOURCE_DB_HOST:?ERROR: export SOURCE_DB_HOST (+ SOURCE_DB_USER/PASSWORD/NAME) pointing at your source DB}"
+SRC_HOST="$SOURCE_DB_HOST"
 SRC_USER="${SOURCE_DB_MASTER_USER:-$TARGET_DB_USER}"
 SRC_PW="${SOURCE_DB_MASTER_PASSWORD:-$TARGET_DB_PASSWORD}"
 SRC_NAME="${SOURCE_DB_NAME:-source}"

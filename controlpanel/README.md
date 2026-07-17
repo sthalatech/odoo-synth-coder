@@ -17,7 +17,7 @@ the panel tracked survives across CLI invocations.
 ## Install
 
 ```bash
-cli/install.sh                       # symlinks /usr/local/bin/odoo-synth -> cli/odoo-synth
+bash deploy/00_install_prereqs.sh    # installs tools + symlinks odoo-synth onto PATH
 # or, manually:
 sudo ln -sf /home/exedev/odoo-synth-coder/cli/odoo-synth /usr/local/bin/odoo-synth
 ```

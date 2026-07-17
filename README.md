@@ -89,8 +89,8 @@ proceed without enterprise and emit a NOTE.
 
 ```bash
 bash deploy/00_validate_config.sh    # checks config + AWS auth + CLI tools
-./cli/odoo-synth config              # prints resolved infra summary
-./cli/odoo-synth profile list        # smoke test
+odoo-synth config                    # prints resolved infra summary
+odoo-synth profile list              # smoke test
 ```
 
 ---

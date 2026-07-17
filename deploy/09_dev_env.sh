@@ -63,16 +63,9 @@ fi
 put_state ENV_SG_ID "$ENV_SG_ID"
 log "env SG=$ENV_SG_ID (egress-only; Coder tunnel brokers access)"
 
-# Option E Phase 3: the runner workspaces (mask + discovery) assume the env SG,
-# and the masker must reach the managed RDS (TARGET). The RDS SG was opened to
-# the ECS TASK_SG in 03_network.sh; also allow the env SG so runner workspaces
-# can connect (idempotent). RDS_SG is sourced from deploy/state.env.
-if [ -n "${RDS_SG:-}" ] && [ "${RDS_SG:-}" != "None" ]; then
-  aws ec2 authorize-security-group-ingress --region "$AWS_REGION" \
-    --group-id "$RDS_SG" --protocol tcp --port 5432 --source-group "$ENV_SG_ID" \
-    >/dev/null 2>&1 || true
-  log "RDS SG ingress: 5432 from env SG $ENV_SG_ID (for runner workspaces)"
-fi
+# RDS-free (Phase B): no managed RDS, so no DB ingress is opened here. Runner
+# workspaces (mask + discovery) restore into a throwaway local postgres
+# container on the workspace VM itself.
 
 # a subnet for launches (first default subnet)
 ENV_SUBNET_ID="$(subnet_ids | awk '{print $1}')"

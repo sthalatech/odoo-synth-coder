@@ -3,8 +3,9 @@
 Single operation: **mask**.
   * SOURCE      = a live Postgres DB the user points at (a connection URL/DSN).
                   greenmask dumps + masks it directly.
-  * DESTINATION = the managed masked DB on RDS (from config, resolved server-side).
-                  Always dropped + recreated by the masker.
+  * DESTINATION = the masked DB. RDS-free (Phase B): the masker restores into
+                  a throwaway in-task postgres on 127.0.0.1 (from config, the
+                  host is supplied by the task). Always dropped + recreated.
   * OUTPUT      = optionally a downloadable pg_dump of the masked DB (uploaded to
                   S3 via a presigned PUT; a presigned GET is returned to the UI).
 
@@ -584,12 +585,12 @@ def run_operation(operation: str, params: dict, emit: LogSink) -> dict:
         raise ValueError("source database URL (postgresql://…) is required")
     src = parse_dsn(dsn)
 
-    # DESTINATION (Option E): mask restores into a THROWAWAY local postgres on
-    # the runner workspace (see odoo-synth-runner main.tf), NOT the shared RDS,
-    # so no two envs share a DB and re-masking never clobbers another env. The
-    # runner overrides TARGET_DB_* to point at its local `runner-db` container,
-    # so the RDS destination is no longer required for the Coder path. We still
-    # resolve it for the legacy ECS path (which needs a real target).
+    # DESTINATION: mask restores into a THROWAWAY local postgres on the
+    # runner workspace (see odoo-synth-runner main.tf) -- no shared DB, so no
+    # two envs share one and re-masking never clobbers another env. The runner
+    # overrides TARGET_DB_* to point at its local `runner-db` container. We
+    # still resolve the destination creds for the legacy ECS path (which needs
+    # a real target user/password/dbname).
     tgt = config.destination()
     if not use_coder and not (tgt.get("user") and tgt.get("password") and tgt.get("dbname")):
         raise RuntimeError("destination not configured (set TARGET_DB_USER / "

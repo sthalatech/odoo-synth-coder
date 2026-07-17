@@ -5,15 +5,14 @@
 # default, so the host/creds MUST be supplied in the env.
 #
 # Usage: bash deploy/psql.sh "SQL" [db]
-# Required env: PSQL_HOST (or RDS_ENDPOINT/SRC_RDS_ENDPOINT for legacy runs),
-# PSQL_USER, PSQL_PASSWORD. Defaults for user/password/dbname fall back to the
-# shared TARGET_DB_* / SOURCE_DB_* config vars.
+# Required env: PSQL_HOST, PSQL_USER, PSQL_PASSWORD. Defaults for
+# user/password/dbname fall back to the shared TARGET_DB_* config vars.
 source "$(dirname "$0")/lib.sh"
 : "${EXEC_ARN:?}"
 SQL="${1:?need SQL}"
 
-HOST="${PSQL_HOST:-${RDS_ENDPOINT:-${SRC_RDS_ENDPOINT:-}}}"
-[ -n "$HOST" ] || { log "ERROR: set PSQL_HOST (no managed RDS to default to)" >&2; exit 1; }
+: "${PSQL_HOST:?ERROR: export PSQL_HOST (no managed RDS to default to)}"
+HOST="$PSQL_HOST"
 USER="${PSQL_USER:-$TARGET_DB_USER}"
 PW="${PSQL_PASSWORD:-$TARGET_DB_PASSWORD}"
 DB="${2:-${PSQL_DB:-$TARGET_DB_NAME}}"

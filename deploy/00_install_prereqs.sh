@@ -159,8 +159,25 @@ is provisioned). To stand the stack up in a fresh AWS account instead, run
 4. (Optional) Drop enterprise addons at odoo/enterprise.zip
    (only if a profile has needs_enterprise=1)
 
-5. Validate + run:
+5. Validate + run (odoo-synth is now on your PATH):
      bash deploy/00_validate_config.sh
-     ./cli/odoo-synth config
-     ./cli/odoo-synth profile list
+     odoo-synth config
+     odoo-synth profile list
 NEXT
+
+# ----------------------------------------------------------------------------
+# 7. put the CLI on PATH (symlink) -- formerly cli/install.sh
+# ----------------------------------------------------------------------------
+log "linking odoo-synth onto PATH ..."
+CLI_BIN="$HERE/cli/odoo-synth"
+LINK="${ODOO_SYNTH_LINK:-/usr/local/bin/odoo-synth}"
+if [ -x "$CLI_BIN" ]; then
+  if [ -w "$(dirname "$LINK")" ]; then
+    ln -sf "$CLI_BIN" "$LINK"
+  else
+    sudo ln -sf "$CLI_BIN" "$LINK"
+  fi
+  log "linked $LINK -> $CLI_BIN"
+else
+  log "WARN: $CLI_BIN not executable; skipped PATH symlink" >&2
+fi
