@@ -1,15 +1,16 @@
-"""ECS/Fargate orchestration via boto3.
+"""Mask orchestration: run the masker as a Coder runner workspace.
 
 Single operation: **mask**.
   * SOURCE      = a live Postgres DB the user points at (a connection URL/DSN).
                   greenmask dumps + masks it directly.
-  * DESTINATION = the masked DB. RDS-free (Phase B): the masker restores into
-                  a throwaway in-task postgres on 127.0.0.1 (from config, the
-                  host is supplied by the task). Always dropped + recreated.
+  * DESTINATION = the masked DB. RDS-free: the masker restores into a throwaway
+                  local postgres on the runner workspace (see odoo-synth-runner
+                  main.tf). Always dropped + recreated.
   * OUTPUT      = optionally a downloadable pg_dump of the masked DB (uploaded to
                   S3 via a presigned PUT; a presigned GET is returned to the UI).
 
-Runs the masker Fargate task in-process so we can tail its CloudWatch logs live.
+The masker runs as a Coder runner workspace; the panel tails `coder logs -f`
+live into the run log and polls S3 for the runner-result.json marker.
 """
 from __future__ import annotations
 import json
@@ -26,19 +27,11 @@ from . import config
 LogSink = Callable[[str], None]
 
 # Option E, Phase 3: the mask + discovery single-container workloads run as
-# Coder workspaces from the odoo-synth-runner template (not ECS Fargate). The
+# Coder workspaces from the odoo-synth-runner template. The
 # panel keeps orchestration: it builds the same env-var dict, writes it to S3 as
 # an env-file, presigns a result PUT URL, launches the workspace, tails its
 # logs live, and polls S3 for the result marker -- exactly like the build.
 RUNNER_TEMPLATE = "odoo-synth-runner"
-
-
-def _use_coder() -> bool:
-    """True if mask/discovery should run as Coder workspaces (the
-    odoo-synth-runner template) instead of ECS Fargate. Enabled when the Coder
-    control plane is configured."""
-    s = config.environments_settings()
-    return bool(s.get("coder_url") and s.get("coder_session_token"))
 
 
 def _require_coder() -> None:
@@ -71,37 +64,6 @@ def _coder_env() -> dict:
 
 def _region() -> str:
     return config.require("AWS_REGION")
-
-
-def _clients():
-    r = _region()
-    return (
-        boto3.client("ecs", region_name=r),
-        boto3.client("ec2", region_name=r),
-        boto3.client("logs", region_name=r),
-    )
-
-
-def _default_subnets(ec2) -> list[str]:
-    vpcs = ec2.describe_vpcs(Filters=[{"Name": "isDefault", "Values": ["true"]}])["Vpcs"]
-    vpc_id = vpcs[0]["VpcId"]
-    subs = ec2.describe_subnets(
-        Filters=[
-            {"Name": "vpc-id", "Values": [vpc_id]},
-            {"Name": "default-for-az", "Values": ["true"]},
-        ]
-    )["Subnets"]
-    return [s["SubnetId"] for s in subs]
-
-
-def _net_config(ec2, sg: str) -> dict:
-    return {
-        "awsvpcConfiguration": {
-            "subnets": _default_subnets(ec2),
-            "securityGroups": [sg],
-            "assignPublicIp": "ENABLED",
-        }
-    }
 
 
 def _ecr() -> str:
@@ -265,7 +227,7 @@ def _launch_runner(image_uri: str, env_file_get_url: str, env_keys: list[str],
     if missing:
         raise RuntimeError(
             f"runner launch settings missing from config: {', '.join(missing)}. "
-            "These come from deploy/state.env (written by deploy/03_network.sh "
+            "These come from deploy/state.env (written by deploy/11_coder_server.sh "
             "and 09_dev_env.sh): ENV_SG_ID, ENV_SUBNET_ID, ENV_INSTANCE_PROFILE. "
             "Source deploy/state.env before running, or run the deploy pipeline "
             "first.")
@@ -409,202 +371,6 @@ def run_runner(image_name: str, env_pairs: list[tuple[str, object]],
 # ---------------------------------------------------------------------------
 # mask task definition
 # ---------------------------------------------------------------------------
-
-def _mask_env_pairs(src: dict, tgt: dict, params: dict,
-                    masked_dump_put_url: Optional[str],
-                    mask_rules_url: Optional[str] = None) -> list[tuple[str, str]]:
-    """Build the masker's environment as a list of (KEY, VAL) pairs. Shared by
-    the ECS path (_register_mask_taskdef) and the Coder runner path (the env
-    is written to S3 as an env-file). Values are stringified exactly as the
-    ECS container env expects them."""
-    nd = config.neutralize_defaults()
-
-    def flag(key: str, default: bool) -> str:
-        v = params.get(key, default)
-        return "true" if v else "false"
-
-    env = [
-        ("SOURCE_DB_HOST", src["host"]),
-        ("SOURCE_DB_PORT", src["port"]),
-        ("SOURCE_DB_NAME", src["dbname"]),
-        ("SOURCE_DB_USER", src["user"]),
-        ("SOURCE_DB_PASSWORD", src["password"]),
-        ("TARGET_DB_HOST", tgt["host"]),
-        ("TARGET_DB_PORT", tgt["port"]),
-        ("TARGET_DB_NAME", tgt["dbname"]),
-        ("TARGET_DB_USER", tgt["user"]),
-        ("TARGET_DB_PASSWORD", tgt["password"]),
-        ("ODOO_ADMIN_PASSWORD", params.get("admin_password")
-         or config.get("ODOO_ADMIN_PASSWORD", "admin")),
-        ("MASK_PROFILE", params.get("mask_profile") or "odoo-core-pii"),
-        ("GM_JOBS", params.get("gm_jobs") or nd.get("gm_jobs", 4)),
-        ("NEUTRALIZE_MAIL", flag("neutralize_mail", nd.get("mail", True))),
-        ("NEUTRALIZE_FETCHMAIL", flag("neutralize_fetchmail", nd.get("fetchmail", True))),
-        ("NEUTRALIZE_PAYMENT", flag("neutralize_payment", nd.get("payment", True))),
-        ("NEUTRALIZE_SMTP_PARAM", flag("neutralize_smtp_param", nd.get("smtp_param", True))),
-        ("RESET_ADMIN_LOGIN", flag("reset_admin_login",
-                                  config.panel().get("reset_admin_login", True))),
-    ]
-    if masked_dump_put_url:
-        env.append(("MASKED_DUMP_PUT_URL", masked_dump_put_url))
-    if mask_rules_url:
-        env.append(("MASK_RULES_URL", mask_rules_url))
-
-    # dump slimming: keep only the last N days of transactional tables. Applied
-    # by the masker AFTER restore via a generic FK-cascading DELETE (greenmask's
-    # dump-time subset can't handle Odoo's cyclic schema). Saved per-profile in
-    # mask_inputs.
-    sd = params.get("subset_days")
-    if sd not in (None, "", 0, "0"):
-        env.append(("GM_SUBSET_DAYS", sd))
-
-    # optional SSH tunnel to reach the source through a bastion
-    if params.get("ssh_enabled") and params.get("ssh_bastion"):
-        b = parse_bastion(params["ssh_bastion"])
-        env += [
-            ("SSH_ENABLED", "true"),
-            ("SSH_BASTION_HOST", b["host"]),
-            ("SSH_BASTION_USER", b["user"]),
-            ("SSH_BASTION_PORT", b["port"]),
-            ("SSH_PRIVATE_KEY", params.get("ssh_key") or ""),
-        ]
-    return env
-
-
-def _register_mask_taskdef(ecs, src: dict, tgt: dict, params: dict,
-                           masked_dump_put_url: Optional[str],
-                           mask_rules_url: Optional[str] = None) -> tuple[str, str, str, str]:
-    """Register the legacy ECS masker task. Phase B (RDS removal): the task now
-    runs TWO containers in one awsvpc task -- a postgres:16 sidecar (`target-db`)
-    and the masker -- so the masker restores into a throwaway local postgres on
-    127.0.0.1 instead of a managed RDS. `tgt` provides user/password/dbname for
-    the sidecar; tgt["host"] is ignored (overridden to 127.0.0.1)."""
-    proj = config.require("PROJECT")
-    family = f"{proj}-mask"
-    log_group = f"/ecs/{proj}"
-    prefix, container = "mask", "masker"
-
-    # masker env: same as the shared builder, but the target host is the sidecar.
-    tgt_local = dict(tgt, host="127.0.0.1")
-    env_pairs = _mask_env_pairs(src, tgt_local, params, masked_dump_put_url, mask_rules_url)
-    env = [{"name": k, "value": str(v)} for k, v in env_pairs]
-
-    # bump task CPU/mem to fit postgres + masker (2x the configured task size).
-    cpu = str(int(config.get("TASK_CPU", "1024")) * 2)
-    mem = str(int(config.get("TASK_MEM", "2048")) * 2)
-
-    pg_env = [
-        {"name": "POSTGRES_PASSWORD", "value": str(tgt.get("password") or "")},
-        {"name": "POSTGRES_USER", "value": str(tgt.get("user") or "")},
-        {"name": "POSTGRES_DB", "value": "postgres"},
-    ]
-    ecs.register_task_definition(
-        family=family,
-        networkMode="awsvpc",
-        requiresCompatibilities=["FARGATE"],
-        cpu=cpu,
-        memory=mem,
-        executionRoleArn=config.require("EXEC_ARN"),
-        containerDefinitions=[
-            {
-                "name": "target-db",
-                "image": "postgres:16",
-                "environment": pg_env,
-                "healthCheck": {
-                    "command": ["CMD-SHELL", f"pg_isready -U {tgt.get('user') or ''}"],
-                    "interval": 5, "timeout": 3, "retries": 10, "startPeriod": 10,
-                },
-                "logConfiguration": {
-                    "logDriver": "awslogs",
-                    "options": {
-                        "awslogs-group": log_group,
-                        "awslogs-region": _region(),
-                        "awslogs-stream-prefix": "mask-pg",
-                    },
-                },
-            },
-            {
-                "name": container,
-                "image": f"{_ecr()}/{proj}/masker:latest",
-                "environment": env,
-                "dependsOn": [{"containerName": "target-db", "condition": "HEALTHY"}],
-                "logConfiguration": {
-                    "logDriver": "awslogs",
-                    "options": {
-                        "awslogs-group": log_group,
-                        "awslogs-region": _region(),
-                        "awslogs-stream-prefix": prefix,
-                    },
-                },
-            },
-        ],
-    )
-    return family, container, log_group, prefix
-
-
-# ---------------------------------------------------------------------------
-# live log tail
-# ---------------------------------------------------------------------------
-
-def _tail_until_stopped(ecs, logs, cluster, task_arn, log_group, log_stream, emit) -> int:
-    token: Optional[str] = None
-    stopped = False
-    exit_code = 1
-    stream_ready = False
-    idle_after_stop = 0
-
-    while True:
-        try:
-            kwargs = {"logGroupName": log_group, "logStreamName": log_stream, "startFromHead": True}
-            if token:
-                kwargs["nextToken"] = token
-            resp = logs.get_log_events(**kwargs)
-            stream_ready = True
-            for ev in resp.get("events", []):
-                emit(ev["message"].rstrip("\n"))
-            token = resp.get("nextForwardToken")
-            got_events = bool(resp.get("events"))
-        except logs.exceptions.ResourceNotFoundException:
-            got_events = False
-
-        if stopped:
-            idle_after_stop += 0 if got_events else 1
-            if idle_after_stop >= 2:
-                break
-
-        if not stopped:
-            desc = ecs.describe_tasks(cluster=cluster, tasks=[task_arn])["tasks"]
-            if desc:
-                t = desc[0]
-                if t.get("lastStatus") == "STOPPED":
-                    stopped = True
-                    conts = t.get("containers", [])
-                    # Two-container mask task: pick the masker's exit code, not
-                    # the postgres sidecar's (meaningless). Fall back to the
-                    # last container with an exitCode, then conts[0].
-                    masker = [c for c in conts if c.get("name") == "masker"]
-                    picked = None
-                    if masker and masker[0].get("exitCode") is not None:
-                        picked = masker[0]
-                    else:
-                        for c in reversed(conts):
-                            if c.get("exitCode") is not None:
-                                picked = c
-                                break
-                        if picked is None and conts:
-                            picked = conts[0]
-                    if picked is not None and picked.get("exitCode") is not None:
-                        exit_code = picked["exitCode"]
-                    reason = t.get("stoppedReason")
-                    if reason:
-                        emit(f"[task stopped] {reason}")
-
-        time.sleep(2 if (got_events or not stream_ready) else 3)
-
-    return exit_code
-
-
-# ---------------------------------------------------------------------------
 # entry
 # ---------------------------------------------------------------------------
 
@@ -613,11 +379,7 @@ def run_operation(operation: str, params: dict, emit: LogSink,
     if operation != "mask":
         raise ValueError(f"unknown operation: {operation}")
 
-    use_coder = _use_coder()
-    # ECS clients are only needed for the legacy Fargate path.
-    ecs = ec2 = logs = None
-    if not use_coder:
-        ecs, ec2, logs = _clients()
+    _require_coder()
 
     # SOURCE: a live DB the user pointed at (DSN)
     dsn = params.get("source_dsn")
@@ -628,13 +390,10 @@ def run_operation(operation: str, params: dict, emit: LogSink,
     # DESTINATION: mask restores into a THROWAWAY local postgres on the
     # runner workspace (see odoo-synth-runner main.tf) -- no shared DB, so no
     # two envs share one and re-masking never clobbers another env. The runner
-    # overrides TARGET_DB_* to point at its local `runner-db` container. We
-    # still resolve the destination creds for the legacy ECS path (which needs
-    # a real target user/password/dbname).
+    # overrides TARGET_DB_* to point at its local `runner-db` container. The
+    # destination host/user/password/dbname are passed through for the masker's
+    # greenmask restore target.
     tgt = config.destination()
-    if not use_coder and not (tgt.get("user") and tgt.get("password") and tgt.get("dbname")):
-        raise RuntimeError("destination not configured (set TARGET_DB_USER / "
-                           "TARGET_DB_PASSWORD / TARGET_DB_NAME in config)")
 
     # The masked pg_dump is the PRIMARY artifact: each env hydrates its own
     # local DB from it (see odoo-synth-env main.tf). Always produce it unless
@@ -657,65 +416,16 @@ def run_operation(operation: str, params: dict, emit: LogSink,
     emit(f"[panel] mask source={src['user']}@{src['host']}:{src['port']}/{src['dbname']}{via} "
          f"-> {tgt['dbname']}@{tgt['host']} profile={params.get('mask_profile')}")
 
-    # ---- Option E, Phase 3: run the masker as a Coder runner workspace ------
-    # Same env vars as the ECS path, written to S3 as an env-file the workspace
-    # downloads. The masker image is unchanged; it PUTs a result.json marker to
-    # S3 on completion. The panel tails `coder logs -f` live into the run log.
-    if _use_coder():
-        env_pairs = _mask_env_pairs(src, tgt, params,
-                                    masked_dump_put_url, mask_rules_url)
-        rr = run_runner("masker", env_pairs, "mask", emit, run_id=run_id)
-        exit_code = rr.get("exit_code", 1)
-        emit(f"[panel] runner exited with code {exit_code}")
-        result: dict = {"task_arn": rr.get("task_arn"), "exit_code": exit_code}
-        if exit_code == 0:
-            if masked_dump_get_url:
-                result["masked_dump_url"] = masked_dump_get_url
-            if masked_dump_s3_uri:
-                result["masked_dump_s3_uri"] = masked_dump_s3_uri
-            proj = config.get("PROJECT")
-            result["odoo_image"] = (params.get("odoo_image")
-                                    or f"{_ecr()}/{proj}/odoo:latest")
-        elif exit_code == 3:
-            result["error"] = ("preflight failed: source or destination DB was "
-                                "not reachable from the masker (check the URL, "
-                                "credentials, and network/security-group access).")
-        elif exit_code == 4:
-            result["error"] = ("SSH tunnel failed: could not connect to the "
-                                "bastion or forward to the source DB (check "
-                                "bastion host/user/port, the SSH key, and that "
-                                "the bastion can reach the DB).")
-        else:
-            result["error"] = rr.get("error") or f"masker exited non-zero ({exit_code})"
-        return result
-
-    # ---- legacy ECS Fargate path (fallback when Coder is not configured) ----
-    cluster = config.require("ECS_CLUSTER")
-    sg = config.require("TASK_SG")
-    family, container, log_group, prefix = _register_mask_taskdef(
-        ecs, src, tgt, params, masked_dump_put_url, mask_rules_url
-    )
-
-    emit(f"[panel] launching Fargate task ({family}) on cluster {cluster} ...")
-    resp = ecs.run_task(
-        cluster=cluster,
-        launchType="FARGATE",
-        taskDefinition=family,
-        networkConfiguration=_net_config(ec2, sg),
-        count=1,
-    )
-    failures = resp.get("failures") or []
-    if failures:
-        raise RuntimeError(f"run_task failed: {failures}")
-    task_arn = resp["tasks"][0]["taskArn"]
-    task_id = task_arn.split("/")[-1]
-    log_stream = f"{prefix}/{container}/{task_id}"
-    emit(f"[panel] task {task_id} started; streaming logs from {log_group}:{log_stream}")
-
-    exit_code = _tail_until_stopped(ecs, logs, cluster, task_arn, log_group, log_stream, emit)
-    emit(f"[panel] task exited with code {exit_code}")
-
-    result: dict = {"task_arn": task_arn, "exit_code": exit_code}
+    # ---- run the masker as a Coder runner workspace ----
+    # Env vars written to S3 as an env-file the workspace downloads. The masker
+    # image is unchanged; it PUTs a runner-result.json marker to S3 on
+    # completion. The panel tails `coder logs -f` live into the run log.
+    env_pairs = _mask_env_pairs(src, tgt, params,
+                                masked_dump_put_url, mask_rules_url)
+    rr = run_runner("masker", env_pairs, "mask", emit, run_id=run_id)
+    exit_code = rr.get("exit_code", 1)
+    emit(f"[panel] runner exited with code {exit_code}")
+    result: dict = {"task_arn": rr.get("task_arn"), "exit_code": exit_code}
     if exit_code == 0:
         if masked_dump_get_url:
             result["masked_dump_url"] = masked_dump_get_url
@@ -725,17 +435,19 @@ def run_operation(operation: str, params: dict, emit: LogSink,
         # developer environment seeded from this run runs identical code. When
         # the run came from a profile, params["odoo_image"] is that profile's
         # immutable build (odoo:<profile>-<hash>); only fall back to :latest for
-        # the legacy inline path that has no profile image.
+        # the inline path that has no profile image.
         proj = config.get("PROJECT")
-        result["odoo_image"] = params.get("odoo_image") or f"{_ecr()}/{proj}/odoo:latest"
+        result["odoo_image"] = (params.get("odoo_image")
+                                or f"{_ecr()}/{proj}/odoo:latest")
     elif exit_code == 3:
-        result["error"] = ("preflight failed: source or destination DB was not "
-                            "reachable from the masker task (check the URL, "
+        result["error"] = ("preflight failed: source or destination DB was "
+                            "not reachable from the masker (check the URL, "
                             "credentials, and network/security-group access).")
     elif exit_code == 4:
-        result["error"] = ("SSH tunnel failed: could not connect to the bastion or "
-                            "forward to the source DB (check bastion host/user/port, "
-                            "the SSH key, and that the bastion can reach the DB).")
+        result["error"] = ("SSH tunnel failed: could not connect to the "
+                            "bastion or forward to the source DB (check "
+                            "bastion host/user/port, the SSH key, and that "
+                            "the bastion can reach the DB).")
     else:
-        result["error"] = f"task exited non-zero ({exit_code})"
+        result["error"] = rr.get("error") or f"masker exited non-zero ({exit_code})"
     return result

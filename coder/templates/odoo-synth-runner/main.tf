@@ -1,6 +1,6 @@
 # Coder template: the odoo-synth RUNNER workspace (Option E, Phase 3).
 #
-# Replaces the panel's ECS/Fargate mask + discovery tasks (pipeline.run_operation
+# Replaces the panel's mask + discovery orchestration (pipeline.run_operation
 # and discovery.run_discovery) with a Coder workspace. Both are SINGLE-CONTAINER
 # workloads (the `masker` image and the `discovery` image) that read ~20 env
 # vars, stream logs, and exit with a code. This template runs ANY of them:
@@ -14,7 +14,7 @@
 #     PUT a result.json {status, exit_code, error, log_tail} to S3, then poweroff.
 #
 # The panel keeps its orchestration role: it resolves secrets (DB passwords, SSH
-# keys, git tokens) and builds the env-file exactly as it built the ECS task
+# keys, git tokens) and builds the env-file exactly as it built the old ECS task
 # env before, then presigns S3 URLs and polls S3 for the result (just like the
 # build phase). Provenance (profile discovery_hash, installed_modules, etc.)
 # stays in the profile's YAML file -- only the COMPUTE moves to Coder.

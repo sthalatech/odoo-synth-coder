@@ -55,7 +55,7 @@ def _emit_sink(run_id: str):
 
     Never raises: a dead stdout (e.g. the CLI's pipe closed because the
     foreground process was killed/timeboxed) must NOT abort the run -- the
-    pipeline keeps running on the Coder runner/ECS and the result is still
+    pipeline keeps running on the Coder runner and the result is still
     written to the store. BrokenPipeError is swallowed and stdout is rewired
     to /dev/null so further prints are no-ops instead of raising."""
     stdout_dead = False
@@ -107,7 +107,7 @@ def _run_sync(operation: str, params: dict, profile_id: Optional[str],
         exit_code = int(_ec) if _ec is not None else 1
     except BrokenPipeError:
         # The CLI's stdout pipe was closed (e.g. the foreground process was
-        # killed/timeboxed). The pipeline keeps running on the runner/ECS and
+        # killed/timeboxed). The pipeline keeps running on the runner and
         # the op may have completed -- record whatever result we have. If we
         # never got a result, leave the run "running" so a later `run show`
         # reflects the true state once the backend finishes.
@@ -720,10 +720,9 @@ def cmd_config(args) -> int:
         "region": config.get("AWS_REGION"),
         "destination_db": dest.get("dbname"),
         "destination_host": dest.get("host"),
-        "masked_cluster": config.get("ECS_CLUSTER"),
         "coder_url": env.get("coder_url") or None,
         "coder_connected": coder_ok,
-        "compute": "coder" if coder_ok else "ecs",
+        "compute": "coder" if coder_ok else "unconfigured",
     }
     _print_json(out)
     return 0

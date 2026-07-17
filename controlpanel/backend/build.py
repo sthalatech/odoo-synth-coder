@@ -16,7 +16,6 @@ import tarfile
 import time
 import urllib.request
 import uuid
-from pathlib import Path
 from typing import Callable, Optional
 
 import boto3
@@ -25,8 +24,6 @@ from . import config, store, profiles
 
 LogSink = Callable[[str], None]
 
-TEMPLATE = (Path(__file__).resolve().parent.parent
-            / "environments" / "builder-user-data.sh.tmpl")
 BUILD_CONTEXT = config.REPO_ROOT / "odoo"
 ENTERPRISE_ZIP = BUILD_CONTEXT / "enterprise.zip"
 
@@ -35,19 +32,11 @@ def _have_enterprise_zip() -> bool:
     """True if a local odoo/enterprise.zip bundle is present to bake in."""
     return ENTERPRISE_ZIP.is_file()
 
-# Option E: the build runs as a Coder workspace from the odoo-synth-builder
-# template (same logic as builder-user-data.sh.tmpl, parameterized). The panel
-# keeps orchestration: package context, presign URLs, launch the workspace,
-# poll S3 for the result. Empty/unset => the legacy ephemeral-EC2 path.
+# The build runs as a Coder workspace from the odoo-synth-builder template
+# (download context -> docker build -> push -> PUT result -> poweroff). The panel keeps
+# orchestration: package context, presign URLs, launch the workspace, poll S3
+# for the result.
 BUILDER_TEMPLATE = "odoo-synth-builder"
-
-
-def _builder_use_coder() -> bool:
-    """True if builds should run as Coder workspaces (the odoo-synth-builder
-    template) instead of the legacy hand-rolled ephemeral EC2. Enabled when the
-    Coder control plane is configured (CODER_URL + CODER_SESSION_TOKEN)."""
-    s = config.environments_settings()
-    return bool(s.get("coder_url") and s.get("coder_session_token"))
 
 
 def _coder_env() -> dict:
@@ -140,35 +129,6 @@ def _presign_result(profile_id: str) -> tuple[str, str, str]:
     return put_url, get_url, key
 
 
-def _render_user_data(image_uri: str, context_get: str, result_put: str,
-                      profile: dict) -> str:
-    tmpl = TEMPLATE.read_text()
-    e = config.environments_cfg()
-    base = e.get("odoo_image_base") or config.get("ODOO_IMAGE") or "odoo:19"
-    deps = " ".join(profile.get("python_deps") or [])
-    repl = {
-        "__AWS_REGION__": _region(),
-        "__CONTEXT_GET_URL__": context_get,
-        "__RESULT_PUT_URL__": result_put,
-        "__IMAGE_URI__": image_uri,
-        "__ODOO_IMAGE_BASE__": base,
-        "__ODOO_GIT_URL__": profile.get("odoo_git_url") or "https://github.com/odoo/odoo",
-        # Never let an empty ref fall back to the upstream default branch
-        # (master/latest) — that silently bakes a newer Odoo core than the
-        # source data and breaks the registry (e.g. KeyError 'fold_name' when a
-        # 19.x core loads a 17.0 dump). Pin to the discovered series branch.
-        "__ODOO_GIT_REF__": (profile.get("odoo_git_ref")
-                             or profile.get("odoo_series") or ""),
-        "__CUSTOM_ADDONS_GIT_URL__": profile.get("addons_git_url") or "",
-        "__CUSTOM_ADDONS_GIT_REF__": profile.get("addons_git_ref") or "",
-        "__PYTHON_DEPS__": deps,
-        "__GIT_TOKEN_SECRET__": profile.get("git_token_secret") or "",
-    }
-    for k, v in repl.items():
-        tmpl = tmpl.replace(k, v)
-    return tmpl
-
-
 def _builder_settings() -> dict:
     """Launch settings for the ephemeral builder. Falls back to the developer-
     environment settings (same AMI/subnet/SG/instance-profile) but allows a
@@ -189,46 +149,11 @@ def _builder_settings() -> dict:
     }
 
 
-def _launch_builder(user_data: str, image_uri: str, profile_id: str, s: dict) -> str:
-    ec2 = boto3.client("ec2", region_name=_region())
-    if not s.get("ami_id"):
-        raise RuntimeError("no builder AMI configured (set ENV_AMI_ID or build.ami_id)")
-    net = {"DeviceIndex": 0, "Groups": [s["security_group_id"]],
-           "AssociatePublicIpAddress": s["assign_public_ip"]}
-    if s.get("subnet_id"):
-        net["SubnetId"] = s["subnet_id"]
-    kwargs = {
-        "ImageId": s["ami_id"],
-        "InstanceType": s["instance_type"],
-        "MinCount": 1, "MaxCount": 1,
-        "UserData": user_data,
-        "NetworkInterfaces": [net],
-        "BlockDeviceMappings": [{
-            "DeviceName": "/dev/xvda",
-            "Ebs": {"VolumeSize": s["volume_size"], "VolumeType": "gp3",
-                    "DeleteOnTermination": True},
-        }],
-        "InstanceInitiatedShutdownBehavior": "terminate",
-        "TagSpecifications": [{
-            "ResourceType": "instance",
-            "Tags": [
-                {"Key": "Name", "Value": f"odoo-synth-builder-{profile_id}"},
-                {"Key": "odoo-synth:builder", "Value": profile_id},
-                {"Key": "odoo-synth:managed", "Value": "true"},
-            ],
-        }],
-    }
-    if s.get("instance_profile"):
-        kwargs["IamInstanceProfile"] = {"Name": s["instance_profile"]}
-    resp = ec2.run_instances(**kwargs)
-    return resp["Instances"][0]["InstanceId"]
-
-
 def _launch_builder_workspace(image_uri: str, context_get: str, result_put: str,
                                profile: dict, s: dict) -> str:
     """Option E: launch the build as a Coder workspace from the
     odoo-synth-builder template. The workspace's startup_script runs the same
-    build logic as builder-user-data.sh.tmpl (download context -> docker build
+    build logic (download context -> docker build
     -> push to ECR -> PUT result JSON to S3 -> poweroff). Returns the
     workspace name (the panel polls S3 for the result, exactly as before)."""
     import os
@@ -320,33 +245,21 @@ def run_build(profile_id: str, emit: LogSink, run_id: str | None = None) -> dict
     context_get, context_uri = _upload_context(profile_id, include_enterprise=include_ent)
     result_put, result_get, _key = _presign_result(profile_id)
 
-    user_data = _render_user_data(image_uri, context_get, result_put, profile)
     s = _builder_settings()
-    use_coder = _builder_use_coder()
-    if use_coder:
-        emit(f"[panel] launching Coder builder workspace ({s['instance_type']}) ...")
-        try:
-            iid = _launch_builder_workspace(image_uri, context_get, result_put,
-                                            profile, s)
-        except Exception as exc:  # noqa: BLE001
-            store.update_profile(profile_id, image_status="failed", error=str(exc))
-            raise
-        emit(f"[panel] builder workspace {iid} launched; waiting for image build+push ...")
-    else:
-        emit(f"[panel] launching ephemeral builder ({s['instance_type']}) ...")
-        try:
-            iid = _launch_builder(user_data, image_uri, profile_id, s)
-        except Exception as exc:  # noqa: BLE001
-            store.update_profile(profile_id, image_status="failed", error=str(exc))
-            raise
-        emit(f"[panel] builder instance {iid} launched; waiting for image build+push ...")
+    emit(f"[panel] launching Coder builder workspace ({s['instance_type']}) ...")
+    try:
+        iid = _launch_builder_workspace(image_uri, context_get, result_put,
+                                        profile, s)
+    except Exception as exc:  # noqa: BLE001
+        store.update_profile(profile_id, image_status="failed", error=str(exc))
+        raise
+    emit(f"[panel] builder workspace {iid} launched; waiting for image build+push ...")
 
     result = _poll_result(result_get, emit)
-    # Option E: delete the ephemeral builder workspace now that its result is
-    # collected (success or failure). The workspace already powered itself off;
-    # this reclaims the EC2 instance + Coder record so idle VMs don't pile up.
-    if use_coder:
-        _delete_builder_workspace(iid, emit)
+    # Delete the builder workspace now that its result is collected (success or
+    # failure). The workspace already powered itself off; this reclaims the EC2
+    # instance + Coder record so idle VMs don't pile up.
+    _delete_builder_workspace(iid, emit)
     if not result:
         store.update_profile(profile_id, image_status="failed",
                              error="builder timed out (no result)")

@@ -76,11 +76,6 @@ build:
   # ECR repo for the provenance-baked odoo image (<acct>.dkr.ecr.<region>/<project>/odoo)
   ecr_repo: odoo-synth/odoo
   builder_instance_type: t3.large
-  task_cpu: 1024               # Fargate task CPU/MEM for builder + masker tasks
-  task_mem: 2048
-  ecs_cluster: odoo-synth
-  # The source pipeline runs on its own cluster so it survives teardowns.
-  source_ecs_cluster: odoo-synth-source
 
 mask:
   greenmask_version: v0.2.22

@@ -79,7 +79,7 @@ controlpanel/
     profiles.py           source-binding profiles + run_params
     discovery.py          discovery op + masking-rule validation
     build.py              provenance image build
-    pipeline.py           mask op (ECS Fargate or Coder runner)
+    pipeline.py           mask op (Coder runner workspace)
     profile_store.py      one YAML file per profile under ../profiles/
     run_store.py          S3-backed runs + logs (s3://bucket/.../runs/<id>/)
     env_store.py          one YAML file (envs.yaml): env linkage + password ARNs

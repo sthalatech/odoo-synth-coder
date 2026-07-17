@@ -19,7 +19,7 @@ prod DB ──mask──▶ masked pg_dump in S3 ──build──▶ ECR image 
 | `coder/templates/odoo-synth-env/` | Coder template for developer workspaces. |
 | `coder/templates/odoo-synth-builder/` | Coder template for ephemeral image-builder workspaces. |
 | `odoo/` | Odoo image build context (Dockerfile, odoo.conf, entrypoint) + `enterprise.zip` (gitignored). |
-| `deploy/` | Infra + pipeline scripts (ECR, network, ECS, mask, Coder server, templates). |
+| `deploy/` | Infra + provisioning scripts (ECR, base images, builder IAM, Coder server, templates). |
 | `config.example.yaml` | Annotated config template. **Copy to `config.yaml` and fill in.** |
 | `config.yaml` | The single source of truth for infra/defaults (gitignored — secrets). |
 | `profiles/*.yaml` | One YAML file per profile (source binding + provenance + masking rules + image/S3 refs). Created by `profile create`. Gitignored — contains source hostnames + secret ARNs. |
@@ -100,16 +100,16 @@ odoo-synth profile list              # smoke test
 
 You want this **only** if you're standing the stack up in an AWS account for the
 first time (or rebuilding it). It provisions real infrastructure — ECR, VPC
-security groups, ECS clusters, the Coder server, etc. **Do not run this just to
+security groups, the Coder server, etc. **Do not run this just to
 use the CLI locally** — for that, use the Quick start above.
 
 ```bash
 bash deploy/run_all.sh
 ```
 
-Runs, in order: install prereqs → validate config → ECR → network → ECS cluster
-→ build+push base Odoo image → builder IAM → mask source DB → Coder server →
-publish both Coder templates (`odoo-synth-env` and `odoo-synth-builder`). It
+Runs, in order: install prereqs → validate config → ECR → build+push base
+Odoo image → builder IAM → Coder server →
+publish the Coder templates (`odoo-synth-env` and `odoo-synth-builder`). It
 writes `deploy/state.env` along the way, so afterwards you can run the CLI
 locally using the Quick-start steps (skipping step 4 — state.env already
 exists).

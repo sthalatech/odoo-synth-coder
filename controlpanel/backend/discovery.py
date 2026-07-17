@@ -1,12 +1,11 @@
 """Provenance discovery orchestration.
 
-Launches the *discovery* Fargate task for a profile: it inspects the live source
+Launches the *discovery* runner workspace for a profile: it inspects the live source
 DB + addons repo and uploads a discovery.json to S3. On success we fold the
 result back into the profile (odoo_series, installed_modules, python_deps,
 apt_deps, discovery_yaml_uri) and advance image_status to ``discovered``.
 
-Reuses the ECS/log-tail plumbing from :mod:`pipeline` so discovery streams live
-to the same run-log UI.
+Streams live to the run-log via :mod:`pipeline` (Coder runner workspace).
 """
 from __future__ import annotations
 
@@ -45,8 +44,7 @@ def _presign_discovery(profile_id: str) -> tuple[str, str, str]:
 
 def _discovery_env_pairs(profile: dict, put_url: str) -> list[tuple[str, str]]:
     """Build the discovery container's environment as (KEY, VAL) pairs. Shared by
-    the ECS path (_register_taskdef) and the Coder runner path (env -> S3
-    env-file)."""
+    the Coder runner path (env -> S3 env-file)."""
     conn = profile.get("source_conn") or {}
     password = profiles._get_secret(profile.get("source_password_secret"))
     env = [
@@ -83,41 +81,6 @@ def _discovery_env_pairs(profile: dict, put_url: str) -> list[tuple[str, str]]:
     return env
 
 
-def _register_taskdef(ecs, profile: dict, put_url: str) -> tuple[str, str, str, str]:
-    proj = config.require("PROJECT")
-    family = f"{proj}-discover"
-    log_group = f"/ecs/{proj}"
-    prefix, container = "discover", "discover"
-
-    env_pairs = _discovery_env_pairs(profile, put_url)
-    env = [{"name": k, "value": str(v)} for k, v in env_pairs]
-
-    ecs.register_task_definition(
-        family=family,
-        networkMode="awsvpc",
-        requiresCompatibilities=["FARGATE"],
-        cpu=config.get("DISCOVER_CPU", "1024"),
-        memory=config.get("DISCOVER_MEM", "2048"),
-        executionRoleArn=config.require("EXEC_ARN"),
-        containerDefinitions=[
-            {
-                "name": container,
-                "image": f"{pipeline._ecr()}/{proj}/discovery:latest",
-                "environment": env,
-                "logConfiguration": {
-                    "logDriver": "awslogs",
-                    "options": {
-                        "awslogs-group": log_group,
-                        "awslogs-region": _region(),
-                        "awslogs-stream-prefix": prefix,
-                    },
-                },
-            }
-        ],
-    )
-    return family, container, log_group, prefix
-
-
 def run_discovery(profile_id: str, emit: LogSink, run_id: str | None = None) -> dict:
     """Blocking: launch the discovery task, stream logs, fold results into the
     profile. Returns a small result dict (exit_code, discovery_uri, hash)."""
@@ -128,48 +91,23 @@ def run_discovery(profile_id: str, emit: LogSink, run_id: str | None = None) -> 
     if not conn.get("host"):
         raise ValueError("profile has no source connection; add a source DB URL first")
 
-    use_coder = pipeline._use_coder()
-    ecs = ec2 = logs = None
-    if not use_coder:
-        ecs, ec2, logs = pipeline._clients()
+    pipeline._require_coder()
     put_url, get_url, s3_uri = _presign_discovery(profile_id)
     emit(f"[panel] discovery output -> {s3_uri}")
 
     store.update_profile(profile_id, image_status="discovering", error=None)
 
-    # ---- Option E, Phase 3: run the discovery container as a Coder runner ---
-    # Same env vars as the ECS path, written to S3 as an env-file. The discovery
-    # container writes its OWN discovery.json to DISCOVERY_PUT_URL (the presigned
-    # URL above); the runner workspace additionally writes a result.json marker
+    # ---- run the discovery container as a Coder runner workspace ----
+    # Env vars written to S3 as an env-file. The discovery container writes its
+    # OWN discovery.json to DISCOVERY_PUT_URL (the presigned URL above); the
+    # runner workspace additionally writes a runner-result.json marker
     # (exit_code) which run_runner polls. We fetch discovery.json via get_url
-    # after the runner exits 0 -- exactly as the ECS path does.
-    if use_coder:
-        env_pairs = _discovery_env_pairs(profile, put_url)
-        emit("[panel] launching Coder runner workspace (discovery) ...")
-        rr = pipeline.run_runner("discovery", env_pairs, "discover", emit, run_id=run_id)
-        exit_code = rr.get("exit_code", 1)
-        emit(f"[panel] discovery runner exited with code {exit_code}")
-    else:
-        # ---- legacy ECS Fargate path (fallback) ----------------------------
-        family, container, log_group, prefix = _register_taskdef(ecs, profile, put_url)
-        cluster = config.require("ECS_CLUSTER")
-        sg = config.require("TASK_SG")
-        emit(f"[panel] launching discovery task ({family}) on {cluster} ...")
-        resp = ecs.run_task(
-            cluster=cluster, launchType="FARGATE", taskDefinition=family,
-            networkConfiguration=pipeline._net_config(ec2, sg), count=1)
-        failures = resp.get("failures") or []
-        if failures:
-            store.update_profile(profile_id, image_status="failed",
-                                 error=f"run_task failed: {failures}")
-            raise RuntimeError(f"run_task failed: {failures}")
-        task_arn = resp["tasks"][0]["taskArn"]
-        task_id = task_arn.split("/")[-1]
-        log_stream = f"{prefix}/{container}/{task_id}"
-        emit(f"[panel] task {task_id} started; streaming logs ...")
-        exit_code = pipeline._tail_until_stopped(
-            ecs, logs, cluster, task_arn, log_group, log_stream, emit)
-        emit(f"[panel] discovery task exited with code {exit_code}")
+    # after the runner exits 0.
+    env_pairs = _discovery_env_pairs(profile, put_url)
+    emit("[panel] launching Coder runner workspace (discovery) ...")
+    rr = pipeline.run_runner("discovery", env_pairs, "discover", emit, run_id=run_id)
+    exit_code = rr.get("exit_code", 1)
+    emit(f"[panel] discovery runner exited with code {exit_code}")
 
     if exit_code != 0:
         store.update_profile(profile_id, image_status="failed",

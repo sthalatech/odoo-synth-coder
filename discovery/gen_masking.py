@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate a per-source **greenmask** masking profile during discovery.
 
-The ECS masker runs greenmask (see masker/entrypoint.sh), so the editable
+The masker runs greenmask (see masker/entrypoint.sh), so the editable
 artifact we produce is a complete greenmask profile: the same common/log/
 storage/dump boilerplate as the baked ``odoo-core-pii.yml`` (with the same
 ``${SOURCE_DB_*}`` / ``${GM_STORAGE}`` / ``${GM_JOBS}`` envsubst placeholders),
