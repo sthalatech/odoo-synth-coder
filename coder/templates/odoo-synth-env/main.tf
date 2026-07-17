@@ -510,13 +510,17 @@ docker exec env-db psql -U odoo -d $${DB_NAME} -tAc \
 <h2>Passwords &amp; credentials</h2>
 <p>Passwords are <strong>not</strong> printed here. Retrieve them from the
 workspace environment, in a terminal on this host:</p>
-<pre># Odoo admin password
-echo "$$CODER_ENV_ADMIN_PASSWORD"
+<pre># Odoo admin password (login: admin)
+echo "\$CODER_ENV_ADMIN_PASSWORD"
 
-# Odoo DB master password
-echo "$$ODOO_MASTER_PASSWORD"
+# Odoo DB master password (admin_passwd in odoo.conf)
+echo "\$ODOO_MASTER_PASSWORD"
 </pre>
-<p>Odoo admin login is <code>admin</code>. The same ADMIN_PASSWORD unlocks the
+<p>Odoo admin login is <code>admin</code>. The admin password
+(<code>CODER_ENV_ADMIN_PASSWORD</code>) is what you enter at
+<code>/web/login</code>. The DB master password
+(<code>ODOO_MASTER_PASSWORD</code>) protects the database manager at
+<code>/web/database/manager</code>.</p>
 
 <h2>Notes</h2>
 <ul>
@@ -646,10 +650,14 @@ OCSVC
     fi
   EOT
   env = {
-    # expose the per-workspace password to the agent so the startup_script can
-    # read it as $CODER_ENV_ADMIN_PASSWORD, and to the Coder API so the panel
-    # can surface it in the /password endpoint.
+    # expose the per-workspace passwords to the agent so the startup_script
+    # can read them AND so a user shell / the Env Guide page can surface them
+    # via `echo "$CODER_ENV_ADMIN_PASSWORD"`. CODER_ENV_ADMIN_PASSWORD is the
+    # Odoo admin login password; ODOO_MASTER_PASSWORD is the Odoo DB master
+    # password (admin_passwd in odoo.conf). Both are also sent to the Coder
+    # API so the panel can surface them in the /password endpoint.
     CODER_ENV_ADMIN_PASSWORD = local.admin_password
+    ODOO_MASTER_PASSWORD     = data.coder_parameter.odoo_master_password.value
   }
 }
 
