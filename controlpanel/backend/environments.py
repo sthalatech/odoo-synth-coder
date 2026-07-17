@@ -56,6 +56,49 @@ def _gen_password(n: int = 24) -> str:
     return "".join(secrets.choice(alphabet) for _ in range(n))
 
 
+
+
+def _env_secret_prefix() -> str:
+    e = config.environments_cfg() if hasattr(config, "environments_cfg") else {}
+    return (e.get("secret_prefix") or "odoo-synth/env")
+
+
+def _put_password_secret(env_id: str, password: str) -> str:
+    """Create a Secrets Manager secret for the env's code-server/Odoo password;
+    return its ARN."""
+    import boto3
+    sm = boto3.client("secretsmanager", region_name=_region())
+    name = f"{_env_secret_prefix()}/{env_id}/password"
+    try:
+        resp = sm.create_secret(Name=name, SecretString=password,
+                                Description="odoo-synth env code-server/Odoo password")
+        return resp["ARN"]
+    except sm.exceptions.ResourceExistsException:
+        sm.put_secret_value(SecretId=name, SecretString=password)
+        return sm.describe_secret(SecretId=name)["ARN"]
+
+
+def _get_password_secret(arn: str | None) -> str:
+    if not arn:
+        return ""
+    import boto3
+    try:
+        return boto3.client("secretsmanager", region_name=_region()).get_secret_value(
+            SecretId=arn).get("SecretString", "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _delete_password_secret(arn: str | None) -> None:
+    if not arn:
+        return
+    import boto3
+    try:
+        boto3.client("secretsmanager", region_name=_region()).delete_secret(
+            SecretId=arn, ForceDeleteWithoutRecovery=True)
+    except Exception:  # noqa: BLE001
+        pass
+
 def _subdomain_url(subdomain_name: str) -> str:
     """Build the browser-reachable URL for a subdomain-hosted coder_app.
 
@@ -215,8 +258,9 @@ def create(source_run_id: Optional[str], issue: Optional[str],
     for k, v in params:
         args += ["--parameter", f"{k}={v}"]
     _run(args, json_out=False, timeout=120)
+    pw_arn = _put_password_secret(env_id, admin_password)
     store.update_environment(env_id, workspace_name=env_id, status="provisioning",
-                            password=admin_password)
+                            password_secret=pw_arn)
     return env_id
 
 
@@ -280,11 +324,14 @@ def reconcile() -> None:
 
 
 def get_password(env_id: str) -> Optional[str]:
-    """The per-workspace password (Odoo admin + code-server), set by the panel
-    at create time as the `admin_password` template parameter and stored on the
-    env row. Returned directly (no Secrets Manager lookup needed)."""
+    """The per-workspace password (Odoo admin + code-server). The value lives in
+    Secrets Manager (ARN on the env record); only the ARN is on disk so the
+    password isn't sitting in envs.yaml in plaintext."""
     env = store.get_environment(env_id)
-    return env.get("password") if env else None
+    if not env:
+        return None
+    pw = _get_password_secret(env.get("password_secret"))
+    return pw or None
 
 
 def teardown(env_id: str) -> None:
@@ -298,9 +345,15 @@ def teardown(env_id: str) -> None:
     try:
         _run(["delete", "-y", name], json_out=False, timeout=120)
     except Exception as exc:  # noqa: BLE001
-        store.update_environment(env_id, status="failed", error=str(exc))
-        return
-    store.update_environment(env_id, status="terminated", odoo_url=None)
+        # A workspace build may already be active (e.g. a prior delete in
+        # flight), or the workspace is already gone. Either way the workspace
+        # is being/has been removed by Coder -- still clean up our linkage +
+        # the password secret so `env delete` is idempotent.
+        msg = str(exc)
+        if "already active" not in msg and "not found" not in msg.lower():
+            store.update_environment(env_id, status="failed", error=msg)
+    _delete_password_secret(env.get("password_secret"))
+    store.delete_environment(env_id)
 
 
 # Back-compat: the panel used to call `environments.reconcile_booting`.

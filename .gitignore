@@ -7,9 +7,6 @@ __pycache__/
 *.log
 
 # Control-panel runtime state (SQLite + WAL) — may contain run params/secrets.
-controlpanel/backend/controlpanel.db
-controlpanel/backend/controlpanel.db-shm
-controlpanel/backend/controlpanel.db-wal
 *.db
 *.db-shm
 *.db-wal
@@ -32,3 +29,4 @@ odoo/enterprise/*
 !odoo/enterprise/.gitignore
 !odoo/enterprise/README.md
 profiles/
+controlpanel/backend/envs.yaml
