@@ -118,7 +118,7 @@ def _register_taskdef(ecs, profile: dict, put_url: str) -> tuple[str, str, str, 
     return family, container, log_group, prefix
 
 
-def run_discovery(profile_id: str, emit: LogSink) -> dict:
+def run_discovery(profile_id: str, emit: LogSink, run_id: str | None = None) -> dict:
     """Blocking: launch the discovery task, stream logs, fold results into the
     profile. Returns a small result dict (exit_code, discovery_uri, hash)."""
     profile = store.get_profile(profile_id)
@@ -146,7 +146,7 @@ def run_discovery(profile_id: str, emit: LogSink) -> dict:
     if use_coder:
         env_pairs = _discovery_env_pairs(profile, put_url)
         emit("[panel] launching Coder runner workspace (discovery) ...")
-        rr = pipeline.run_runner("discovery", env_pairs, "discover", emit)
+        rr = pipeline.run_runner("discovery", env_pairs, "discover", emit, run_id=run_id)
         exit_code = rr.get("exit_code", 1)
         emit(f"[panel] discovery runner exited with code {exit_code}")
     else:

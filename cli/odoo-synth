@@ -96,13 +96,13 @@ def _run_sync(operation: str, params: dict, profile_id: Optional[str],
     result: dict = {}
     try:
         if operation == "discover":
-            dres = discovery.run_discovery(params["profile_id"], emit)
+            dres = discovery.run_discovery(params["profile_id"], emit, run_id=run_id)
             result = {"exit_code": dres.get("exit_code", 1), **dres}
         elif operation == "build":
-            bres = build.run_build(params["profile_id"], emit)
+            bres = build.run_build(params["profile_id"], emit, run_id=run_id)
             result = {"exit_code": bres.get("exit_code", 1), **bres}
         else:
-            result = pipeline.run_operation(operation, params, emit)
+            result = pipeline.run_operation(operation, params, emit, run_id=run_id)
         _ec = result.get("exit_code", 1)
         exit_code = int(_ec) if _ec is not None else 1
     except BrokenPipeError:
@@ -115,11 +115,13 @@ def _run_sync(operation: str, params: dict, profile_id: Optional[str],
             _ec = result.get("exit_code", 1)
             exit_code = int(_ec) if _ec is not None else 1
             status = "succeeded" if exit_code == 0 else "failed"
+            store.flush_logs(run_id)
             store.update_run(run_id, status=status, task_arn=result.get("task_arn"),
                              exit_code=exit_code, result=result, finished_at=time.time())
         return exit_code
     except Exception as exc:  # noqa: BLE001
         emit(f"[odoo-synth] ERROR: {exc}")
+        store.flush_logs(run_id)
         store.update_run(
             run_id,
             status="failed",
@@ -129,6 +131,7 @@ def _run_sync(operation: str, params: dict, profile_id: Optional[str],
         _err(f"\n[odoo-synth] run {run_id} -> failed: {exc}")
         return 1
     status = "succeeded" if exit_code == 0 else "failed"
+    store.flush_logs(run_id)
     store.update_run(
         run_id,
         status=status,

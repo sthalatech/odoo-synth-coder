@@ -212,14 +212,23 @@ def _upload_env_file(env_pairs: list[tuple[str, object]]) -> tuple[str, list[str
     return url, keys
 
 
-def _presign_runner_result(phase: str) -> tuple[str, str, str]:
+def _presign_runner_result(phase: str, run_id: str | None = None) -> tuple[str, str, str]:
     """Presign a PUT (runner writes result.json) + GET (panel reads it) and
-    return (put_url, get_url, s3_uri)."""
+    return (put_url, get_url, s3_uri).
+
+    When ``run_id`` is given, the result lands in the run's own S3 prefix
+    (``runs/<run_id>/runner-result.json``) so run_store can reconcile a run
+    whose CLI finalizer died -- the runner's result is authoritative on S3.
+    Otherwise (legacy) a random runner-results key is used."""
     bucket = config.dump_s3_bucket()
     if not bucket:
         raise RuntimeError("no S3 bucket configured (set the dump_s3_bucket)")
-    prefix = config.dump_s3_prefix().rstrip("/").rsplit("/", 1)[0] + "/runner-results"
-    key = f"{prefix}/{phase}/{uuid.uuid4().hex[:12]}/result.json"
+    if run_id:
+        prefix = (config.dump_s3_prefix() or "masked-dumps").rstrip("/") + "/runs"
+        key = f"{prefix}/{run_id}/runner-result.json"
+    else:
+        prefix = config.dump_s3_prefix().rstrip("/").rsplit("/", 1)[0] + "/runner-results"
+        key = f"{prefix}/{phase}/{uuid.uuid4().hex[:12]}/result.json"
     s3 = boto3.client("s3", region_name=_region())
     put_url = s3.generate_presigned_url(
         "put_object", Params={"Bucket": bucket, "Key": key,
@@ -355,14 +364,14 @@ def _poll_runner_result(get_url: str, emit: LogSink,
 
 
 def run_runner(image_name: str, env_pairs: list[tuple[str, object]],
-                phase: str, emit: LogSink) -> dict:
+                phase: str, emit: LogSink, run_id: str | None = None) -> dict:
     """Option E runner path: write the env-file, presign the result URL, launch
     the Coder runner workspace, tail its logs live, poll S3 for the result.
     Returns a dict with exit_code (0/1) + error (on failure), matching the
     ECS path's return shape so callers (run_operation / run_discovery) are
     unchanged."""
     env_get, env_keys = _upload_env_file(env_pairs)
-    put_url, get_url, _ = _presign_runner_result(phase)
+    put_url, get_url, _ = _presign_runner_result(phase, run_id=run_id)
     image_uri = _runner_image(image_name)
     emit(f"[panel] launching Coder runner workspace ({image_name}, {phase}) ...")
     ws_name = _launch_runner(image_uri, env_get, env_keys, put_url, phase)
@@ -599,7 +608,8 @@ def _tail_until_stopped(ecs, logs, cluster, task_arn, log_group, log_stream, emi
 # entry
 # ---------------------------------------------------------------------------
 
-def run_operation(operation: str, params: dict, emit: LogSink) -> dict:
+def run_operation(operation: str, params: dict, emit: LogSink,
+                 run_id: str | None = None) -> dict:
     if operation != "mask":
         raise ValueError(f"unknown operation: {operation}")
 
@@ -654,7 +664,7 @@ def run_operation(operation: str, params: dict, emit: LogSink) -> dict:
     if _use_coder():
         env_pairs = _mask_env_pairs(src, tgt, params,
                                     masked_dump_put_url, mask_rules_url)
-        rr = run_runner("masker", env_pairs, "mask", emit)
+        rr = run_runner("masker", env_pairs, "mask", emit, run_id=run_id)
         exit_code = rr.get("exit_code", 1)
         emit(f"[panel] runner exited with code {exit_code}")
         result: dict = {"task_arn": rr.get("task_arn"), "exit_code": exit_code}

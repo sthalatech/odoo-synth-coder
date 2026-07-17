@@ -296,7 +296,7 @@ def _poll_result(get_url: str, emit: LogSink, timeout_s: int = 45 * 60) -> Optio
     return None
 
 
-def run_build(profile_id: str, emit: LogSink) -> dict:
+def run_build(profile_id: str, emit: LogSink, run_id: str | None = None) -> dict:
     """Blocking: package context, launch the ephemeral builder, poll for its
     result, and fold the immutable image into the profile."""
     profile = store.get_profile(profile_id)

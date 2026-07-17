@@ -145,79 +145,33 @@ def _migrate(c: sqlite3.Connection) -> None:
 
 def create_run(run_id: str, operation: str, params: dict[str, Any],
                profile_id: str | None = None) -> None:
-    with _write_lock:
-        c = _conn()
-        c.execute(
-            "INSERT INTO runs (id, operation, status, params, profile_id, created_at) "
-            "VALUES (?,?,?,?,?,?)",
-            (run_id, operation, "queued", json.dumps(params), profile_id, time.time()),
-        )
-        c.commit()
+    _run_store.create_run(run_id, operation, params, profile_id=profile_id)
 
 
 def update_run(run_id: str, **fields: Any) -> None:
-    if not fields:
-        return
-    cols = ", ".join(f"{k}=?" for k in fields)
-    vals = [json.dumps(v) if k == "result" else v for k, v in fields.items()]
-    with _write_lock:
-        c = _conn()
-        c.execute(f"UPDATE runs SET {cols} WHERE id=?", (*vals, run_id))
-        c.commit()
+    _run_store.update_run(run_id, **fields)
 
 
 def append_logs(run_id: str, lines: Iterable[str]) -> int:
     """Append lines; returns the last seq written."""
-    with _write_lock:
-        c = _conn()
-        row = c.execute(
-            "SELECT COALESCE(MAX(seq), 0) AS m FROM logs WHERE run_id=?", (run_id,)
-        ).fetchone()
-        seq = row["m"]
-        now = time.time()
-        batch = []
-        for ln in lines:
-            seq += 1
-            batch.append((run_id, seq, now, ln))
-        if batch:
-            c.executemany(
-                "INSERT OR IGNORE INTO logs (run_id, seq, ts, line) VALUES (?,?,?,?)",
-                batch,
-            )
-            c.commit()
-        return seq
+    return _run_store.append_logs(run_id, lines)
+
+
+def flush_logs(run_id: str) -> None:
+    """Force-flush buffered log lines to S3 (call on run finalization)."""
+    _run_store.flush_logs(run_id)
 
 
 def get_run(run_id: str) -> dict[str, Any] | None:
-    row = _conn().execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
-    if not row:
-        return None
-    d = dict(row)
-    d["params"] = json.loads(d["params"]) if d["params"] else {}
-    d["result"] = json.loads(d["result"]) if d["result"] else None
-    return d
+    return _run_store.get_run(run_id)
 
 
 def list_runs(limit: int = 50) -> list[dict[str, Any]]:
-    rows = _conn().execute(
-        "SELECT id, operation, status, exit_code, created_at, started_at, finished_at, result "
-        "FROM runs ORDER BY created_at DESC LIMIT ?",
-        (limit,),
-    ).fetchall()
-    out = []
-    for r in rows:
-        d = dict(r)
-        d["result"] = json.loads(d["result"]) if d.get("result") else None
-        out.append(d)
-    return out
+    return _run_store.list_runs(limit=limit)
 
 
 def get_logs(run_id: str, after_seq: int = 0) -> list[dict[str, Any]]:
-    rows = _conn().execute(
-        "SELECT seq, ts, line FROM logs WHERE run_id=? AND seq>? ORDER BY seq",
-        (run_id, after_seq),
-    ).fetchall()
-    return [dict(r) for r in rows]
+    return _run_store.get_logs(run_id, after_seq=after_seq)
 
 
 # ---------------------------------------------------------------------------
@@ -287,6 +241,7 @@ def environments_by_run() -> dict[str, dict[str, Any]]:
 # store reads/writes native dict/list/string fields directly.
 
 from . import profile_store as _profile_store  # noqa: E402
+from . import run_store as _run_store  # noqa: E402
 
 
 def create_profile(profile_id: str, label: str, **fields: Any) -> None:
