@@ -369,8 +369,70 @@ def run_runner(image_name: str, env_pairs: list[tuple[str, object]],
 
 
 # ---------------------------------------------------------------------------
-# mask task definition
+# masker env (Coder runner path)
 # ---------------------------------------------------------------------------
+
+
+def _mask_env_pairs(src: dict, tgt: dict, params: dict,
+                    masked_dump_put_url: Optional[str],
+                    mask_rules_url: Optional[str] = None) -> list[tuple[str, str]]:
+    """Build the masker's environment as a list of (KEY, VAL) pairs, written to
+    S3 as an env-file the Coder runner workspace downloads. Values are
+    stringified exactly as the masker container expects them."""
+    nd = config.neutralize_defaults()
+
+    def flag(key: str, default: bool) -> str:
+        v = params.get(key, default)
+        return "true" if v else "false"
+
+    env = [
+        ("SOURCE_DB_HOST", src["host"]),
+        ("SOURCE_DB_PORT", src["port"]),
+        ("SOURCE_DB_NAME", src["dbname"]),
+        ("SOURCE_DB_USER", src["user"]),
+        ("SOURCE_DB_PASSWORD", src["password"]),
+        ("TARGET_DB_HOST", tgt["host"]),
+        ("TARGET_DB_PORT", tgt["port"]),
+        ("TARGET_DB_NAME", tgt["dbname"]),
+        ("TARGET_DB_USER", tgt["user"]),
+        ("TARGET_DB_PASSWORD", tgt["password"]),
+        ("ODOO_ADMIN_PASSWORD", params.get("admin_password")
+         or config.get("ODOO_ADMIN_PASSWORD", "admin")),
+        ("MASK_PROFILE", params.get("mask_profile") or "odoo-core-pii"),
+        ("GM_JOBS", params.get("gm_jobs") or nd.get("gm_jobs", 4)),
+        ("NEUTRALIZE_MAIL", flag("neutralize_mail", nd.get("mail", True))),
+        ("NEUTRALIZE_FETCHMAIL", flag("neutralize_fetchmail", nd.get("fetchmail", True))),
+        ("NEUTRALIZE_PAYMENT", flag("neutralize_payment", nd.get("payment", True))),
+        ("NEUTRALIZE_SMTP_PARAM", flag("neutralize_smtp_param", nd.get("smtp_param", True))),
+        ("RESET_ADMIN_LOGIN", flag("reset_admin_login",
+                                  config.panel().get("reset_admin_login", True))),
+    ]
+    if masked_dump_put_url:
+        env.append(("MASKED_DUMP_PUT_URL", masked_dump_put_url))
+    if mask_rules_url:
+        env.append(("MASK_RULES_URL", mask_rules_url))
+
+    # dump slimming: keep only the last N days of transactional tables. Applied
+    # by the masker AFTER restore via a generic FK-cascading DELETE (greenmask's
+    # dump-time subset can't handle Odoo's cyclic schema). Saved per-profile in
+    # mask_inputs.
+    sd = params.get("subset_days")
+    if sd not in (None, "", 0, "0"):
+        env.append(("GM_SUBSET_DAYS", sd))
+
+    # optional SSH tunnel to reach the source through a bastion
+    if params.get("ssh_enabled") and params.get("ssh_bastion"):
+        b = parse_bastion(params["ssh_bastion"])
+        env += [
+            ("SSH_ENABLED", "true"),
+            ("SSH_BASTION_HOST", b["host"]),
+            ("SSH_BASTION_USER", b["user"]),
+            ("SSH_BASTION_PORT", b["port"]),
+            ("SSH_PRIVATE_KEY", params.get("ssh_key") or ""),
+        ]
+    return env
+
+
 # entry
 # ---------------------------------------------------------------------------
 
