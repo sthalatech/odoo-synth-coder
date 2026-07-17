@@ -20,8 +20,13 @@
 # ../config.env, or `coder login <url>` interactively).
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# Config: prefer config.yaml (structured), fall back to legacy config.env.
 # shellcheck disable=SC1091
-[ -f config.env ] && set -a && source config.env && set +a
+if [ -f config.yaml ] && command -v python3 >/dev/null 2>&1; then
+  eval "$(python3 deploy/_yaml_to_env.py config.yaml 2>/dev/null)"
+elif [ -f config.env ]; then
+  set -a; source config.env; set +a
+fi
 
 cmd="${1:-help}"
 shift || true

@@ -2,7 +2,27 @@
 # Shared helpers for deploy scripts. `source` this.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-set -a; source "$HERE/config.env"; set +a
+
+# Config: prefer the structured config.yaml; fall back to the legacy
+# config.env for deployments that haven't migrated. config.yaml is the
+# community source of truth (see config.example.yaml). Both export the same
+# KEY=VALUE env vars the pipeline scripts expect.
+_load_config() {
+  if [ -f "$HERE/config.yaml" ]; then
+    if command -v python3 >/dev/null 2>&1; then
+      eval "$(python3 "$HERE/deploy/_yaml_to_env.py" "$HERE/config.yaml" 2>/dev/null)"
+      return 0
+    fi
+    echo "== config.yaml present but python3 not found; falling back to config.env ==" >&2
+  fi
+  if [ -f "$HERE/config.env" ]; then
+    set -a; source "$HERE/config.env"; set +a
+    return 0
+  fi
+  echo "== ERROR: no config.yaml or config.env found in $HERE ==" >&2
+  return 1
+}
+_load_config
 
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 ECR="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"

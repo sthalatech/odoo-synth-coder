@@ -3,6 +3,8 @@
 # so the masker has a database to read. RDS + image build are the long poles.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# Validate config (config.yaml or legacy config.env) before touching AWS.
+bash deploy/00_validate_config.sh
 bash deploy/01_ecr.sh
 bash deploy/03_network.sh
 bash deploy/04_rds.sh

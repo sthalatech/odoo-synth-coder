@@ -33,19 +33,42 @@ def _parse_env_file(path: Path) -> dict[str, str]:
     return out
 
 
+def _parse_yaml_env(path: Path) -> dict[str, str]:
+    """Run the shared YAML loader and parse its KEY='value' output into a dict.
+    Resolves ref:env: / ref:ssm: forms via deploy/_yaml_to_env.py."""
+    import subprocess
+    try:
+        out = subprocess.check_output(
+            ["python3", str(REPO_ROOT / "deploy" / "_yaml_to_env.py"), str(path)],
+            stderr=subprocess.DEVNULL, text=True)
+    except Exception:
+        return {}
+    d: dict[str, str] = {}
+    for raw in out.splitlines():
+        if "=" not in raw:
+            continue
+        k, _, v = raw.partition("=")
+        d[k.strip()] = v.strip().strip("'")
+    return d
+
+
 @lru_cache(maxsize=1)
 def load() -> dict[str, str]:
-    """config.env is the base; state.env (created by the deploy scripts) overlays
-    the resolved AWS resource ids/endpoints. Real OS env wins over both so the
-    container can be reconfigured without editing files."""
+    """config.yaml (preferred) or legacy config.env is the base; state.env
+    (created by the deploy scripts) overlays the resolved AWS resource
+    ids/endpoints. Real OS env wins over both so the container can be
+    reconfigured without editing files."""
     cfg: dict[str, str] = {}
-    cfg.update(_parse_env_file(REPO_ROOT / "config.env"))
+    yaml_path = REPO_ROOT / "config.yaml"
+    if yaml_path.exists():
+        cfg.update(_parse_yaml_env(yaml_path))
+    else:
+        cfg.update(_parse_env_file(REPO_ROOT / "config.env"))
     cfg.update(_parse_env_file(REPO_ROOT / "deploy" / "state.env"))
     # allow override / injection from the real environment
     for k in list(cfg.keys()):
         if k in os.environ:
             cfg[k] = os.environ[k]
-    # a few extra passthroughs that may only exist in the environment
     for k in ("AWS_REGION", "AWS_ACCESS_KEY_ID", "AWS_PROFILE"):
         if k in os.environ:
             cfg[k] = os.environ[k]
@@ -57,11 +80,15 @@ def get(key: str, default: str | None = None) -> str | None:
 
 
 def _load_fresh() -> dict[str, str]:
-    """Same as load() but WITHOUT the lru_cache — re-reads config.env/state.env
-    from disk on every call. Used for secrets (passwords) so a value rotated on
+    """Same as load() but WITHOUT the lru_cache — re-reads config.yaml/env +
+    state.env from disk on every call. Used for secrets so a value rotated on
     disk takes effect on the next run without restarting the panel."""
     cfg: dict[str, str] = {}
-    cfg.update(_parse_env_file(REPO_ROOT / "config.env"))
+    yaml_path = REPO_ROOT / "config.yaml"
+    if yaml_path.exists():
+        cfg.update(_parse_yaml_env(yaml_path))
+    else:
+        cfg.update(_parse_env_file(REPO_ROOT / "config.env"))
     cfg.update(_parse_env_file(REPO_ROOT / "deploy" / "state.env"))
     for k in list(cfg.keys()):
         if k in os.environ:

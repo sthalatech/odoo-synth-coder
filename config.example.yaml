@@ -1,0 +1,103 @@
+# =====================================================================
+# odoo-synth configuration -- the single source of truth.
+# =====================================================================
+# Copy this file to `config.yaml` and fill in the values, then run:
+#     bash deploy/00_validate_config.sh
+# to check it before installing. `config.yaml` is gitignored -- never commit
+# real passwords, account ids, or private repo URLs.
+#
+# Secrets: any value can be written inline OR delegated to an env var / SSM
+# path so secrets never live in this file. Use the `ref:` form:
+#     password: { ref: env:ODOO_ADMIN_PASSWORD }   # read from env var
+#     password: { ref: ssm:odoo-synth/admin-password }  # read from SSM Param
+# A plain string is taken literally.
+#
+# This file replaces BOTH the old `config.env` (flat shell vars) and the old
+# `controlpanel/config.yml`. `deploy/lib_yaml.sh` loads it and exports the
+# same env vars the pipeline scripts expect, so no script had to change.
+# =====================================================================
+
+aws:
+  region: us-east-1
+  project: odoo-synth          # all AWS resources are named <project>-*
+
+odoo:
+  series: "17.0"               # enterprise + community + custom addons must share major
+  image: odoo:17               # base image (system + python deps); core is swapped from git
+  git_url: https://github.com/odoo/odoo
+  # Pin to the last commit on your series BEFORE the prod dump was taken, so the
+  # running code's schema matches the restored DB without a `-u all` migration.
+  git_ref: "<odoo-core-commit-sha>"
+  admin_password: { ref: env:ODOO_ADMIN_PASSWORD }
+  master_password: { ref: env:ODOO_MASTER_PASSWORD }
+
+addons:
+  # Custom addons repo, baked into the shared odoo image AND live-mounted in dev
+  # workspaces for edit-reload. Empty git_url = core modules only.
+  custom_git_url: "<https://github.com/your-org/your-addons>"
+  custom_git_ref: "<custom-addons-commit-sha>"
+  # Optional enterprise zip dropped at odoo/enterprise.zip (auto-unzipped at build).
+  enterprise_zip: odoo/enterprise.zip
+
+database:
+  pg_major: 16
+  # Source + masked live on an EPHEMERAL in-task Postgres (no managed RDS).
+  # The builder task runs a postgres:16 sidecar for the duration of build->seed
+  # ->mask, then discards it. The persistent output is the masked dump in S3.
+  ephemeral: true
+  source_name: source          # the unmasked source DB (prod dump restored here)
+  masked_name: masked          # the masked DB the masker produces
+  target_user: odoo
+  target_password: { ref: env:TARGET_DB_PASSWORD }
+  source_master_user: odoo
+  source_master_password: { ref: env:SOURCE_DB_MASTER_PASSWORD }
+
+build:
+  # ECR repo for the provenance-baked odoo image (<acct>.dkr.ecr.<region>/<project>/odoo)
+  ecr_repo: odoo-synth/odoo
+  builder_instance_type: t3.large
+  task_cpu: 1024               # Fargate task CPU/MEM for builder + masker tasks
+  task_mem: 2048
+  ecs_cluster: odoo-synth
+  # The source pipeline runs on its own cluster so it survives teardowns.
+  source_ecs_cluster: odoo-synth-source
+
+mask:
+  greenmask_version: v0.2.22
+  # S3 bucket for masked dump artifacts + uploaded source dumps. Per-deployment.
+  dumps_bucket: "<your-dumps-bucket>"
+  dumps_prefix: masked-dumps
+  # Selectable mask profiles (1:1 with masker/profiles/<id>.yml in the image).
+  profiles:
+    - id: odoo-core-pii
+      label: "Odoo core PII"
+      description: "Masks res_partner / res_company / res_users PII (names, emails, phones, address, VAT, login)."
+    - id: minimal-demo
+      label: "Minimal (demo/smoke)"
+      description: "res_partner name + email only. Fast, for demos."
+  # Default post-mask neutralize toggles + admin reset (exposed in the UI/CLI).
+  neutralize_defaults:
+    mail: true
+    fetchmail: true
+    payment: true
+    smtp_param: true
+  reset_admin_login: true
+  gm_jobs: 4
+
+coder:
+  # The Coder control plane (deployed by deploy/11_coder_server.sh) launches
+  # isolated dev workspaces from the env template, each hydrated from a masked
+  # dump. Coder also owns users + workspace lifecycle (panel no longer does).
+  instance_type: t3.large
+  volume_gb: 40
+  port: 8943
+  # Set after `coder login <url>`; stored here for CLI convenience. Can also be
+  # supplied via env (CODER_SESSION_TOKEN) to keep it out of the file.
+  session_token: { ref: env:CODER_SESSION_TOKEN }
+  # Per-user Coder secret name holding the Anthropic API key for Claude Code in
+  # dev workspaces. Created via `coder secrets add anthropic-api-key ...`.
+  anthropic_secret_name: anthropic-api-key
+
+# Resolved at install time into deploy/state.env (do not hand-edit here).
+# These are written by the deploy scripts; listed for documentation only.
+# state: { coder_url: "", env_ami_id: "", env_sg_id: "", env_subnet_id: "", env_instance_profile: "" }
