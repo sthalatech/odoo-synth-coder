@@ -307,17 +307,22 @@ resource "coder_agent" "main" {
     #   (b) HTTPS -- fall back to a Secrets Manager token (git_token_secret)
     #       injected into the URL, for users without a registered SSH key.
     GIT_TOKEN=""
+    GIT_TOKEN_RC="n/a"
     if [ -n "$GIT_TOKEN_SECRET" ]; then
       GIT_TOKEN="$(aws secretsmanager get-secret-value --secret-id "$GIT_TOKEN_SECRET" \
         --region "$REGION" --query SecretString --output text 2>/dev/null || echo '')"
+      if [ -n "$GIT_TOKEN" ]; then GIT_TOKEN_RC="ok"; else GIT_TOKEN_RC="EMPTY"; fi
     fi
     SSH_MODE=0
     case "$REPO_URL" in
       git@*|ssh://*) SSH_MODE=1 ;;
     esac
+    _M=$([ "$SSH_MODE" = 1 ] && echo ssh || echo https)
+    echo "[env] repo: url=$REPO_URL branch=$REPO_BRANCH mode=$_M git_token_secret=$GIT_TOKEN_SECRET git_token=$GIT_TOKEN_RC"
 
     # --- 4. clone the addons repo ---
     if [ -n "$REPO_URL" ]; then
+      CLONE_OK=0
       if [ "$SSH_MODE" = 1 ]; then
         # Use the Coder-injected per-user SSH key. $GIT_SSH_COMMAND points at
         # "<tmp>/coder gitssh --"; the agent injects the user's Coder SSH key
@@ -326,8 +331,11 @@ resource "coder_agent" "main" {
         # The gitssh binary lives in a root-owned 0700 tmp dir, so the clone
         # runs as root with HOME=/root; the result is chowned to dev below.
         ROOT_GIT_SSH="$(printf '%s' "$GIT_SSH_COMMAND") -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/root/.ssh/known_hosts"
-        HOME=/root GIT_SSH_COMMAND="$ROOT_GIT_SSH" \
-          git clone "$REPO_URL" "$REPO_DIR" || true
+        if HOME=/root GIT_SSH_COMMAND="$ROOT_GIT_SSH" git clone "$REPO_URL" "$REPO_DIR" 2>&1; then
+          CLONE_OK=1
+        else
+          echo "[env] WARN: ssh clone failed (need the user's Coder SSH key registered as a deploy key on the repo?)"
+        fi
         if [ -d "$REPO_DIR/.git" ] && [ -n "$REPO_BRANCH" ]; then
           HOME=/root git -C "$REPO_DIR" checkout "$REPO_BRANCH" 2>/dev/null \
             || { HOME=/root GIT_SSH_COMMAND="$ROOT_GIT_SSH" git -C "$REPO_DIR" fetch --depth 1 origin "$REPO_BRANCH" \
@@ -336,22 +344,33 @@ resource "coder_agent" "main" {
         fi
         [ -d "$REPO_DIR/.git" ] && HOME=/root git -C "$REPO_DIR" remote set-url origin "$REPO_URL" 2>/dev/null || true
       else
+        # HTTPS: inject a token from Secrets Manager. A private repo with no
+        # token -> git prompts for a username, which hangs/fails non-interactively
+        # with "could not read Username". Surface that clearly instead of a
+        # silent bare-URL clone.
+        if [ -z "$GIT_TOKEN" ]; then
+          echo "[env] WARN: https repo but no git token (git_token_secret empty or unreadable); clone will fail for a private repo"
+        fi
         CLONE_URL="$REPO_URL"
         if [ -n "$GIT_TOKEN" ]; then
           CLONE_URL="$(printf '%s' "$REPO_URL" | sed -E "s#https://#https://x-access-token:$GIT_TOKEN@#")"
         fi
-        if sudo -u dev git clone "$CLONE_URL" "$REPO_DIR"; then
-          if [ -n "$REPO_BRANCH" ]; then
-            sudo -u dev git -C "$REPO_DIR" checkout "$REPO_BRANCH" 2>/dev/null \
-              || { sudo -u dev git -C "$REPO_DIR" fetch --depth 1 origin "$REPO_BRANCH" \
-                   && sudo -u dev git -C "$REPO_DIR" checkout FETCH_HEAD; } \
-              || true
-          fi
+        if sudo -u dev git clone "$CLONE_URL" "$REPO_DIR" 2>&1; then
+          CLONE_OK=1
+        else
+          echo "[env] WARN: https clone failed (token=$${GIT_TOKEN_RC}) -- check git_token_secret IAM read access on the env instance profile"
+        fi
+        if [ -n "$REPO_BRANCH" ] && [ -d "$REPO_DIR/.git" ]; then
+          sudo -u dev git -C "$REPO_DIR" checkout "$REPO_BRANCH" 2>/dev/null \
+            || { sudo -u dev git -C "$REPO_DIR" fetch --depth 1 origin "$REPO_BRANCH" \
+                 && sudo -u dev git -C "$REPO_DIR" checkout FETCH_HEAD; } \
+            || true
         fi
         if [ -n "$GIT_TOKEN" ] && [ -d "$REPO_DIR/.git" ]; then
           sudo -u dev git -C "$REPO_DIR" remote set-url origin "$REPO_URL" || true
         fi
       fi
+      [ "$CLONE_OK" = 1 ] && echo "[env] repo cloned -> $REPO_DIR" || echo "[env] repo NOT cloned (addons won't be live-mounted)"
     fi
     chown -R dev:dev /home/dev
 
