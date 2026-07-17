@@ -1,5 +1,5 @@
-"""Configuration loader: reads the repo's config.yaml (single source of truth;
-falls back to legacy config.env) and deploy/state.env so the backend uses the
+"""Configuration loader: reads the repo's config.yaml (single source of truth)
+and deploy/state.env so the backend uses the
 exact same infra values as the shell pipeline. No values are duplicated here.
 
 config.yaml also carries the structured sections the old controlpanel/config.yml
@@ -56,16 +56,16 @@ def _parse_yaml_env(path: Path) -> dict[str, str]:
 
 @lru_cache(maxsize=1)
 def load() -> dict[str, str]:
-    """config.yaml (preferred) or legacy config.env is the base; state.env
-    (created by the deploy scripts) overlays the resolved AWS resource
-    ids/endpoints. Real OS env wins over both so the container can be
-    reconfigured without editing files."""
+    """config.yaml is the base; state.env (created by the deploy scripts)
+    overlays the resolved AWS resource ids/endpoints. Real OS env wins over
+    both so the container can be reconfigured without editing files."""
     cfg: dict[str, str] = {}
     yaml_path = REPO_ROOT / "config.yaml"
-    if yaml_path.exists():
-        cfg.update(_parse_yaml_env(yaml_path))
-    else:
-        cfg.update(_parse_env_file(REPO_ROOT / "config.env"))
+    if not yaml_path.exists():
+        raise RuntimeError(
+            "config.yaml not found at repo root. Copy config.example.yaml to "
+            "config.yaml and fill it in (see the README).")
+    cfg.update(_parse_yaml_env(yaml_path))
     cfg.update(_parse_env_file(REPO_ROOT / "deploy" / "state.env"))
     # allow override / injection from the real environment
     for k in list(cfg.keys()):
@@ -82,15 +82,16 @@ def get(key: str, default: str | None = None) -> str | None:
 
 
 def _load_fresh() -> dict[str, str]:
-    """Same as load() but WITHOUT the lru_cache — re-reads config.yaml/env +
+    """Same as load() but WITHOUT the lru_cache — re-reads config.yaml +
     state.env from disk on every call. Used for secrets so a value rotated on
     disk takes effect on the next run without restarting the panel."""
     cfg: dict[str, str] = {}
     yaml_path = REPO_ROOT / "config.yaml"
-    if yaml_path.exists():
-        cfg.update(_parse_yaml_env(yaml_path))
-    else:
-        cfg.update(_parse_env_file(REPO_ROOT / "config.env"))
+    if not yaml_path.exists():
+        raise RuntimeError(
+            "config.yaml not found at repo root. Copy config.example.yaml to "
+            "config.yaml and fill it in (see the README).")
+    cfg.update(_parse_yaml_env(yaml_path))
     cfg.update(_parse_env_file(REPO_ROOT / "deploy" / "state.env"))
     for k in list(cfg.keys()):
         if k in os.environ:

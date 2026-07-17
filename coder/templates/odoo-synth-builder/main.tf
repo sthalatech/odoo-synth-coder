@@ -60,10 +60,15 @@ locals {
   default_instance_type = "m5.xlarge"
 
   # the same thin golden AMI the dev env uses (docker preinstalled).
-  default_ami_id = "ami-0012da855702815c4"
+  default_ami_id = "ami-0e94ad593421c5023"
 
   # builder instance profile (ECR push + S3 + Secrets + self-terminate).
   # Falls back to the well-known name if the param is empty.
+  ami_id = coalesce(
+    data.coder_parameter.ami_id.value,
+    local.default_ami_id,
+  )
+
   instance_profile = coalesce(
     data.coder_parameter.instance_profile.value,
     "odoo-synth-builder-instance",
@@ -243,7 +248,6 @@ data "coder_workspace_owner" "me" {}
 resource "coder_agent" "main" {
   os   = "linux"
   arch = "amd64"
-  dir  = "/root"
 
   # blocking so the workspace stays "building" until the startup_script (the
   # build) finishes; the script powers off the instance on completion.
@@ -251,6 +255,7 @@ resource "coder_agent" "main" {
   startup_script          = <<-EOT
     #!/usr/bin/env bash
     set -uo pipefail
+    cd /root
     exec > >(tee -a /var/log/odoo-synth-build.log) 2>&1
     echo "[build] $(date -u) starting build for ${data.coder_parameter.image_uri.value}"
 
@@ -357,7 +362,7 @@ resource "coder_agent" "main" {
 # workspace VM: builder profile (ECR push + S3 + Secrets + self-terminate),
 # same thin golden AMI, default-VPC subnet, public IP for egress to ECR/S3.
 resource "aws_instance" "workspace" {
-  ami                         = data.coder_parameter.ami_id.value
+  ami                         = local.ami_id
   instance_type               = data.coder_parameter.instance_type.value
   subnet_id                   = local.subnet_id
   vpc_security_group_ids      = [local.sg_id]

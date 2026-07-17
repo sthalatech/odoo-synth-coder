@@ -63,9 +63,9 @@ through the Coder tunnel at
 deploy/09_dev_env.sh          # bakes the golden AMI + env SG + instance profile (unchanged)
 deploy/11_coder_server.sh     # launches the Coder server (one EC2)
 coder login <CODER_URL>       # create the first admin (interactive, once)
-echo "CODER_SESSION_TOKEN=$(coder tokens create)" >> config.env
+# paste the token into config.yaml under coder.session_token
 deploy/12_publish_template.sh # publish odoo-synth-env to the server
 ```
 
-`CODER_URL` + `CODER_SESSION_TOKEN` in `config.env` are what the panel's
+`CODER_URL` + `CODER_SESSION_TOKEN` in `config.yaml` are what the panel's
 `environments.py` shim uses to drive `coder create` / `coder delete` / the API.

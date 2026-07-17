@@ -1,6 +1,6 @@
 """Idempotent seed: create a starter profile from the repo's existing config so
 the panel is usable out of the box. Provenance (Odoo core ref + addons repo/ref
-+ series) is read from config.env/state.env; NO secrets are embedded — the source
++ series) is read from config.yaml/state.env; NO secrets are embedded — the source
 database URL and any tokens are added later from the UI.
 
 Run with:  python -m backend.seed        (from the controlpanel/ dir)
@@ -32,7 +32,7 @@ def seed_starter_profile() -> str | None:
     store.create_profile(
         pid,
         label,
-        description="Seeded from config.env — add the source database URL from the UI.",
+        description="Seeded from config.yaml — add the source database URL from the UI.",
         odoo_series=_v("ODOO_SERIES"),
         odoo_git_url=_v("ODOO_GIT_URL") or "https://github.com/odoo/odoo",
         odoo_git_ref=_v("ODOO_GIT_REF"),

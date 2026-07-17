@@ -15,7 +15,7 @@
 #
 # Writes CODER_URL / CODER_SERVER_IP / CODER_INSTANCE_ID / CODER_SG_ID to
 # deploy/state.env. The control panel reads CODER_URL + a CODER_SESSION_TOKEN
-# (set by `coder login` once, stored in config.env) to drive `coder create`/
+# (set by `coder login` once, stored in config.yaml) to drive `coder create`/
 # `coder delete`/the API.
 #
 # Idempotent: re-running reuses the instance + SG. Pass --rebuild to terminate
@@ -247,6 +247,6 @@ if [ "$DO_LOGIN" = 1 ]; then
   echo "  open the dashboard and create the first admin: $CODER_URL"
   echo "  then on a host with the coder CLI:"
   echo "    coder login $CODER_URL"
-  echo "    echo \"CODER_SESSION_TOKEN=\$(coder tokens create)\" >> config.env"
+  echo "    coder tokens create   # paste the token into config.yaml (coder.session_token)"
 fi
 log "done. Developer-environment control plane is ready at $CODER_URL"

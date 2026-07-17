@@ -10,7 +10,7 @@
 #     controlpanel/environments/provision.sh  --  Odoo is NOT baked in
 #
 # Writes ENV_AMI_ID / ENV_SG_ID / ENV_SUBNET_ID / ENV_INSTANCE_PROFILE (and
-# AWS_ACCOUNT_ID) to deploy/state.env, which the panel reads via config.env.
+# AWS_ACCOUNT_ID) to deploy/state.env, which the panel reads via config.yaml.
 #
 # Idempotent: re-running reuses existing SG / role / profile. The AMI is only
 # baked when ENV_AMI_ID is unset or you pass --rebake.
@@ -20,7 +20,7 @@
 #   deploy/09_dev_env.sh --infra-only    # SG + IAM only, skip the AMI bake
 #   deploy/09_dev_env.sh --rebake        # force a fresh AMI bake
 #
-# Optional config.env knobs:
+# Optional config.yaml knobs:
 #   ENV_INGRESS_CIDR    CIDR allowed to reach code-server/odoo (default: your
 #                       current public IP /32; set 0.0.0.0/0 at your own risk)
 #   ENV_INSTANCE_TYPE   builder instance type for the bake (default t3.large)
@@ -40,7 +40,7 @@ done
 
 VPC="$(vpc_id)"
 DUMP_S3_PREFIX="${DUMP_S3_PREFIX:-masked-dumps}"
-: "${DUMP_S3_BUCKET:?DUMP_S3_BUCKET must be set in config.env}"
+: "${DUMP_S3_BUCKET:?DUMP_S3_BUCKET must be set in config.yaml}"
 
 put_state AWS_ACCOUNT_ID "$ACCOUNT_ID"
 

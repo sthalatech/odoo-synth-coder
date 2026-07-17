@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 00: validate config.yaml (or legacy config.env) before installing.
+# 00: validate config.yaml before installing.
 # Checks: config present + parses, required keys set, AWS CLI authed, required
 # CLI tools present. Run this first; `run_all.sh` calls it automatically.
 set -euo pipefail
@@ -11,7 +11,7 @@ req_cfg() { # varname
   if [ -z "${!1:-}" ]; then echo "MISSING config: $1" >&2; err=1; fi
 }
 
-echo "== config source: $([ -f "$HERE/config.yaml" ] && echo config.yaml || echo config.env) =="
+echo "== config source: config.yaml =="
 
 # required values (from either source)
 for v in AWS_REGION PROJECT ODOO_SERIES ODOO_GIT_REF ODOO_GIT_URL \

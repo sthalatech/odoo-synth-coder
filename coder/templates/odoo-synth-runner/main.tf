@@ -66,11 +66,18 @@ locals {
   # small instance is plenty; overridable per launch.
   default_instance_type = "m5.large"
 
-  # the same thin golden AMI the dev env uses (docker preinstalled).
-  default_ami_id = "ami-0012da855702815c4"
+  # the same thin golden AMI the dev env uses (ubuntu + docker +
+  # code-server, baked by deploy/09_dev_env.sh). Override per launch via the
+  # ami_id parameter if a newer golden AMI exists.
+  default_ami_id = "ami-0e94ad593421c5023"
 
   # UNPRIVILEGED env profile (ECR pull only). Falls back to the well-known
   # name if the param is empty. Distinct from the builder profile.
+  ami_id = coalesce(
+    data.coder_parameter.ami_id.value,
+    local.default_ami_id,
+  )
+
   instance_profile = coalesce(
     data.coder_parameter.instance_profile.value,
     "odoo-synth-env-instance",
@@ -191,7 +198,6 @@ data "coder_parameter" "phase" {
 resource "coder_agent" "main" {
   os   = "linux"
   arch = "amd64"
-  dir  = "/root"
 
   # blocking so the workspace stays "building" until the container finishes;
   # the script powers off the instance on completion.
@@ -199,6 +205,7 @@ resource "coder_agent" "main" {
   startup_script          = <<-EOT
     #!/usr/bin/env bash
     set -uo pipefail
+    cd /root
     exec > >(tee -a /var/log/odoo-synth-runner.log) 2>&1
     echo "[runner] $(date -u) starting phase=${data.coder_parameter.phase.value} image=${data.coder_parameter.image_uri.value}"
 
@@ -327,7 +334,7 @@ resource "coder_agent" "main" {
 # workspace VM: UNPRIVILEGED env profile (ECR pull only), same thin golden AMI,
 # default-VPC subnet, public IP for egress to ECR/S3/source DB.
 resource "aws_instance" "workspace" {
-  ami                         = data.coder_parameter.ami_id.value
+  ami                         = local.ami_id
   instance_type               = data.coder_parameter.instance_type.value
   subnet_id                   = local.subnet_id
   vpc_security_group_ids      = [local.sg_id]

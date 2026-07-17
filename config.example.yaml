@@ -12,9 +12,10 @@
 #     password: { ref: ssm:odoo-synth/admin-password }  # read from SSM Param
 # A plain string is taken literally.
 #
-# This file replaces BOTH the old `config.env` (flat shell vars) and the old
-# `controlpanel/config.yml`. `deploy/lib_yaml.sh` loads it and exports the
-# same env vars the pipeline scripts expect, so no script had to change.
+# This is the single source of truth (it replaces the old flat `config.env`
+# and `controlpanel/config.yml`). `deploy/lib.sh` loads it via
+# `deploy/_yaml_to_env.py` and exports the same env vars the pipeline scripts
+# expect, so no script had to change. The Python backend reads it directly.
 # =====================================================================
 
 aws:

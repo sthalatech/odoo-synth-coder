@@ -131,8 +131,7 @@ logs to stdout. Bastion/SSH settings on a profile can be overridden per-run with
 
 ## Config & secrets
 
-- `config.yaml` — structured, the single source of truth (replaces the old
-  `config.env` and `controlpanel/config.yml`). Documented in
+- `config.yaml` — structured, the single source of truth. Documented in
   `config.example.yaml`.
 - `deploy/state.env` — resolved AWS resource ids; written by the deploy scripts,
   gitignored.

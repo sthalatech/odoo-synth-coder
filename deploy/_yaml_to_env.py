@@ -5,7 +5,7 @@ Resolves `ref:` secret forms:
   { ref: env:VAR }        -> value of env var VAR
   { ref: ssm:/path/name } -> value of SSM Parameter (decrypted)
 Plain scalars are taken literally. Exports a flat KEY=VALUE set that matches
-the old config.env var names so the existing pipeline scripts work unchanged.
+the same KEY=VALUE env-var names the pipeline scripts expect.
 
 Usage:  python3 deploy/_yaml_to_env.py [path/to/config.yaml]
 Default path: repo-root config.yaml (falls back to config.example.yaml).

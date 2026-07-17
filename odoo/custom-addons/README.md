@@ -12,7 +12,7 @@ They are baked into the shared odoo image at `/opt/custom` (used by BOTH the
 source and target services) and take priority over enterprise/community/core.
 
 Alternatives:
-- Git: set `CUSTOM_ADDONS_GIT_URL` in `config.env` (cloned to
+- Git: set `custom_addons_git_url` in `config.yaml` (cloned to
   `/mnt/extra-addons-custom`).
 - Live edit-reload (no rebuild): mount an EFS volume into the task and set the
   container env `EXTRA_ADDONS_PATH` to the mount path (highest priority).

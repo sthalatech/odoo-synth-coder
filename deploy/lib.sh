@@ -3,24 +3,24 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# Config: prefer the structured config.yaml; fall back to the legacy
-# config.env for deployments that haven't migrated. config.yaml is the
-# community source of truth (see config.example.yaml). Both export the same
-# KEY=VALUE env vars the pipeline scripts expect.
+# Config: config.yaml is the single source of truth (see config.example.yaml).
+# deploy/_yaml_to_env.py loads it and exports the KEY=VALUE env vars the
+# pipeline scripts expect (with `ref:` secret resolution for env/SSM). The
+# python3 dependency is installed by deploy/00_install_prereqs.sh.
 _load_config() {
-  if [ -f "$HERE/config.yaml" ]; then
-    if command -v python3 >/dev/null 2>&1; then
-      eval "$(python3 "$HERE/deploy/_yaml_to_env.py" "$HERE/config.yaml" 2>/dev/null)"
-      return 0
-    fi
-    echo "== config.yaml present but python3 not found; falling back to config.env ==" >&2
+  if [ ! -f "$HERE/config.yaml" ]; then
+    echo "== ERROR: $HERE/config.yaml not found ==" >&2
+    echo "       copy config.example.yaml to config.yaml and fill it in, then" >&2
+    echo "       run bash deploy/00_validate_config.sh." >&2
+    return 1
   fi
-  if [ -f "$HERE/config.env" ]; then
-    set -a; source "$HERE/config.env"; set +a
-    return 0
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "== ERROR: python3 not found on PATH (needed to load config.yaml) ==" >&2
+    echo "       run bash deploy/00_install_prereqs.sh first." >&2
+    return 1
   fi
-  echo "== ERROR: no config.yaml or config.env found in $HERE ==" >&2
-  return 1
+  eval "$(python3 "$HERE/deploy/_yaml_to_env.py" "$HERE/config.yaml")"
+  return $?
 }
 _load_config
 

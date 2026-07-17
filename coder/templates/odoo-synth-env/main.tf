@@ -207,6 +207,9 @@ data "aws_subnets" "default_vpc" {
 
 locals {
   # Resolve infra: explicit parameter wins, else data-source / known-name fallback.
+  # ami_id: an explicitly-passed "" must NOT become the AMI (=> MissingParameter:
+  # ImageId), so fall back to the coder_parameter default via length()>0.
+  ami_id           = length(data.coder_parameter.ami_id.value) > 0 ? data.coder_parameter.ami_id.value : data.coder_parameter.ami_id.default
   sg_id            = length(data.coder_parameter.security_group_id.value) > 0 ? data.coder_parameter.security_group_id.value : (length(data.aws_security_groups.env_sg.ids) > 0 ? data.aws_security_groups.env_sg.ids[0] : "")
   instance_profile = length(data.coder_parameter.instance_profile.value) > 0 ? data.coder_parameter.instance_profile.value : "odoo-synth-env-instance"
   subnet_id        = length(data.coder_parameter.subnet_id.value) > 0 ? data.coder_parameter.subnet_id.value : (length(data.aws_subnets.default_vpc.ids) > 0 ? data.aws_subnets.default_vpc.ids[0] : "")
@@ -667,7 +670,7 @@ OCSVC
 
 # workspace VM: existing AMI + profile + subnet, no public IP, no per-env SG.
 resource "aws_instance" "workspace" {
-  ami                         = data.coder_parameter.ami_id.value
+  ami                         = local.ami_id
   instance_type               = data.coder_parameter.instance_type.value
   subnet_id                   = local.subnet_id
   vpc_security_group_ids      = [local.sg_id]

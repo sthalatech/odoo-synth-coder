@@ -245,6 +245,21 @@ def _launch_runner(image_uri: str, env_file_get_url: str, env_keys: list[str],
 
     _require_coder()
     s = config.environments_settings()
+    # The runner template coalesces an empty ami_id back to its golden default,
+    # but the SG + instance profile + subnet have no safe default for a fresh
+    # account -- an empty one yields a vague AWS error (e.g. MissingParameter:
+    # ImageId, or InvalidGroup.NotFound). Fail fast with an actionable message
+    # so the user knows to populate deploy/state.env (ENV_SG_ID / ENV_SUBNET_ID
+    # / ENV_INSTANCE_PROFILE) from the deploy scripts.
+    missing = [k for k in ("security_group_id", "instance_profile", "subnet_id")
+               if not s.get(k)]
+    if missing:
+        raise RuntimeError(
+            f"runner launch settings missing from config: {', '.join(missing)}. "
+            "These come from deploy/state.env (written by deploy/03_network.sh "
+            "and 09_dev_env.sh): ENV_SG_ID, ENV_SUBNET_ID, ENV_INSTANCE_PROFILE. "
+            "Source deploy/state.env before running, or run the deploy pipeline "
+            "first.")
     params = [
         ("ami_id", s.get("ami_id") or ""),
         ("instance_profile", s.get("instance_profile") or ""),
