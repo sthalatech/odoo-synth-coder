@@ -70,8 +70,13 @@ run_task_wait_on(){ local cl="$1" fam="$2" sg="$3"
     --region "$AWS_REGION" --query 'tasks[0].taskArn' --output text)"
   log "task $fam started on $cl: ${arn##*/}"
   aws ecs wait tasks-stopped --cluster "$cl" --tasks "$arn" --region "$AWS_REGION"
+  # Prefer the masker container's exit code (the mask task runs a postgres
+  # sidecar + masker; the sidecar's exitCode is meaningless). Fall back to the
+  # last container that has one, then containers[0].
   local code; code="$(aws ecs describe-tasks --cluster "$cl" --tasks "$arn" \
-    --region "$AWS_REGION" --query 'tasks[0].containers[0].exitCode' --output text)"
+    --region "$AWS_REGION" --query 'tasks[0].containers[?name==`masker`].exitCode | [0]' --output text 2>/dev/null || true)"
+  [ "$code" != "None" ] && [ -n "$code" ] ||     code="$(aws ecs describe-tasks --cluster "$cl" --tasks "$arn" \
+      --region "$AWS_REGION" --query 'tasks[0].containers[-1].exitCode' --output text)"
   log "task $fam exit code: $code"
   echo "$code"
 }
