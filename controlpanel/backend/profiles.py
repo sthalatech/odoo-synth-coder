@@ -28,6 +28,17 @@ def _secret_prefix() -> str:
     return (e.get("secret_prefix") or "odoo-synth/env").rsplit("/", 1)[0] + "/profile"
 
 
+def _is_profile_scoped_secret(arn: Optional[str]) -> bool:
+    """True if a secret ARN/name was minted by this profile store (and is thus
+    safe for `profile delete` to delete). Secrets outside the profile prefix
+    -- e.g. a reused `odoo-synth/env/git-token` passed via `--git-token-secret`
+    -- are owned elsewhere and must NOT be deleted here."""
+    if not arn:
+        return False
+    name = arn.split(":", 6)[-1] if arn.startswith("arn:") else arn
+    return name.startswith(_secret_prefix() + "/")
+
+
 def _put_secret(name: str, value: str) -> str:
     """Create-or-update a Secrets Manager secret; return its ARN."""
     sm = boto3.client("secretsmanager", region_name=_region())
@@ -40,8 +51,35 @@ def _put_secret(name: str, value: str) -> str:
         return sm.describe_secret(SecretId=name)["ARN"]
 
 
+def _resolve_git_token_secret(payload: dict[str, Any], profile_id: str) -> str | None:
+    """Resolve the GitHub token secret for a profile.
+
+    Two ways to supply it:
+      * ``git_token_secret`` -- an existing Secrets Manager ARN (or secret
+        name) to reuse directly, e.g. from another profile or the env secret.
+        Avoids minting a duplicate secret.
+      * ``git_token`` -- a raw PAT; minted into a new secret under
+        ``<prefix>/profile/<id>/git-token``.
+
+    If neither is supplied, returns None (caller should leave the field as-is
+    on update, or unset on create)."""
+    arn = payload.get("git_token_secret")
+    if arn:
+        # Accept either a full ARN or a bare secret name.
+        return arn
+    token = payload.get("git_token")
+    if token:
+        return _put_secret(f"{_secret_prefix()}/{profile_id}/git-token", token)
+    return None
+
+
 def _delete_secret(arn: Optional[str]) -> None:
     if not arn:
+        return
+    # Only delete secrets this profile store created. A secret passed in via
+    # --git-token-secret (e.g. the shared odoo-synth/env/git-token) is owned by
+    # the env/deploy layer and must survive a profile delete.
+    if not _is_profile_scoped_secret(arn):
         return
     try:
         boto3.client("secretsmanager", region_name=_region()).delete_secret(
@@ -97,9 +135,7 @@ def create(payload: dict[str, Any]) -> str:
     if payload.get("ssh_key"):
         fields["ssh_key_secret"] = _put_secret(
             f"{_secret_prefix()}/{profile_id}/ssh-key", payload["ssh_key"])
-    if payload.get("git_token"):
-        fields["git_token_secret"] = _put_secret(
-            f"{_secret_prefix()}/{profile_id}/git-token", payload["git_token"])
+    fields["git_token_secret"] = _resolve_git_token_secret(payload, profile_id)
 
     store.create_profile(profile_id, label, **fields)
     return profile_id
@@ -140,9 +176,7 @@ def update(profile_id: str, payload: dict[str, Any]) -> None:
     if payload.get("ssh_key"):
         fields["ssh_key_secret"] = _put_secret(
             f"{_secret_prefix()}/{profile_id}/ssh-key", payload["ssh_key"])
-    if payload.get("git_token"):
-        fields["git_token_secret"] = _put_secret(
-            f"{_secret_prefix()}/{profile_id}/git-token", payload["git_token"])
+    fields["git_token_secret"] = _resolve_git_token_secret(payload, profile_id)
 
     store.update_profile(profile_id, **fields)
 

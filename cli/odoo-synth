@@ -258,6 +258,7 @@ def cmd_profile_create(args) -> int:
         "ssh_bastion": args.ssh_bastion,
         "ssh_key": _read_ssh_key(args.ssh_key),
         "git_token": args.git_token,
+        "git_token_secret": getattr(args, "git_token_secret", None),
         "odoo_series": args.odoo_series,
         "odoo_git_url": args.odoo_git_url,
         "odoo_git_ref": args.odoo_git_ref,
@@ -329,6 +330,8 @@ def cmd_profile_update(args) -> int:
         payload["ssh_key"] = _read_ssh_key(args.ssh_key)
     if args.git_token is not None:
         payload["git_token"] = args.git_token
+    if getattr(args, "git_token_secret", None) is not None:
+        payload["git_token_secret"] = args.git_token_secret
     for k in ("gm_jobs", "subset_days", "exclude_table_data"):
         v = getattr(args, k, None)
         if v is not None:
@@ -753,6 +756,9 @@ def _build_parser() -> argparse.ArgumentParser:
     pc.add_argument("--source-dsn", default=None,
                     help="postgresql://user:pass@host:port/db")
     pc.add_argument("--git-token", default=None, help="PAT for private addons repo")
+    pc.add_argument("--git-token-secret", default=None, metavar="ARN",
+                   help="reuse an existing Secrets Manager secret (ARN or name) "
+                        "for the private addons repo token; avoids minting a duplicate")
     pc.add_argument("--odoo-series", default=None, help='e.g. "19.0"')
     pc.add_argument("--odoo-git-url", default=None)
     pc.add_argument("--odoo-git-ref", default=None, help="manual git ref")
@@ -779,6 +785,9 @@ def _build_parser() -> argparse.ArgumentParser:
     pu.add_argument("--description", default=None)
     pu.add_argument("--source-dsn", default=None)
     pu.add_argument("--git-token", default=None)
+    pu.add_argument("--git-token-secret", default=None, metavar="ARN",
+                   help="reuse an existing Secrets Manager secret (ARN or name) "
+                        "for the private addons repo token")
     pu.add_argument("--odoo-series", default=None)
     pu.add_argument("--odoo-git-url", default=None)
     pu.add_argument("--odoo-git-ref", default=None)
