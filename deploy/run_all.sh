@@ -5,6 +5,9 @@
 # (set via the control panel per run); image build is the long pole.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# Install local prerequisites (idempotent): aws + python (pyyaml, boto3) +
+# coder CLI. Skips anything already present. Safe to re-run.
+bash deploy/00_install_prereqs.sh
 # Validate config (config.yaml or legacy config.env) before touching AWS.
 bash deploy/00_validate_config.sh
 bash deploy/01_ecr.sh
