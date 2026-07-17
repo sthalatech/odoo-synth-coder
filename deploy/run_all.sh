@@ -18,6 +18,8 @@ bash deploy/10_builder.sh
 # uploads the masked pg_dump to S3. SOURCE_DB_HOST/creds must be in the env.
 bash deploy/07_mask.sh
 # Developer-environment control plane: Coder server (one EC2) + publish the
-# odoo-synth-env template to it. Requires `coder login` once (interactive).
+# odoo-synth-env and odoo-synth-builder templates to it. Requires `coder
+# login` once (interactive). The builder template must be republished whenever
+# coder/templates/odoo-synth-builder changes or builds run a stale user-data.
 bash deploy/11_coder_server.sh
 bash deploy/12_publish_template.sh
