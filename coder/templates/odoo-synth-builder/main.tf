@@ -9,7 +9,7 @@
 # runs the SAME logic as builder-user-data.sh.tmpl (download context -> docker
 # build -> push to ECR -> PUT result JSON to S3), then powers off. The panel
 # polls S3 for the result exactly as before (_poll_result), so provenance
-# (image_uri, image_history, image_status) stays in the panel's SQLite store --
+# (image_uri, image_history, image_status) stays in the profile's YAML file --
 # only the COMPUTE moves to Coder.
 #
 # Privilege wall preserved: this workspace uses the BUILDER instance profile

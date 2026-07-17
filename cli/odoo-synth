@@ -5,7 +5,7 @@ Replaces the FastAPI web panel. Calls the same backend library modules
 (controlpanel/backend/*.py) directly over an in-process call boundary — no HTTP.
 Long-running ops (discover / build / run mask) run SYNCHRONOUSLY in the
 foreground and stream their log lines to stdout, while persisting them to the
-same SQLite store the panel used (so run history + logs survive across calls).
+the same backend stores the panel used (so run history + logs survive across calls).
 
 User management is no longer exposed here: use the native `coder users` CLI.
 Workspace lifecycle is owned by Coder natively (`coder create` / dashboard

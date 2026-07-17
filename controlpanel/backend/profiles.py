@@ -4,7 +4,8 @@ Odoo image built from that provenance. Mask runs and developer environments are
 launched *from* a profile, so the data and the code always match.
 
 Secrets (source DB password, SSH bastion key, git token) are stored in AWS
-Secrets Manager and referenced by ARN; only non-secret metadata lives in SQLite.
+Secrets Manager and referenced by ARN; only non-secret metadata lives in the
+profile's YAML file (profiles/<id>.yaml).
 """
 from __future__ import annotations
 

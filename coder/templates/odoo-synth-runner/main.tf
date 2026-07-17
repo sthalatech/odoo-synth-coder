@@ -17,7 +17,7 @@
 # keys, git tokens) and builds the env-file exactly as it built the ECS task
 # env before, then presigns S3 URLs and polls S3 for the result (just like the
 # build phase). Provenance (profile discovery_hash, installed_modules, etc.)
-# stays in the panel's SQLite store -- only the COMPUTE moves to Coder.
+# stays in the profile's YAML file -- only the COMPUTE moves to Coder.
 #
 # Privilege wall: this workspace uses the UNPRIVILEGED env instance profile
 # (odoo-synth-env-instance -> ECR pull only, NO source DB creds in the IAM,

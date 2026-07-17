@@ -6,7 +6,7 @@ coder/templates/odoo-synth-env/presets.tf
 __pycache__/
 *.log
 
-# Control-panel runtime state (SQLite + WAL) — may contain run params/secrets.
+# Runtime state files (YAML configs + S3-backed runs) — may contain secrets.
 *.db
 *.db-shm
 *.db-wal
