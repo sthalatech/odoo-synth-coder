@@ -41,6 +41,20 @@ def _use_coder() -> bool:
     return bool(s.get("coder_url") and s.get("coder_session_token"))
 
 
+def _require_coder() -> None:
+    """Preflight: the `coder` CLI must be on PATH and the Coder control plane
+    configured. discover/build/run mask all launch a Coder runner workspace via
+    `subprocess.run(["coder", ...])`; if the binary is missing that raises a
+    raw FileNotFoundError. Fail fast with an actionable message instead."""
+    import shutil
+    if not shutil.which("coder"):
+        raise RuntimeError(
+            "the `coder` CLI was not found on PATH. It is required to launch "
+            "runner workspaces (discover / build / run mask). Install it via "
+            "`bash deploy/00_install_prereqs.sh` or from https://coder.com/docs/install, "
+            "then `coder login <CODER_URL>`.")
+
+
 def _coder_env() -> dict:
     s = config.environments_settings()
     env = {
@@ -229,6 +243,7 @@ def _launch_runner(image_uri: str, env_file_get_url: str, env_keys: list[str],
     import os
     import subprocess
 
+    _require_coder()
     s = config.environments_settings()
     params = [
         ("ami_id", s.get("ami_id") or ""),

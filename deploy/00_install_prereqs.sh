@@ -101,19 +101,43 @@ fi
 if ! have coder; then
   log "installing Coder CLI ..."
   tmp="$(mktemp -d)"
-  # Coder publishes static binaries per-arch.
+  # Coder publishes static binaries per-arch, but the release assets are
+  # version-named (e.g. coder_2.34.6_linux_amd64.tar.gz), so the
+  # .../releases/latest/download/<name> stable path 404s. Resolve the real
+  # asset URL from the GitHub releases API instead.
+  case "$(uname -s)" in
+    Linux)  os="linux"   ;;
+    Darwin) os="darwin"  ;;
+    *)      os="linux"; log "WARN: untested OS $(uname -s), trying linux" ;;
+  esac
   case "$(uname -m)" in
     x86_64)  arch="amd64" ;;
-    aarch64) arch="arm64" ;;
+    aarch64|arm64) arch="arm64" ;;
     *)       arch="amd64"; log "WARN: untested arch $(uname -m), trying amd64" ;;
   esac
-  url="https://github.com/coder/coder/releases/latest/download/coder_$(uname -s | tr '[:upper:]' '[:lower:]')_${arch}.tar.gz"
-  if curl -fsSL "$url" -o "$tmp/coder.tgz"; then
-    tar -xzf "$tmp/coder.tgz" -C "$tmp"
+  # linux assets are .tar.gz; darwin assets are .zip.
+  if [ "$os" = "darwin" ]; then ext="zip"; else ext="tar.gz"; fi
+  asset_re="^coder_[0-9].*_${os}_${arch}\.${ext}$"
+  url=$(curl -fsSL https://api.github.com/repos/coder/coder/releases/latest \
+        | python3 -c "import sys,json,sys; 
+assets=json.load(sys.stdin).get('assets',[]);
+pat='$asset_re';
+print(next((a['browser_download_url'] for a in assets if __import__('re').match(pat,a['name'])), ''))")
+  if [ -n "$url" ] && curl -fsSL "$url" -o "$tmp/coder-archive"; then
+    case "$ext" in
+      tar.gz) tar -xzf "$tmp/coder-archive" -C "$tmp" ;;
+      zip)    (cd "$tmp" && unzip -o -q coder-archive) ;;
+    esac
+    # the archive extracts a single `coder` binary at its root
     $need_sudo mv "$tmp/coder" /usr/local/bin/coder
     $need_sudo chmod +x /usr/local/bin/coder
+    log "coder CLI installed: $(/usr/local/bin/coder version 2>&1 | head -1)"
   else
-    log "WARN: could not download coder from $url; install manually from https://coder.com/docs/install"
+    log "ERROR: could not download coder for ${os}/${arch}"
+    log "       queried release assets at https://api.github.com/repos/coder/coder/releases/latest"
+    log "       install manually from https://coder.com/docs/install, then re-run this script."
+    rm -rf "$tmp"
+    exit 1
   fi
   rm -rf "$tmp"
 else
@@ -179,5 +203,26 @@ if [ -x "$CLI_BIN" ]; then
   fi
   log "linked $LINK -> $CLI_BIN"
 else
-  log "WARN: $CLI_BIN not executable; skipped PATH symlink" >&2
+  log "ERROR: $CLI_BIN not executable; cannot put CLI on PATH" >&2
+  exit 1
 fi
+
+# ----------------------------------------------------------------------------
+# 8. blocking verification -- every required tool is actually on PATH.
+#    A soft WARN earlier is fine for optional tools (docker), but aws/python3/
+#    coder/odoo-synth are hard prerequisites for the CLI; if any is missing
+#    we stop here rather than letting the user hit a cryptic FileNotFoundError
+#    from subprocess later.
+# ----------------------------------------------------------------------------
+log "verifying prerequisites ..."
+missing=""
+for tool in aws python3 coder odoo-synth; do
+  if ! have "$tool"; then missing="$missing $tool"; fi
+done
+if [ -n "$missing" ]; then
+  log "ERROR: required tool(s) missing:$missing"
+  log "       the odoo-synth CLI needs aws, python3, and coder on PATH."
+  log "       install them (or re-run this script as a user that can write /usr/local/bin) and try again."
+  exit 1
+fi
+log "all prerequisites present: aws, python3, coder, odoo-synth (+ docker optional)"
