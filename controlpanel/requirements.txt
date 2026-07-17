@@ -1,6 +1,4 @@
-fastapi==0.115.6
-uvicorn[standard]==0.34.0
+# Runtime deps for the odoo-synth CLI + backend library
+# (the FastAPI web panel was removed in Phase C2; only the library remains).
 boto3==1.35.90
-pydantic==2.10.4
-python-multipart==0.0.20
 pyyaml==6.0.2

@@ -1,0 +1,855 @@
+#!/usr/bin/env python3
+"""odoo-synth — CLI for the odoo-synth masking pipeline (Phase C2).
+
+Replaces the FastAPI web panel. Calls the same backend library modules
+(controlpanel/backend/*.py) directly over an in-process call boundary — no HTTP.
+Long-running ops (discover / build / run mask) run SYNCHRONOUSLY in the
+foreground and stream their log lines to stdout, while persisting them to the
+same SQLite store the panel used (so run history + logs survive across calls).
+
+User management is no longer exposed here: use the native `coder users` CLI.
+Workspace lifecycle is owned by Coder natively (`coder create` / dashboard
+presets).
+
+Run from anywhere — the repo root is resolved from this file's location.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+import traceback
+import uuid
+from pathlib import Path
+from typing import Any, Optional
+
+# --- repo-root resolution + backend import ----------------------------------
+REPO_ROOT = Path(__file__).resolve().parents[1]
+CONTROLPANEL = REPO_ROOT / "controlpanel"
+sys.path.insert(0, str(CONTROLPANEL))
+
+from backend import (  # noqa: E402  (import after sys.path tweak)
+    build,
+    config,
+    discovery,
+    environments,
+    pipeline,
+    profiles,
+    seed,
+    store,
+)
+
+
+# --- helpers ----------------------------------------------------------------
+
+def _err(msg: str) -> None:
+    print(msg, file=sys.stderr)
+
+
+def _emit_sink(run_id: str):
+    """Return an `emit(line)` callable that prints to stdout AND persists the
+    line to the run's log table (mirrors the panel's _worker emit-sink, but
+    synchronous and immediate — no flush thread needed)."""
+    def emit(line: str) -> None:
+        try:
+            print(line, flush=True)
+        except Exception:  # noqa: BLE001 — never let printing kill the run
+            pass
+        try:
+            store.append_logs(run_id, [line])
+        except Exception:  # noqa: BLE001
+            pass
+    return emit
+
+
+def _run_sync(operation: str, params: dict, profile_id: Optional[str],
+              stored_params: dict) -> int:
+    """Mirror backend/main.py `_worker` but synchronous + foreground.
+
+    Creates the run row, marks it running, calls the op, then updates the row
+    with the result (success or failure). Returns the run's exit_code (0 on
+    success, non-zero on failure). Prints logs to stdout as they are emitted.
+    """
+    run_id = uuid.uuid4().hex[:12]
+    store.create_run(run_id, operation, stored_params, profile_id=profile_id)
+    store.update_run(run_id, status="running", started_at=time.time())
+    emit = _emit_sink(run_id)
+    exit_code = 1
+    try:
+        if operation == "discover":
+            dres = discovery.run_discovery(params["profile_id"], emit)
+            result = {"exit_code": dres.get("exit_code", 1), **dres}
+        elif operation == "build":
+            bres = build.run_build(params["profile_id"], emit)
+            result = {"exit_code": bres.get("exit_code", 1), **bres}
+        else:
+            result = pipeline.run_operation(operation, params, emit)
+        exit_code = int(result.get("exit_code", 1) or 1)
+        status = "succeeded" if exit_code == 0 else "failed"
+        store.update_run(
+            run_id,
+            status=status,
+            task_arn=result.get("task_arn"),
+            exit_code=exit_code,
+            result=result,
+            finished_at=time.time(),
+        )
+        _err(f"\n[odoo-synth] run {run_id} -> {status} (exit {exit_code})")
+    except Exception as exc:  # noqa: BLE001
+        emit(f"[odoo-synth] ERROR: {exc}")
+        store.update_run(
+            run_id,
+            status="failed",
+            result={"error": str(exc)},
+            finished_at=time.time(),
+        )
+        _err(f"\n[odoo-synth] run {run_id} -> failed: {exc}")
+        exit_code = 1
+    return exit_code
+
+
+def _print_json(obj: Any) -> None:
+    print(json.dumps(obj, indent=2, default=str))
+
+
+def _fmt_ts(ts: Any) -> str:
+    if not ts:
+        return "-"
+    try:
+        return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(ts)))
+    except (TypeError, ValueError):
+        return str(ts)
+
+
+def _table(rows: list[dict], cols: list[tuple[str, str]]) -> None:
+    """Pretty-print a list of dicts as a simple aligned table.
+    `cols` is a list of (header, key) tuples."""
+    headers = [h for h, _ in cols]
+    widths = [len(h) for h in headers]
+    rendered = []
+    _ts_cols = {"created_at", "started_at", "finished_at", "pushed_at", "ts"}
+    for r in rows:
+        cells = []
+        for _, k in cols:
+            v = r.get(k)
+            if v is None:
+                cells.append("")
+            elif k in _ts_cols:
+                cells.append(_fmt_ts(v))
+            else:
+                cells.append(str(v))
+        rendered.append(cells)
+        for i, c in enumerate(cells):
+            widths[i] = max(widths[i], len(c))
+    fmt = "  ".join(f"{{:<{w}}}" for w in widths)
+    print(fmt.format(*headers))
+    print("  ".join("-" * w for w in widths))
+    for cells in rendered:
+        print(fmt.format(*cells))
+
+
+def _require_profile(profile_id: str) -> dict:
+    p = store.get_profile(profile_id)
+    if not p:
+        _err(f"profile not found: {profile_id}")
+        sys.exit(2)
+    return p
+
+
+# --- arg helpers ------------------------------------------------------------
+
+def _add_ssh_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--ssh-enabled", action="store_true", default=None,
+                   help="enable SSH tunnel to the source")
+    p.add_argument("--ssh-bastion", metavar="USER@HOST[:PORT]", default=None,
+                   help="bastion host for the SSH tunnel")
+    p.add_argument("--ssh-key", metavar="PATH", default=None,
+                   help="path to a PEM private key for the SSH tunnel (read into a secret)")
+
+
+def _add_mask_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--mask-profile", default=None,
+                   help="mask ruleset id (e.g. odoo-core-pii)")
+    p.add_argument("--admin-password", default=None,
+                   help="Odoo admin password to set on the masked DB")
+    p.add_argument("--gm-jobs", type=int, default=None, help="greenmask parallel jobs")
+    p.add_argument("--neutralize-mail", dest="neutralize_mail", action="store_true",
+                   default=None)
+    p.add_argument("--no-neutralize-mail", dest="neutralize_mail", action="store_false")
+    p.add_argument("--neutralize-fetchmail", dest="neutralize_fetchmail",
+                   action="store_true", default=None)
+    p.add_argument("--no-neutralize-fetchmail", dest="neutralize_fetchmail",
+                   action="store_false")
+    p.add_argument("--neutralize-payment", dest="neutralize_payment",
+                   action="store_true", default=None)
+    p.add_argument("--no-neutralize-payment", dest="neutralize_payment",
+                   action="store_false")
+    p.add_argument("--neutralize-smtp-param", dest="neutralize_smtp_param",
+                   action="store_true", default=None)
+    p.add_argument("--no-neutralize-smtp-param", dest="neutralize_smtp_param",
+                   action="store_false")
+    p.add_argument("--reset-admin-login", dest="reset_admin_login",
+                   action="store_true", default=None)
+    p.add_argument("--no-reset-admin-login", dest="reset_admin_login",
+                   action="store_false")
+    p.add_argument("--produce-dump", action="store_true", default=None,
+                   help="also produce a downloadable pg_dump of the masked DB")
+    p.add_argument("--subset-days", type=int, default=None,
+                   help="keep only the last N days of transactional tables")
+    p.add_argument("--exclude-table-data", default=None,
+                   help="comma-sep tables to empty (or 'none')")
+
+
+def _read_ssh_key(path: Optional[str]) -> Optional[str]:
+    if not path:
+        return None
+    return Path(path).read_text()
+
+
+# --- profile commands -------------------------------------------------------
+
+def cmd_profile_create(args) -> int:
+    payload = {
+        "label": args.label,
+        "description": args.description,
+        "source_dsn": args.source_dsn,
+        "ssh_enabled": args.ssh_enabled,
+        "ssh_bastion": args.ssh_bastion,
+        "ssh_key": _read_ssh_key(args.ssh_key),
+        "git_token": args.git_token,
+        "odoo_series": args.odoo_series,
+        "odoo_git_url": args.odoo_git_url,
+        "odoo_git_ref": args.odoo_git_ref,
+        "addons_git_url": args.addons_git_url,
+        "addons_git_ref": args.addons_git_ref,
+        "needs_enterprise": args.needs_enterprise,
+        "enterprise_source": args.enterprise_source,
+        "mask_profile": args.mask_profile,
+        "admin_password": args.admin_password,
+        "gm_jobs": args.gm_jobs,
+        "neutralize_mail": args.neutralize_mail,
+        "neutralize_fetchmail": args.neutralize_fetchmail,
+        "neutralize_payment": args.neutralize_payment,
+        "neutralize_smtp_param": args.neutralize_smtp_param,
+        "reset_admin_login": args.reset_admin_login,
+        "produce_dump": args.produce_dump,
+        "subset_days": args.subset_days,
+        "exclude_table_data": args.exclude_table_data,
+    }
+    payload = {k: v for k, v in payload.items() if v is not None}
+    if not payload.get("label"):
+        _err("a profile label is required (--label)")
+        return 2
+    pid = profiles.create(payload)
+    if args.json:
+        _print_json({"profile_id": pid})
+    else:
+        print(f"created profile {pid}")
+    return 0
+
+
+def cmd_profile_list(args) -> int:
+    rows = [profiles.public_view(p) for p in store.list_profiles()]
+    if args.json:
+        _print_json({"profiles": rows})
+        return 0
+    if not rows:
+        print("(no profiles)")
+        return 0
+    _table(rows, [("ID", "id"), ("LABEL", "label"), ("SERIES", "odoo_series"),
+                  ("IMAGE", "image_status"), ("DISCOVERY", "discovery_hash")])
+    return 0
+
+
+def cmd_profile_show(args) -> int:
+    p = _require_profile(args.profile_id)
+    view = profiles.public_view(p)
+    _print_json(view)
+    return 0
+
+
+def cmd_profile_update(args) -> int:
+    payload: dict[str, Any] = {}
+    for k in ("label", "description", "odoo_series", "odoo_git_url",
+              "odoo_git_ref", "addons_git_url", "addons_git_ref",
+              "enterprise_source", "mask_profile", "admin_password"):
+        v = getattr(args, k.replace("-", "_"), None)
+        if v is not None:
+            payload[k] = v
+    if args.needs_enterprise is not None:
+        payload["needs_enterprise"] = args.needs_enterprise
+    if args.source_dsn is not None:
+        payload["source_dsn"] = args.source_dsn
+    if args.ssh_enabled is not None:
+        payload["ssh_enabled"] = args.ssh_enabled
+    if args.ssh_bastion is not None:
+        payload["ssh_bastion"] = args.ssh_bastion
+    if args.ssh_key is not None:
+        payload["ssh_key"] = _read_ssh_key(args.ssh_key)
+    if args.git_token is not None:
+        payload["git_token"] = args.git_token
+    for k in ("gm_jobs", "subset_days", "exclude_table_data"):
+        v = getattr(args, k, None)
+        if v is not None:
+            payload[k] = v
+    for k in ("neutralize_mail", "neutralize_fetchmail", "neutralize_payment",
+              "neutralize_smtp_param", "reset_admin_login", "produce_dump"):
+        v = getattr(args, k, None)
+        if v is not None:
+            payload[k] = v
+    if not payload:
+        _err("no update fields supplied")
+        return 2
+    try:
+        profiles.update(args.profile_id, payload)
+    except KeyError:
+        _err(f"profile not found: {args.profile_id}")
+        return 2
+    print(f"updated profile {args.profile_id}")
+    return 0
+
+
+def cmd_profile_delete(args) -> int:
+    profiles.delete(args.profile_id)
+    print(f"deleted profile {args.profile_id}")
+    return 0
+
+
+def cmd_profile_discover(args) -> int:
+    p = _require_profile(args.profile_id)
+    conn = p.get("source_conn") or {}
+    if not conn.get("host"):
+        _err("profile has no source database URL; add one first")
+        return 2
+    params = {"profile_id": args.profile_id}
+    stored = {"operation": "discover", "profile_id": args.profile_id}
+    return _run_sync("discover", params, args.profile_id, stored)
+
+
+def cmd_profile_build(args) -> int:
+    p = _require_profile(args.profile_id)
+    if not p.get("discovery_hash"):
+        _err("run discovery first (no discovery result yet)")
+        return 2
+    params = {"profile_id": args.profile_id}
+    stored = {"operation": "build", "profile_id": args.profile_id}
+    return _run_sync("build", params, args.profile_id, stored)
+
+
+def cmd_profile_images(args) -> int:
+    try:
+        res = build.list_images(args.profile_id)
+    except KeyError:
+        _err(f"profile not found: {args.profile_id}")
+        return 2
+    if args.json:
+        _print_json(res)
+        return 0
+    print(f"current: {res.get('current') or '(none)'}")
+    imgs = res.get("images") or []
+    if not imgs:
+        print("(no images)")
+        return 0
+    _table(imgs, [("URI", "uri"), ("CURRENT", "current"),
+                  ("EXISTS", "exists"), ("SIZE_MB", "size_mb"),
+                  ("PUSHED", "pushed_at")])
+    return 0
+
+
+def cmd_profile_images_delete(args) -> int:
+    try:
+        res = build.delete_image(args.profile_id, args.image)
+    except KeyError:
+        _err(f"profile not found: {args.profile_id}")
+        return 2
+    except ValueError as exc:
+        _err(str(exc))
+        return 2
+    _print_json(res)
+    return 0
+
+
+def cmd_profile_masking_rules(args) -> int:
+    p = _require_profile(args.profile_id)
+    if args.reset:
+        plan = discovery.discovered_masking_plan(p)
+        if not plan:
+            _err("no discovered masking plan available; run discovery first")
+            return 2
+        store.update_profile(args.profile_id, masking_rules=plan)
+        print(plan)
+        return 0
+    if args.set is not None:
+        # read YAML from file or stdin
+        if args.set == "-":
+            text = sys.stdin.read()
+        else:
+            text = Path(args.set).read_text()
+        ok, err = discovery.validate_masking_rules(text)
+        if not ok:
+            _err(f"invalid masking rules: {err}")
+            return 2
+        store.update_profile(args.profile_id, masking_rules=text)
+        print(f"updated masking rules for {args.profile_id}")
+        return 0
+    # show
+    rules = p.get("masking_rules") or ""
+    out = {"masking_rules": rules,
+           "discovery_yaml_uri": p.get("discovery_yaml_uri")}
+    if args.json:
+        _print_json(out)
+    else:
+        print(f"discovery_yaml_uri: {out['discovery_yaml_uri'] or '(none)'}")
+        print("---- masking_rules ----")
+        print(rules or "(none)")
+    return 0
+
+
+# --- run commands -----------------------------------------------------------
+
+def _mask_params_from_legacy(args) -> dict:
+    """Build pipeline params from inline CLI args (legacy path, mirrors
+    api_start_run's non-profile branch)."""
+    if not args.source_dsn:
+        _err("source database URL (postgresql://…) is required "
+             "for the inline path (use --source-dsn or --profile)")
+        sys.exit(2)
+    try:
+        pipeline.parse_dsn(args.source_dsn)
+    except Exception as exc:  # noqa: BLE001
+        _err(f"invalid source URL: {exc}")
+        sys.exit(2)
+    if args.ssh_enabled:
+        if not args.ssh_bastion:
+            _err("SSH tunnel enabled but --ssh-bastion is missing")
+            sys.exit(2)
+        if not args.ssh_key:
+            _err("SSH tunnel enabled but --ssh-key is missing")
+            sys.exit(2)
+        try:
+            pipeline.parse_bastion(args.ssh_bastion)
+        except Exception as exc:  # noqa: BLE001
+            _err(f"invalid bastion: {exc}")
+            sys.exit(2)
+    params = {
+        "operation": "mask",
+        "source_dsn": args.source_dsn,
+        "ssh_enabled": bool(args.ssh_enabled),
+        "ssh_bastion": args.ssh_bastion,
+        "ssh_key": _read_ssh_key(args.ssh_key),
+        "mask_profile": args.mask_profile,
+        "admin_password": args.admin_password,
+        "gm_jobs": args.gm_jobs,
+        "neutralize_mail": args.neutralize_mail,
+        "neutralize_fetchmail": args.neutralize_fetchmail,
+        "neutralize_payment": args.neutralize_payment,
+        "neutralize_smtp_param": args.neutralize_smtp_param,
+        "reset_admin_login": args.reset_admin_login,
+        "produce_dump": bool(args.produce_dump),
+        "subset_days": args.subset_days,
+        "exclude_table_data": args.exclude_table_data,
+    }
+    params = {k: v for k, v in params.items() if v is not None}
+    return params
+
+
+def cmd_run_mask(args) -> int:
+    if args.profile:
+        prof = store.get_profile(args.profile)
+        if not prof:
+            _err(f"profile not found: {args.profile}")
+            return 2
+        try:
+            params = profiles.run_params(
+                args.profile, overrides={"produce_dump": True})
+        except (KeyError, ValueError) as exc:
+            _err(f"cannot run profile: {exc}")
+            return 2
+        stored = {
+            "operation": "mask",
+            "profile_id": args.profile,
+            "mask_profile": params.get("mask_profile"),
+            "source_present": True,
+            "ssh_enabled": bool(params.get("ssh_enabled")),
+            "produce_dump": bool(params.get("produce_dump")),
+            "odoo_image": prof.get("image_uri"),
+        }
+        profile_id = args.profile
+    else:
+        params = _mask_params_from_legacy(args)
+        stored = {
+            "operation": "mask",
+            "mask_profile": params.get("mask_profile"),
+            "source_present": bool(params.get("source_dsn")),
+            "ssh_enabled": bool(params.get("ssh_enabled")),
+            "produce_dump": bool(params.get("produce_dump")),
+            "admin_password_set": bool(params.get("admin_password")),
+        }
+        profile_id = None
+    return _run_sync("mask", params, profile_id, stored)
+
+
+def cmd_run_list(args) -> int:
+    runs = store.list_runs()
+    by_run = store.environments_by_run()
+    for r in runs:
+        env = by_run.get(r["id"])
+        if env:
+            r["environment"] = {"id": env["id"], "status": env["status"]}
+    if args.json:
+        _print_json({"runs": runs})
+        return 0
+    if not runs:
+        print("(no runs)")
+        return 0
+    _table(runs, [("ID", "id"), ("OP", "operation"), ("STATUS", "status"),
+                  ("EXIT", "exit_code"), ("PROFILE", "profile_id"),
+                  ("CREATED", "created_at")])
+    return 0
+
+
+def cmd_run_show(args) -> int:
+    run = store.get_run(args.run_id)
+    if not run:
+        _err(f"run not found: {args.run_id}")
+        return 2
+    _print_json(run)
+    return 0
+
+
+def cmd_run_logs(args) -> int:
+    run = store.get_run(args.run_id)
+    if not run:
+        _err(f"run not found: {args.run_id}")
+        return 2
+    cursor = 0
+    while True:
+        rows = store.get_logs(args.run_id, after_seq=cursor)
+        for r in rows:
+            cursor = r["seq"]
+            print(r["line"], flush=True)
+        if not args.follow:
+            return 0
+        if run["status"] in ("succeeded", "failed"):
+            # final drain
+            rows = store.get_logs(args.run_id, after_seq=cursor)
+            for r in rows:
+                cursor = r["seq"]
+                print(r["line"], flush=True)
+            return 0
+        time.sleep(0.6)
+        run = store.get_run(args.run_id) or run
+
+
+# --- env commands -----------------------------------------------------------
+
+def cmd_env_list(args) -> int:
+    environments.reconcile_booting()
+    envs = store.list_environments()
+    if args.json:
+        _print_json({"environments": envs})
+        return 0
+    if not envs:
+        print("(no environments)")
+        return 0
+    _table(envs, [("ID", "id"), ("STATUS", "status"), ("PROFILE", "profile_id"),
+                  ("RUN", "source_run_id"), ("ODOO", "odoo_url")])
+    return 0
+
+
+def cmd_env_create(args) -> int:
+    if not config.environments_configured():
+        _err("developer environments are not configured "
+             "(set CODER_URL + CODER_SESSION_TOKEN, ensure the "
+             "odoo-synth-env template is published)")
+        return 2
+    if args.profile_id:
+        prof = store.get_profile(args.profile_id)
+        if not prof:
+            _err(f"profile not found: {args.profile_id}")
+            return 2
+        if prof.get("image_status") != "ready" or not prof.get("image_uri"):
+            _err("that profile has no built image yet; run discover then build "
+                 "on the profile first")
+            return 2
+    if args.source_run_id:
+        run = store.get_run(args.source_run_id)
+        if not run:
+            _err(f"source run not found: {args.source_run_id}")
+            return 2
+        res = run.get("result") or {}
+        if not args.dump_s3_uri and not res.get("masked_dump_s3_uri"):
+            _err("that run has no masked dump to seed from; re-run the mask "
+                 "with --produce-dump, or pass --dump-s3-uri")
+            return 2
+    elif not args.dump_s3_uri:
+        _err("a masked dump is required: pass --source-run-id <run that produced "
+             "a dump> or --dump-s3-uri s3://bucket/key")
+        return 2
+    env_id = environments.create(
+        args.source_run_id, args.issue, args.dump_s3_uri,
+        repo_url=args.repo_url, repo_branch=args.repo_branch,
+        profile_id=args.profile_id)
+    print(f"created environment {env_id}")
+    return 0
+
+
+def cmd_env_show(args) -> int:
+    env = store.get_environment(args.env_id)
+    if not env:
+        _err(f"environment not found: {args.env_id}")
+        return 2
+    _print_json(env)
+    return 0
+
+
+def cmd_env_password(args) -> int:
+    env = store.get_environment(args.env_id)
+    if not env:
+        _err(f"environment not found: {args.env_id}")
+        return 2
+    pw = environments.get_password(args.env_id)
+    if pw is None:
+        _err("no password available for this environment")
+        return 2
+    print(pw)
+    return 0
+
+
+def cmd_env_delete(args) -> int:
+    env = store.get_environment(args.env_id)
+    if not env:
+        _err(f"environment not found: {args.env_id}")
+        return 2
+    environments.teardown(args.env_id)
+    print(f"terminated environment {args.env_id}")
+    return 0
+
+
+def cmd_env_config(args) -> int:
+    s = config.environments_settings()
+    out = {
+        "configured": config.environments_configured(),
+        "enabled": s["enabled"],
+        "coder_url": s["coder_url"],
+        "instance_type": s["instance_type"],
+        "repo_url": s["repo_url"],
+        "repo_branch": s["repo_branch"],
+        "odoo_image": s["odoo_image"],
+    }
+    _print_json(out)
+    return 0
+
+
+# --- config command ---------------------------------------------------------
+
+def cmd_config(args) -> int:
+    dest = config.destination()
+    env = config.environments_settings()
+    coder_ok = bool(env.get("coder_url")) and bool(env.get("coder_session_token"))
+    out = {
+        "project": config.get("PROJECT"),
+        "region": config.get("AWS_REGION"),
+        "destination_db": dest.get("dbname"),
+        "destination_host": dest.get("host"),
+        "masked_cluster": config.get("ECS_CLUSTER"),
+        "coder_url": env.get("coder_url") or None,
+        "coder_connected": coder_ok,
+        "compute": "coder" if coder_ok else "ecs",
+    }
+    _print_json(out)
+    return 0
+
+
+# --- argparse wiring --------------------------------------------------------
+
+def _build_parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(
+        prog="odoo-synth",
+        description=("odoo-synth masking pipeline CLI. Calls the backend "
+                     "library directly (no HTTP). Long-running ops run in the "
+                     "foreground and stream logs to stdout.\n\n"
+                     "User management is now native: `coder users create/list`. "
+                     "Workspace creation is via the Coder dashboard (presets) "
+                     "or `coder create`."))
+    ap.add_argument("--verbose", action="store_true",
+                    help="show full tracebacks on error")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    # profile
+    pprof = sub.add_parser("profile", help="source-binding profiles")
+    psub = pprof.add_subparsers(dest="profile_cmd", required=True)
+
+    pc = psub.add_parser("create", help="create a profile")
+    pc.add_argument("--label", required=True)
+    pc.add_argument("--description", default=None)
+    pc.add_argument("--source-dsn", default=None,
+                    help="postgresql://user:pass@host:port/db")
+    pc.add_argument("--git-token", default=None, help="PAT for private addons repo")
+    pc.add_argument("--odoo-series", default=None, help='e.g. "19.0"')
+    pc.add_argument("--odoo-git-url", default=None)
+    pc.add_argument("--odoo-git-ref", default=None, help="manual git ref")
+    pc.add_argument("--addons-git-url", default=None)
+    pc.add_argument("--addons-git-ref", default=None)
+    pc.add_argument("--needs-enterprise", action="store_true", default=None)
+    pc.add_argument("--enterprise-source", default=None)
+    _add_ssh_args(pc)
+    _add_mask_args(pc)
+    pc.add_argument("--json", action="store_true")
+    pc.set_defaults(func=cmd_profile_create)
+
+    pl = psub.add_parser("list", help="list profiles")
+    pl.add_argument("--json", action="store_true")
+    pl.set_defaults(func=cmd_profile_list)
+
+    ps = psub.add_parser("show", help="show a profile")
+    ps.add_argument("profile_id")
+    ps.set_defaults(func=cmd_profile_show)
+
+    pu = psub.add_parser("update", help="update a profile")
+    pu.add_argument("profile_id")
+    pu.add_argument("--label", default=None)
+    pu.add_argument("--description", default=None)
+    pu.add_argument("--source-dsn", default=None)
+    pu.add_argument("--git-token", default=None)
+    pu.add_argument("--odoo-series", default=None)
+    pu.add_argument("--odoo-git-url", default=None)
+    pu.add_argument("--odoo-git-ref", default=None)
+    pu.add_argument("--addons-git-url", default=None)
+    pu.add_argument("--addons-git-ref", default=None)
+    pu.add_argument("--needs-enterprise", action="store_true", default=None)
+    pu.add_argument("--no-needs-enterprise", dest="needs_enterprise",
+                    action="store_false")
+    pu.add_argument("--enterprise-source", default=None)
+    _add_ssh_args(pu)
+    _add_mask_args(pu)
+    pu.set_defaults(func=cmd_profile_update)
+
+    pd = psub.add_parser("delete", help="delete a profile (and its secrets)")
+    pd.add_argument("profile_id")
+    pd.set_defaults(func=cmd_profile_delete)
+
+    pdisc = psub.add_parser("discover", help="run discovery (synchronous, streams logs)")
+    pdisc.add_argument("profile_id")
+    pdisc.set_defaults(func=cmd_profile_discover)
+
+    pbld = psub.add_parser("build", help="build the odoo image (synchronous, streams logs)")
+    pbld.add_argument("profile_id")
+    pbld.set_defaults(func=cmd_profile_build)
+
+    pimg = psub.add_parser("images", help="profile image management")
+    pimg.add_argument("--json", action="store_true")
+    pimgsub = pimg.add_subparsers(dest="images_cmd")
+    pimg.set_defaults(func=cmd_profile_images, profile_id=None)
+    pil = pimgsub.add_parser("list", help="list images (default)")
+    pil.add_argument("profile_id")
+    pil.set_defaults(func=cmd_profile_images)
+    pid = pimgsub.add_parser("delete", help="delete an ECR image tag")
+    pid.add_argument("profile_id")
+    pid.add_argument("--image", required=True, help="image URI to delete")
+    pid.set_defaults(func=cmd_profile_images_delete)
+
+    pmr = psub.add_parser("masking-rules", help="show / set / reset the editable masking plan")
+    pmr.add_argument("profile_id")
+    pmr.add_argument("--set", metavar="FILE|-", default=None,
+                     help="set masking rules from a YAML file (or '-' for stdin)")
+    pmr.add_argument("--reset", action="store_true",
+                     help="reset to the discovered masking plan")
+    pmr.add_argument("--json", action="store_true")
+    pmr.set_defaults(func=cmd_profile_masking_rules)
+
+    # run
+    prun = sub.add_parser("run", help="mask runs")
+    rsub = prun.add_subparsers(dest="run_cmd", required=True)
+
+    rm = rsub.add_parser("mask", help="run a mask operation (synchronous, streams logs)")
+    rm.add_argument("--profile", default=None, help="run from a saved profile id")
+    rm.add_argument("--source-dsn", default=None,
+                    help="inline source (legacy path): postgresql://…")
+    _add_ssh_args(rm)
+    _add_mask_args(rm)
+    rm.set_defaults(func=cmd_run_mask)
+
+    rl = rsub.add_parser("list", help="list recent runs")
+    rl.add_argument("--json", action="store_true")
+    rl.set_defaults(func=cmd_run_list)
+
+    rs = rsub.add_parser("show", help="show a run")
+    rs.add_argument("run_id")
+    rs.set_defaults(func=cmd_run_show)
+
+    rg = rsub.add_parser("logs", help="print a run's stored logs")
+    rg.add_argument("run_id")
+    rg.add_argument("--follow", action="store_true",
+                    help="poll for new lines until the run finishes")
+    rg.set_defaults(func=cmd_run_logs)
+
+    # env
+    penv = sub.add_parser("env", help="developer environments (Coder workspaces)")
+    esub = penv.add_subparsers(dest="env_cmd", required=True)
+
+    el = esub.add_parser("list", help="list environments")
+    el.add_argument("--json", action="store_true")
+    el.set_defaults(func=cmd_env_list)
+
+    ec = esub.add_parser("create", help="launch an environment")
+    ec.add_argument("--profile-id", default=None)
+    ec.add_argument("--source-run-id", default=None)
+    ec.add_argument("--issue", default=None, help="github issue ref (optional)")
+    ec.add_argument("--dump-s3-uri", default=None,
+                    help="explicit s3:// masked dump (optional override)")
+    ec.add_argument("--repo-url", default=None)
+    ec.add_argument("--repo-branch", default=None)
+    ec.set_defaults(func=cmd_env_create)
+
+    es = esub.add_parser("show", help="show an environment")
+    es.add_argument("env_id")
+    es.set_defaults(func=cmd_env_show)
+
+    epw = esub.add_parser("password", help="reveal the env login password")
+    epw.add_argument("env_id")
+    epw.set_defaults(func=cmd_env_password)
+
+    ed = esub.add_parser("delete", help="tear down an environment")
+    ed.add_argument("env_id")
+    ed.set_defaults(func=cmd_env_delete)
+
+    ecfg = esub.add_parser("config", help="show environment infra settings")
+    ecfg.set_defaults(func=cmd_env_config)
+
+    # config
+    pcfg = sub.add_parser("config", help="non-secret infra summary")
+    pcfg.set_defaults(func=cmd_config)
+
+    return ap
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    ap = _build_parser()
+    args = ap.parse_args(argv)
+
+    # startup: init the store + best-effort seed (mirrors the panel startup)
+    store.init()
+    try:
+        seed.seed_starter_profile()
+    except Exception:  # noqa: BLE001 — seeding is best-effort
+        pass
+
+    try:
+        return int(args.func(args) or 0)
+    except KeyboardInterrupt:
+        _err("interrupted")
+        return 130
+    except SystemExit:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        if getattr(args, "verbose", False):
+            traceback.print_exc()
+        else:
+            _err(f"error: {exc}")
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
