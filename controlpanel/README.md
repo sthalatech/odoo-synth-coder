@@ -4,7 +4,8 @@ The FastAPI web panel has been replaced by a single CLI: **`odoo-synth`**
 (lives at [`../cli/odoo-synth`](../cli/odoo-synth)). The CLI calls the **same
 backend library modules** in `backend/` directly over an in-process call
 boundary — there is no HTTP server any more. Run history and logs are still
-persisted to the same SQLite store (`backend/controlpanel.db`), so everything
+persisted (profiles as YAML files under `profiles/`, runs/logs/envs in the
+SQLite store `backend/controlpanel.db`), so everything
 the panel tracked survives across CLI invocations.
 
 > **User management** is no longer exposed here — use the native Coder CLI:
@@ -79,11 +80,13 @@ controlpanel/
     discovery.py          discovery op + masking-rule validation
     build.py              provenance image build
     pipeline.py           mask op (ECS Fargate or Coder runner)
-    store.py              SQLite persistence (runs + logs + envs + profiles)
+    profile_store.py      one YAML file per profile under ../profiles/
+    store.py              SQLite persistence (runs + logs + envs); profiles delegate to profile_store
     seed.py               best-effort starter profile
     config.py             reads ../config.yaml + ../deploy/state.env
     environments.py       Coder workspace lifecycle (env create/teardown/list)
-    controlpanel.db       the SQLite store (read by the CLI)
+    controlpanel.db       the SQLite store for runs/logs/envs (read by the CLI)
+    ../profiles/*.yaml    one YAML file per profile (the profile store)
 ```
 
 The panel server (`main.py`, `frontend/`, `Dockerfile`, `run_local.sh`) was

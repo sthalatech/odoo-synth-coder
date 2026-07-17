@@ -279,74 +279,32 @@ def environments_by_run() -> dict[str, dict[str, Any]]:
 # ---------------------------------------------------------------------------
 # profiles (a source system bound to its matching provenance code + image)
 # ---------------------------------------------------------------------------
+#
+# Profiles are now stored as one YAML file per profile under profiles/
+# (see profile_store.py). These functions are thin delegates so callers
+# (profiles.py, build.py, discovery.py, the CLI) keep using store.* unchanged.
+# The JSON-column handling that lived here under SQLite is gone — the YAML
+# store reads/writes native dict/list/string fields directly.
 
-# JSON-encoded columns on the profiles table.
-_PROFILE_JSON_COLS = {
-    "source_conn", "mask_inputs", "python_deps", "apt_deps",
-    "installed_modules", "image_history", "required_config_keys",
-}
-
-
-def _profile_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
-    d = dict(row)
-    for k in _PROFILE_JSON_COLS:
-        if d.get(k):
-            try:
-                d[k] = json.loads(d[k])
-            except (ValueError, TypeError):
-                d[k] = None
-    return d
+from . import profile_store as _profile_store  # noqa: E402
 
 
 def create_profile(profile_id: str, label: str, **fields: Any) -> None:
-    fields.setdefault("image_status", "draft")
-    for k in list(fields):
-        if k in _PROFILE_JSON_COLS and fields[k] is not None:
-            fields[k] = json.dumps(fields[k])
-    keys = ["id", "label", "created_at", "updated_at", *fields.keys()]
-    vals = [profile_id, label, time.time(), time.time(), *fields.values()]
-    placeholders = ",".join("?" for _ in keys)
-    with _write_lock:
-        c = _conn()
-        c.execute(
-            f"INSERT INTO profiles ({','.join(keys)}) VALUES ({placeholders})",
-            vals,
-        )
-        c.commit()
+    _profile_store.create_profile(profile_id, label, **fields)
 
 
 def update_profile(profile_id: str, **fields: Any) -> None:
-    if not fields:
-        return
-    for k in list(fields):
-        if k in _PROFILE_JSON_COLS and fields[k] is not None:
-            fields[k] = json.dumps(fields[k])
-    fields["updated_at"] = time.time()
-    cols = ", ".join(f"{k}=?" for k in fields)
-    vals = list(fields.values())
-    with _write_lock:
-        c = _conn()
-        c.execute(f"UPDATE profiles SET {cols} WHERE id=?", (*vals, profile_id))
-        c.commit()
+    _profile_store.update_profile(profile_id, **fields)
 
 
 def get_profile(profile_id: str) -> dict[str, Any] | None:
-    row = _conn().execute(
-        "SELECT * FROM profiles WHERE id=?", (profile_id,)
-    ).fetchone()
-    return _profile_row_to_dict(row) if row else None
+    return _profile_store.get_profile(profile_id)
 
 
 def list_profiles(limit: int = 100) -> list[dict[str, Any]]:
-    rows = _conn().execute(
-        "SELECT * FROM profiles ORDER BY created_at DESC LIMIT ?", (limit,)
-    ).fetchall()
-    return [_profile_row_to_dict(r) for r in rows]
+    return _profile_store.list_profiles(limit=limit)
 
 
 def delete_profile(profile_id: str) -> None:
-    with _write_lock:
-        c = _conn()
-        c.execute("DELETE FROM profiles WHERE id=?", (profile_id,))
-        c.commit()
+    _profile_store.delete_profile(profile_id)
 

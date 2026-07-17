@@ -22,6 +22,13 @@ aws:
   region: us-east-1
   project: odoo-synth          # all AWS resources are named <project>-*
 
+# NOTE: the odoo/addons provenance fields below are the DEFAULTS used when
+# creating a new profile (`odoo-synth profile create`). Each profile stores its
+# own odoo_series / odoo_git_url / odoo_git_ref / addons_git_url / addons_git_ref
+# / needs_enterprise, and a profile's own values OVERRIDE these at build/mask
+# time -- so one config.yaml can back multiple profiles pinned to different
+# Odoo commits or addons repos. Edit a profile's values with
+# `odoo-synth profile update <id> --odoo-git-ref ...`.
 odoo:
   series: "17.0"               # enterprise + community + custom addons must share major
   image: odoo:17               # base image (system + python deps); core is swapped from git

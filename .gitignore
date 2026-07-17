@@ -31,3 +31,4 @@ odoo/custom-addons/*
 odoo/enterprise/*
 !odoo/enterprise/.gitignore
 !odoo/enterprise/README.md
+profiles/

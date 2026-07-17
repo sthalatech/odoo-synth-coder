@@ -21,7 +21,8 @@ prod DB ──mask──▶ masked pg_dump in S3 ──build──▶ ECR image 
 | `odoo/` | Odoo image build context (Dockerfile, odoo.conf, entrypoint) + `enterprise.zip` (gitignored). |
 | `deploy/` | Infra + pipeline scripts (ECR, network, ECS, mask, Coder server, templates). |
 | `config.example.yaml` | Annotated config template. **Copy to `config.yaml` and fill in.** |
-| `config.yaml` | The single source of truth (gitignored — secrets). |
+| `config.yaml` | The single source of truth for infra/defaults (gitignored — secrets). |
+| `profiles/*.yaml` | One YAML file per profile (source binding + provenance + masking rules + image/S3 refs). Created by `profile create`. Gitignored — contains source hostnames + secret ARNs. |
 | `deploy/state.env` | AWS resource ids/endpoints resolved by the deploy scripts (gitignored). |
 
 ## Quick start: run the CLI locally
