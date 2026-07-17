@@ -28,6 +28,12 @@ LogSink = Callable[[str], None]
 TEMPLATE = (Path(__file__).resolve().parent.parent
             / "environments" / "builder-user-data.sh.tmpl")
 BUILD_CONTEXT = config.REPO_ROOT / "odoo"
+ENTERPRISE_ZIP = BUILD_CONTEXT / "enterprise.zip"
+
+
+def _have_enterprise_zip() -> bool:
+    """True if a local odoo/enterprise.zip bundle is present to bake in."""
+    return ENTERPRISE_ZIP.is_file()
 
 # Option E: the build runs as a Coder workspace from the odoo-synth-builder
 # template (same logic as builder-user-data.sh.tmpl, parameterized). The panel
@@ -70,11 +76,21 @@ def _ecr_registry() -> str:
     return f"{acct}.dkr.ecr.{_region()}.amazonaws.com"
 
 
-def _make_context_tarball() -> bytes:
-    """Tar.gz the odoo/ build context (excluding a few heavy/irrelevant dirs)."""
+def _make_context_tarball(include_enterprise: bool = False) -> bytes:
+    """Tar.gz the odoo/ build context.
+
+    The unzipped ``enterprise/`` tree is always excluded (it's redundant with
+    the compact ``enterprise.zip`` and would bloat the upload). When the
+    profile needs enterprise, ``enterprise.zip`` is included so the builder can
+    unzip it into ``enterprise/`` before ``docker build`` (mirroring
+    ``deploy/02_build_push.sh``); otherwise it's skipped so non-enterprise
+    images stay small and enterprise-free.
+    """
     buf = io.BytesIO()
     skip = {".git", "enterprise", "custom-addons"}
-    skip_files = {"enterprise.zip"}
+    skip_files = set()
+    if not include_enterprise:
+        skip_files.add("enterprise.zip")
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         for p in sorted(BUILD_CONTEXT.rglob("*")):
             rel = p.relative_to(BUILD_CONTEXT)
@@ -97,13 +113,14 @@ def _bucket() -> str:
     return b
 
 
-def _upload_context(profile_id: str) -> tuple[str, str]:
+def _upload_context(profile_id: str, include_enterprise: bool = False) -> tuple[str, str]:
     """Upload the context tarball; return (get_url, s3_uri)."""
     bucket = _bucket()
     prefix = config.dump_s3_prefix().rstrip("/").rsplit("/", 1)[0] + "/builds"
     key = f"{prefix}/{profile_id}/{uuid.uuid4().hex[:12]}/context.tgz"
     s3 = _s3()
-    s3.put_object(Bucket=bucket, Key=key, Body=_make_context_tarball())
+    s3.put_object(Bucket=bucket, Key=key,
+                  Body=_make_context_tarball(include_enterprise=include_enterprise))
     get_url = s3.generate_presigned_url(
         "get_object", Params={"Bucket": bucket, "Key": key}, ExpiresIn=6 * 3600)
     return get_url, f"s3://{bucket}/{key}"
@@ -288,10 +305,6 @@ def run_build(profile_id: str, emit: LogSink) -> dict:
     dhash = profile.get("discovery_hash")
     if not dhash:
         raise ValueError("run discovery first (no discovery_hash on the profile)")
-    if profile.get("needs_enterprise") and not profile.get("enterprise_source"):
-        emit("[panel] NOTE profile needs enterprise but no enterprise_source set; "
-             "the image will build without enterprise addons.")
-
     registry = _ecr_registry()
     proj = config.require("PROJECT")
     image_uri = f"{registry}/{proj}/odoo:{profile_id}-{dhash}"
@@ -300,7 +313,11 @@ def run_build(profile_id: str, emit: LogSink) -> dict:
     store.update_profile(profile_id, image_status="building", error=None)
 
     emit("[panel] packaging odoo/ build context ...")
-    context_get, context_uri = _upload_context(profile_id)
+    include_ent = bool(profile.get("needs_enterprise")) and _have_enterprise_zip()
+    if profile.get("needs_enterprise") and not include_ent:
+        emit("[panel] NOTE profile needs enterprise but odoo/enterprise.zip is not "
+             "present; the image will build without enterprise addons.")
+    context_get, context_uri = _upload_context(profile_id, include_enterprise=include_ent)
     result_put, result_get, _key = _presign_result(profile_id)
 
     user_data = _render_user_data(image_uri, context_get, result_put, profile)

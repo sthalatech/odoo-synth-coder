@@ -103,7 +103,8 @@ def _run_sync(operation: str, params: dict, profile_id: Optional[str],
             result = {"exit_code": bres.get("exit_code", 1), **bres}
         else:
             result = pipeline.run_operation(operation, params, emit)
-        exit_code = int(result.get("exit_code", 1) or 1)
+        _ec = result.get("exit_code", 1)
+        exit_code = int(_ec) if _ec is not None else 1
     except BrokenPipeError:
         # The CLI's stdout pipe was closed (e.g. the foreground process was
         # killed/timeboxed). The pipeline keeps running on the runner/ECS and
@@ -111,7 +112,8 @@ def _run_sync(operation: str, params: dict, profile_id: Optional[str],
         # never got a result, leave the run "running" so a later `run show`
         # reflects the true state once the backend finishes.
         if result:
-            exit_code = int(result.get("exit_code", 1) or 1)
+            _ec = result.get("exit_code", 1)
+            exit_code = int(_ec) if _ec is not None else 1
             status = "succeeded" if exit_code == 0 else "failed"
             store.update_run(run_id, status=status, task_arn=result.get("task_arn"),
                              exit_code=exit_code, result=result, finished_at=time.time())

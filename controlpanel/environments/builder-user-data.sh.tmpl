@@ -66,6 +66,22 @@ tar xzf /root/ctx.tgz -C /root/ctx || fail "could not extract build context"
 # ensure bake-in dirs exist so COPY steps never fail
 mkdir -p /root/ctx/enterprise /root/ctx/custom-addons
 touch /root/ctx/enterprise/.gitkeep /root/ctx/custom-addons/.gitkeep
+# Bake enterprise addons from the bundled odoo/enterprise.zip (the context
+# includes it only when the profile needs enterprise). Flatten a single
+# top-level wrapper dir (e.g. enterprise-19.0/) so module folders land directly
+# under enterprise/, matching deploy/02_build_push.sh.
+if [ -f /root/ctx/enterprise.zip ]; then
+  echo "[build] unzipping enterprise.zip into enterprise/ ..."
+  etmp="$(mktemp -d)"; unzip -q -o /root/ctx/enterprise.zip -d "$etmp"
+  einner="$etmp"
+  if [ "$(find "$etmp" -maxdepth 1 -mindepth 1 -type d | wc -l)" = "1" ]      && [ -z "$(find "$etmp" -maxdepth 1 -type f)" ]; then
+    einner="$(find "$etmp" -maxdepth 1 -mindepth 1 -type d)"
+  fi
+  rm -rf /root/ctx/enterprise; mkdir -p /root/ctx/enterprise
+  cp -a "$einner/." /root/ctx/enterprise/
+  rm -rf "$etmp" /root/ctx/enterprise.zip
+  echo "[build] enterprise modules staged: $(find /root/ctx/enterprise -maxdepth 1 -mindepth 1 -type d | wc -l)"
+fi
 
 # --- resolve git token for private addons clone -----------------------------
 GH_TOKEN_FILE="$(mktemp)"; chmod 600 "$GH_TOKEN_FILE"
