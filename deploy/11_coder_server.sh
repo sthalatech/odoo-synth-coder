@@ -79,7 +79,12 @@ CODER_PROFILE="$CODER_NAME-profile"
 if ! aws iam get-role --role-name "$CODER_ROLE" >/dev/null 2>&1; then
   aws iam create-role --role-name "$CODER_ROLE"     --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}' >/dev/null
 fi
-ENV_ROLE_ARN="$(aws iam get-role --role-name "$ENV_INSTANCE_PROFILE" \
+# Env-instance role ARN (for iam:PassRole). Created by deploy/09_dev_env.sh
+# --infra-only (run earlier in the provisioning chain). The role + instance
+# profile share the name "$PROJECT-env-instance". If 09 hasn't run yet, fall
+# back to that standard name so this step doesn't hard-fail on an unbound var.
+ENV_ROLE_NAME="${ENV_INSTANCE_PROFILE:-$PROJECT-env-instance}"
+ENV_ROLE_ARN="$(aws iam get-role --role-name "$ENV_ROLE_NAME" \
   --query 'Role.Arn' --output text 2>/dev/null || true)"
 # Option E: the Coder server also launches BUILDER workspaces, which assume
 # the odoo-synth-builder role (distinct from the env role -- ECR push + S3 +

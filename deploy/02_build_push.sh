@@ -9,24 +9,41 @@
 # which has no Odoo ref yet).
 source "$(dirname "$0")/lib.sh"
 
-NO_ODOO=0
-for a in "$@"; do case "$a" in --no-odoo) NO_ODOO=1;; *) ;; esac; done
+NO_ODOO=0; QUIET=0
+for a in "$@"; do case "$a" in --no-odoo) NO_ODOO=1;; --quiet) QUIET=1;; *) ;; esac; done
 
-log "building masker image ..."
+# Quiet mode (used by the guided installer): docker build/push output goes to
+# a logfile; we only surface a one-line progress marker + tail on failure.
+BUILD_LOG=""
+if [ "$QUIET" = 1 ]; then
+  BUILD_LOG="$(mktemp)"
+  trap 'rm -f "$BUILD_LOG"' EXIT
+fi
+# docker_build <image-tag> <ctx> [extra build args...] -- pushes on success.
+docker_build(){
+  local tag="$1" ctx="$2"; shift 2
+  if [ "$QUIET" = 1 ]; then
+    printf '  building %s ... ' "$tag"
+    if docker build --platform linux/amd64 "$@" -t "$tag" "$ctx" >"$BUILD_LOG" 2>&1 \
+       && docker push "$tag" >>"$BUILD_LOG" 2>&1; then
+      printf 'ok\n'
+    else
+      printf 'FAILED\n'; tail -n 20 "$BUILD_LOG"; return 1
+    fi
+  else
+    docker build --platform linux/amd64 "$@" -t "$tag" "$ctx" || return 1
+    docker push "$tag" || return 1
+  fi
+}
 # Optional: override the pinned greenmask tarball checksum (see masker/Dockerfile)
 # by exporting GREENMASK_TARBALL_SHA256 in your env. If unset, the Dockerfile's
 # default (pinned for the default GREENMASK_VERSION) is used, and the build
 # fails on any mismatch -- update both together when bumping GREENMASK_VERSION.
-docker build --platform linux/amd64 \
+docker_build "$ECR/$PROJECT/masker:latest" "$HERE/masker" \
   --build-arg GREENMASK_VERSION="$GREENMASK_VERSION" \
-  ${GREENMASK_TARBALL_SHA256:+--build-arg GREENMASK_TARBALL_SHA256="$GREENMASK_TARBALL_SHA256"} \
-  -t "$ECR/$PROJECT/masker:latest" "$HERE/masker"
-docker push "$ECR/$PROJECT/masker:latest"
+  ${GREENMASK_TARBALL_SHA256:+--build-arg GREENMASK_TARBALL_SHA256="$GREENMASK_TARBALL_SHA256"} || exit 1
 
-log "building discovery image ..."
-docker build --platform linux/amd64 \
-  -t "$ECR/$PROJECT/discovery:latest" "$HERE/discovery"
-docker push "$ECR/$PROJECT/discovery:latest"
+docker_build "$ECR/$PROJECT/discovery:latest" "$HERE/discovery" || exit 1
 
 if [ "$NO_ODOO" = 1 ]; then
   log "skipping odoo base image (--no-odoo); it's built per-profile via 'odoo-synth profile build'"
@@ -66,15 +83,13 @@ if [ -f "$HERE/odoo/enterprise.zip" ]; then
   rm -rf "$tmp"
   log "enterprise modules staged: $(find "$HERE/odoo/enterprise" -maxdepth 1 -mindepth 1 -type d | wc -l)"
 fi
-docker build --platform linux/amd64 \
+docker_build "$ECR/$PROJECT/odoo:latest" "$HERE/odoo" \
   --build-arg ODOO_IMAGE="$ODOO_IMAGE" \
   --build-arg ODOO_GIT_URL="$ODOO_GIT_URL" \
   --build-arg ODOO_GIT_REF="$ODOO_GIT_REF" \
   --build-arg CUSTOM_ADDONS_GIT_URL="$CUSTOM_ADDONS_GIT_URL" \
   --build-arg CUSTOM_ADDONS_GIT_REF="${CUSTOM_ADDONS_GIT_REF:-}" \
-  --secret id=gh_token,src="$GH_TOKEN_FILE" \
-  -t "$ECR/$PROJECT/odoo:latest" "$HERE/odoo"
-docker push "$ECR/$PROJECT/odoo:latest"
+  --secret id=gh_token,src="$GH_TOKEN_FILE" || exit 1
 fi
 
 log "images pushed"

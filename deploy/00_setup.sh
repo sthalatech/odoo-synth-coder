@@ -78,7 +78,7 @@ note "is kept unless you choose to overwrite."
 # ===========================================================================
 step 1/7 "Install prerequisites (AWS CLI, python deps, Coder CLI, odoo-synth on PATH)"
 if confirm "Run deploy/00_install_prereqs.sh now?"; then
-  bash deploy/00_install_prereqs.sh
+  bash deploy/00_install_prereqs.sh --quiet
 else
   warn "skipped -- make sure aws, python3, coder, and odoo-synth are on PATH."
 fi
@@ -91,32 +91,23 @@ ok "prerequisites present"
 # 2. AWS AUTHENTICATION
 # ===========================================================================
 step 2/7 "Configure AWS credentials"
-echo "  odoo-synth provisions AWS resources (ECR, EC2, S3, Coder server) and"
-echo "  creates IAM roles for the builder + Coder server (data-plane perms are"
-echo "  scoped onto those roles by the deploy scripts -- your key only needs"
-echo "  permission to CREATE them). Your access key is the CONTROL-PLANE key."
+echo "  Your access key is the CONTROL-PLANE key -- it creates the AWS resources"
+echo "  + the builder/Coder IAM roles (those roles get the data-plane perms). The"
+echo "  quickest path is to attach the AWS-managed ${BOLD}PowerUserAccess${OFF} policy to"
+echo "  your IAM user. For a locked-down key, these actions are enough:"
 echo
-echo "  ${BOLD}Required permissions${OFF} (attach to the IAM user whose key you enter below):"
-echo "    ${DIM}ec2:*            - security groups, run/terminate/describe instances,${OFF}"
-echo "    ${DIM}                    create-image, describe subnets/vpcs (Coder server + AMI)${OFF}"
-echo "    ${DIM}ecr:CreateRepository, ecr:DescribeRepositories, ecr:GetAuthorizationToken${OFF}"
-echo "    ${DIM}ecr:BatchGetImage, ecr:PutImage, ecr:BatchCheckLayerAvailability,${OFF}"
-echo "    ${DIM}    ecr:InitiateLayerUpload, ecr:UploadLayerPart, ecr:CompleteLayerUpload${OFF}"
-echo "    ${DIM}iam:CreateRole, iam:GetRole, iam:PutRolePolicy, iam:CreateInstanceProfile,${OFF}"
-echo "    ${DIM}    iam:GetInstanceProfile, iam:AddRoleToInstanceProfile${OFF}"
-echo "    ${DIM}s3:CreateBucket, s3:ListBucket, s3:GetObject, s3:PutObject,${OFF}"
-echo "    ${DIM}    s3:DeleteObject, s3:ListBucket, s3:HeadBucket${OFF}"
-echo "    ${DIM}ssm:GetParameters                       - AMI id resolution + ref:ssm: secrets${OFF}"
-echo "    ${DIM}secretsmanager:CreateSecret, GetSecretValue, PutSecretValue,${OFF}"
-echo "    ${DIM}    DeleteSecret, DescribeSecret        - env + profile passwords${OFF}"
-echo "    ${DIM}sts:GetCallerIdentity                  - credential verification${OFF}"
+echo "  ${DIM}ec2:*                 SG, run/terminate/describe instances, create-image${OFF}"
+echo "  ${DIM}ecr:CreateRepository, DescribeRepositories, GetAuthorizationToken,${OFF}"
+echo "  ${DIM}    BatchGetImage, PutImage, *LayerUpload${OFF}"
+echo "  ${DIM}iam:CreateRole, GetRole, PutRolePolicy, CreateInstanceProfile,${OFF}"
+echo "  ${DIM}    GetInstanceProfile, AddRoleToInstanceProfile${OFF}"
+echo "  ${DIM}s3:CreateBucket, ListBucket, GetObject, PutObject, DeleteObject, HeadBucket${OFF}"
+echo "  ${DIM}ssm:GetParameters, secretsmanager:Create*/Get/Put/Delete/DescribeSecret,${OFF}"
+echo "  ${DIM}sts:GetCallerIdentity${OFF}"
 echo
-echo "  ${DIM}Quickest path: the AWS-managed 'PowerUserAccess' policy covers all of${OFF}"
-echo "  ${DIM}the above (it grants everything except IAM user/group management). For a${OFF}"
-echo "  ${DIM}locked-down key, create an inline policy from the list above. Create the${OFF}"
-echo "  ${DIM}key in the AWS console: IAM -> Users -> your user -> Security credentials${OFF}"
-echo "  ${DIM}-> Create access key. The wizard writes it to the standard shared-credentials${OFF}"
-echo "  ${DIM}file (~/.aws/credentials + ~/.aws/config) used by the AWS CLI -- nothing is${OFF}"
+echo "  ${DIM}Create the key in the AWS console: IAM -> Users -> your user -> Security${OFF}"
+echo "  ${DIM}credentials -> Create access key. The wizard writes it to the standard${OFF}"
+echo "  ${DIM}shared-credentials file (~/.aws/credentials + ~/.aws/config) -- nothing is${OFF}"
 echo "  ${DIM}committed to this repo."
 echo
 
@@ -340,13 +331,16 @@ else
 
     # --- 7a. ECR + base image + builder IAM + Coder server (no coder login yet) ---
     say "7a/7c: ECR, base Odoo image, builder IAM, Coder server ..."
-    if bash deploy/01_ecr.sh       && bash deploy/02_build_push.sh --no-odoo       && bash deploy/10_builder.sh       && bash deploy/11_coder_server.sh; then
-      ok "ECR + base image + builder IAM + Coder server provisioned"
-      # reload state.env written by 11_coder_server.sh
+    # Order: ECR repos -> masker+discovery images -> builder IAM ->
+    #        env-instance IAM (09 --infra-only, no AMI bake) -> Coder server
+    #        (needs ENV_INSTANCE_PROFILE for iam:PassRole) -> coder login ->
+    #        publish templates.
+    if bash deploy/01_ecr.sh            && bash deploy/02_build_push.sh --no-odoo --quiet            && bash deploy/09_dev_env.sh --infra-only            && bash deploy/10_builder.sh            && bash deploy/11_coder_server.sh; then
+      ok "basic infra provisioned (ECR, images, IAM, Coder server)"
       set -a; . "$HERE/deploy/state.env"; set +a
     else
-      warn "one of ECR/base-image/builder/coder-server failed (see logs above)."
-      warn "fix it and re-run this wizard -- the completed steps are idempotent."
+      warn "a provisioning step failed (see logs above)."
+      warn "fix it and re-run -- completed steps are idempotent."
       warn "skipping Coder login + template publish for now."
     fi
 
@@ -408,37 +402,29 @@ fi
 step 7/7 "What's left: create profiles and run"
 cat <<NEXT
 
-${BOLD}Basic infra is${OFF} $([ "$PROVISIONED" = 1 ] && echo "${GREEN}provisioned${OFF}" || echo "${YELLOW}not yet provisioned${OFF}").
-The rest is on-demand via the CLI -- you create a profile per source Odoo DB,
+${BOLD}Basic infra:${OFF} $([ "$PROVISIONED" = 1 ] && echo "${GREEN}provisioned${OFF}" || echo "${YELLOW}not yet provisioned${OFF}").
+The rest is on-demand via the odoo-synth CLI -- one profile per source Odoo DB,
 then mask + launch dev environments from it.
 
 ${BOLD}1. Create a profile${OFF} (binds a source Odoo DB + its addons repo):
-    ${DIM}odoo-synth profile create --label 'my-profile' \${OFF}
-    ${DIM}    --source-dsn 'postgresql://user:pass@host:5432/db' \${OFF}
-    ${DIM}    --odoo-series 17.0 --addons-git-url <url> --addons-git-ref <ref>${OFF}
-    ${DIM}odoo-synth profile list   ${OFF}# see your profiles${OFF}
+    odoo-synth profile create --label 'my-profile'
+        --source-dsn 'postgresql://user:pass@host:5432/db'
+        --odoo-series 17.0 --addons-git-url <url> --addons-git-ref <ref>
+    odoo-synth profile list
 
-${BOLD}2. Set the DB/Odoo passwords${OFF} before your first mask/env run -- create
-   ${DIM}deploy/secrets.env${OFF} (gitignored; the CLI auto-loads it) with:
-    ${DIM}ODOO_ADMIN_PASSWORD='...'      # admin login on the masked DB${OFF}
-    ${DIM}ODOO_MASTER_PASSWORD='...'     # Odoo DB manager pw in dev envs${OFF}
-    ${DIM}TARGET_DB_PASSWORD='...'       # the ephemeral masked (target) DB${OFF}
-    ${DIM}SOURCE_DB_MASTER_PASSWORD='...'# only if the source DSN omits it${OFF}
-   ${DIM}(or pass --admin-password / include the pw in the --source-dsn at call time.)${OFF}
+${BOLD}2. Set DB/Odoo passwords${OFF} before your first mask/env run. Create
+   ${DIM}deploy/secrets.env${OFF} (gitignored; auto-loaded by the CLI):
+    ODOO_ADMIN_PASSWORD=...        # admin login on the masked DB
+    ODOO_MASTER_PASSWORD=...       # Odoo DB manager pw in dev envs
+    TARGET_DB_PASSWORD=...         # the ephemeral masked (target) DB
+    SOURCE_DB_MASTER_PASSWORD=... # only if the source DSN omits it
 
 ${BOLD}3. Mask${OFF} the source DB -> masked pg_dump in S3:
-    ${DIM}odoo-synth run mask --profile <id> ...${OFF}
+    odoo-synth run mask --profile <id> ...
 
 ${BOLD}4. Launch a dev environment${OFF} (one Coder workspace per GitHub issue):
-    ${DIM}odoo-synth env create --profile <id> --issue <num> --repo-url <url>${OFF}
-
-${BOLD}If provisioning was skipped or failed${OFF}, re-run this wizard (or
-${DIM}bash deploy/run_all.sh${OFF}) to finish the basic infra first.
-
-${BOLD}(Optional)${OFF} Enterprise addons at odoo/enterprise.zip (only if a profile
-has needs_enterprise: 1).
+    odoo-synth env create --profile <id> --issue <num> --repo-url <url>
 
 Re-run ${BOLD}bash deploy/00_setup.sh${OFF} anytime to reconfigure or re-provision.
-See README.md for the full CLI reference.
 NEXT
 ok "done."

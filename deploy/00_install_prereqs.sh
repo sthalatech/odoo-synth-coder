@@ -16,6 +16,8 @@
 # Run this first, then `bash deploy/00_validate_config.sh`.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
+QUIET=0
+for _a in "$@"; do case "$_a" in --quiet) QUIET=1;; *) ;; esac; done
 
 log(){ echo "== $* ==" >&2; }
 have(){ command -v "$1" >/dev/null 2>&1; }
@@ -155,39 +157,20 @@ else
 fi
 
 # ----------------------------------------------------------------------------
-# 6. next steps (things this script deliberately does NOT do)
+# 6. next steps (skipped in --quiet mode, used by the guided installer)
 # ----------------------------------------------------------------------------
+if [ "$QUIET" = 0 ]; then
 cat <<'NEXT'
 
 == Prerequisites installed. Next steps ==
 
-These steps set up the CLI to run against an EXISTING deployment (no AWS infra
-is provisioned). To stand the stack up in a fresh AWS account instead, run
-`bash deploy/run_all.sh` (see README.md "Deploy the full pipeline").
+Run the guided installer to provision + configure everything:
+    bash deploy/00_setup.sh
 
-1. Authenticate to AWS (one of):
-     aws configure                       # interactive; writes ~/.aws/credentials
-   OR export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_REGION
-
-   Verify:  aws sts get-caller-identity
-
-2. Create your config (secrets -- never committed):
-     cp config.example.yaml config.yaml
-     $EDITOR config.yaml                 # fill region, git refs, passwords, bucket
-     $EDITOR deploy/state.env            # if connecting to an existing deployment,
-                                         # copy state.env from the deploy host
-
-3. Log into Coder (needed for build/env/run commands):
-     coder login <CODER_URL>             # sets CODER_URL + CODER_SESSION_TOKEN
-
-4. (Optional) Drop enterprise addons at odoo/enterprise.zip
-   (only if a profile has needs_enterprise=1)
-
-5. Validate + run (odoo-synth is now on your PATH):
-     bash deploy/00_validate_config.sh
-     odoo-synth config
-     odoo-synth profile list
+(Or, for a non-interactive full deploy: bash deploy/run_all.sh -- but you'll
+still need AWS creds + a config.yaml first. See README.md.)
 NEXT
+fi
 
 # ----------------------------------------------------------------------------
 # 7. put the CLI on PATH (symlink) -- formerly cli/install.sh
