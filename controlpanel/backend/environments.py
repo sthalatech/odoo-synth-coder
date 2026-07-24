@@ -102,7 +102,7 @@ def _delete_password_secret(arn: str | None) -> None:
 def _subdomain_url(subdomain_name: str) -> str:
     """Build the browser-reachable URL for a subdomain-hosted coder_app.
 
-    CODER_URL is the Coder server origin, e.g. http://203.0.113.10:8943, and
+    CODER_URL is the Coder server origin, e.g. http://coder.example.com:8943, and
     CODER_WILDCARD_ACCESS_URL on the server is "*.<same host:port>". Coder
     exposes per-app `subdomain_name` = "<app>--<ws>--<owner>". The app origin is
     therefore "<subdomain_name>.<host>:<port>" with the same scheme:port as

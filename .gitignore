@@ -6,6 +6,11 @@ coder/templates/odoo-synth-env/presets.tf
 __pycache__/
 *.log
 
+# Local tool/IDE config — never shared, may contain local paths or state.
+.claude/
+.venv/
+venv/
+
 # Runtime state files (YAML configs + S3-backed runs) — may contain secrets.
 *.db
 *.db-shm
