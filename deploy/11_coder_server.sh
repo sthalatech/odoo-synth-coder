@@ -217,6 +217,8 @@ UD_EOF
   # Retry a few times with a short sleep on that specific error.
   I_ID=""
   for _try in 1 2 3 4 5; do
+    # `|| true` keeps set -e from aborting on a failed run-instances WITHOUT
+    # wiping the captured stderr (which carries the error text we surface below).
     I_ID="$(aws ec2 run-instances --region "$AWS_REGION" \
       --image-id "$CODER_AMI" \
       --instance-type "$CODER_INSTANCE_TYPE" \
@@ -226,7 +228,7 @@ UD_EOF
       --block-device-mappings "DeviceName=/dev/sda1,Ebs={VolumeSize=$CODER_VOLUME_GB,VolumeType=gp3}" \
       --user-data "file://$UD" \
       --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$CODER_NAME},{Key=odoo-synth:managed,Value=true}]" \
-      --query 'Instances[0].InstanceId' --output text 2>&1)" || I_ID=""
+      --query 'Instances[0].InstanceId' --output text 2>&1)" || true
     case "$I_ID" in
       i-*) break ;;                       # got an instance id -> success
       *InvalidParameterValue*|*Invalid*IAM*Instance*Profile*) sleep 10 ;;
@@ -234,7 +236,7 @@ UD_EOF
     esac
   done
   if ! printf '%s' "$I_ID" | grep -qi '^i-'; then
-    log "ERROR: RunInstances failed:$I_ID"
+    log "ERROR: RunInstances failed: $I_ID"
     exit 1
   fi
   log "instance $I_ID launching; waiting for running + public IP ..."
