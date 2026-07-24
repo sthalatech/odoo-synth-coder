@@ -24,22 +24,6 @@ for v in AWS_REGION PROJECT ODOO_SERIES ODOO_GIT_URL \
   req_cfg "$v"
 done
 
-# The four DB/Odoo passwords are NOT needed to provision basic infra -- they're
-# consumed by the mask run (TARGET_DB_PASSWORD, ODOO_ADMIN_PASSWORD), the
-# dev-env launch (ODOO_MASTER_PASSWORD), or the per-profile --source-dsn
-# (SOURCE_DB_MASTER_PASSWORD). Warn (don't fail) if any are still empty so a
-# first-time install can validate + provision before the first mask/env run.
-# Fill deploy/secrets.env (auto-loaded by the CLI) before your first mask run.
-pw_missing=""
-for v in TARGET_DB_PASSWORD SOURCE_DB_MASTER_PASSWORD \
-         ODOO_ADMIN_PASSWORD ODOO_MASTER_PASSWORD; do
-  [ -z "${!v:-}" ] && pw_missing="$pw_missing $v"
-done
-if [ -n "$pw_missing" ]; then
-  echo "WARN (not fatal): DB/Odoo passwords not set yet --$pw_missing" >&2
-  echo "       (needed at mask/env time, not provisioning; fill deploy/secrets.env before your first mask run)" >&2
-fi
-
 # placeholders left from the example? DUMP_S3_BUCKET is required and must be
 # filled. ODOO_GIT_REF + custom addons are profile-level/optional (blank = set
 # them per-profile via `odoo-synth profile create`), so they're not checked here.
