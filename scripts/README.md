@@ -17,7 +17,7 @@ into a running odoo-synth env with an AI agent working on it:
 ```
    GitHub issue opened                Coder server (always-on EC2)
    in the addons repo   ──webhook──▶  webhook_listener.py (port 8080, public)
-   (e.g. erp.life.in)                     │
+   (e.g. your-addons-repo)                │
                                           │ issue.opened  -> issue_to_env.py (create + agent)
                                           │ issue.closed  -> issue_to_env.py --teardown (delete ws)
                                           ▼
@@ -85,7 +85,7 @@ This opens a 2nd inbound port on the Coder SG, ships the repo to the Coder
 server over SSH, installs `webhook_listener.py` as a systemd service, and writes
 `GITHUB_WEBHOOK_SECRET` to `/etc/odoo-synth/webhook.env`.
 
-Then in the **addons repo** (the profile repo, e.g. `erp.life.in`):
+Then in the **addons repo** (the profile repo, e.g. `your-addons-repo`):
 Settings -> Webhooks -> Add webhook:
 - Payload URL: `http://<CODER_SERVER_IP>:8080/webhook`
 - Content type: `application/json`
@@ -122,7 +122,7 @@ repo, never another issue's. It's idempotent (no-match = benign no-op;
 already-terminated envs just drop their stale store record). Manual form:
 
 ```bash
-ISSUE_NUMBER=492 ISSUE_REPO_URL=https://github.com/IshaFoundationIT/prs-backend \
+ISSUE_NUMBER=492 ISSUE_REPO_URL=https://github.com/your-org/your-addons-repo \
   .venv/bin/python3 scripts/issue_to_env.py --teardown
 ```
 

@@ -17,23 +17,15 @@ database, with an addons repo live-mounted for development.
     and it's auto-injected into every workspace you own.
   - **OpenCode** — `opencode` (open-source agent). Served as a web terminal
     app; configure a provider with `opencode auth`.
-  - **Superpowers** — `superpowers`, an agentic-skills plugin loaded for both
-    Claude Code and OpenCode. It drives the agent autonomously through a task:
-    brainstorm -> plan -> git-worktree -> TDD subagent dev -> review -> finish
-    branch (merge/PR). No external loop needed.
-  - **Headless Chrome for Testing** — `chrome`, the agent's browser for viewing
-    a page, testing the Odoo UI, and capturing PNG screenshots as PR evidence:
-    `chrome-dom <url>` (HTML) and `chrome-shot out.png <url>` (PNG) -- wrappers
-    around `chrome` that unset the empty `DBUS_SESSION_BUS_ADDRESS` (which makes
-    raw Chrome hang) and pass `--timeout=15000` (Odoo's /web/login redirect chain
-    never fires a load event, so raw `--headless=new` waits forever). Use the
-    wrappers, not raw `chrome`.
+  - **Ralph Wiggum** — `ralph`, an autonomous agentic loop over any of the
+    agents above: e.g. `ralph "fix the login 500" --agent claude-code
+    --max-iterations 10`.
 
 ## Create with the preset
 
 The default preset **"Latest masked profile"** pre-fills the Odoo image, the
-masked dump URI, and the `erp.life.in` addons repo + ref. Click **Create** and
-the env hydrates and serves Odoo automatically.
+masked dump URI, and the addons repo + ref from your profile store. Click
+**Create** and the env hydrates and serves Odoo automatically.
 
 ## Parameters you must supply
 

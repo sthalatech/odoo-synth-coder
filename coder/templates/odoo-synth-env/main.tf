@@ -41,16 +41,35 @@ data "coder_parameter" "instance_type" {
 # from the shared infra (deploy/state.env: ENV_AMI_ID/ENV_INSTANCE_PROFILE/
 # ENV_SUBNET_ID/ENV_SG_ID). They can still be overridden per-workspace.
 #
-# AMI: the thin golden AMI has no stable tags, so it stays a parameter with a
-# real default (set by deploy/12_publish_template.sh from ENV_AMI_ID). SG +
-# instance-profile are name-stable, so we resolve them with data sources and the
-# parameters fall back to those when left empty.
+# AMI: resolved dynamically from the latest Ubuntu 22.04 AMI in the current
+# region (see the aws_ami data source below). The deploy script
+# (deploy/12_publish_template.sh) overrides this with the golden AMI ID from
+# ENV_AMI_ID when available. Users can also override per-workspace.
 data "coder_parameter" "ami_id" {
   name         = "ami_id"
-  display_name = "Thin golden AMI (ubuntu + docker + awscli)."
+  display_name = "Thin golden AMI (ubuntu + docker + awscli). Empty = auto-resolve latest Ubuntu 22.04."
   type         = "string"
-  default      = "ami-0e94ad593421c5023"
+  default      = ""
   order        = 1
+}
+
+# Dynamically resolve the latest Ubuntu 22.04 AMI for the current region.
+# Used as a fallback when no explicit ami_id is provided (parameter or
+# deploy-time override). This keeps the template portable across AWS accounts
+# and regions without hardcoding account-specific AMI IDs.
+data "aws_ami" "ubuntu_2204" {
+  most_recent = true
+  owners      = ["099720109477"]  # Canonical
+
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
 }
 
 data "coder_parameter" "instance_profile" {
@@ -105,12 +124,11 @@ data "coder_parameter" "repo_url" {
   name         = "repo_url"
   display_name = "Addons repo cloned + live-mounted into Odoo."
   type         = "string"
-  # Pre-filled with the default addons repo but EDITABLE in the create form
-  # (preset-provided values are locked by Coder; a parameter default is not,
-  # so we use default here instead of the preset for repo_url/repo_branch).
-  # A workspace with no addons repo is useless for dev, so the default is a
-  # real working repo rather than empty.
-  default = "git@github.com:IshaFoundationIT/prs-backend.git"
+  # No default: the user must supply their own addons repo URL at workspace
+  # creation time (or use a preset that pre-fills it). Preset-provided values
+  # are locked by Coder; a parameter default is not, so presets use the
+  # parameter mechanism instead of a hardcoded default here.
+  default = ""
   order   = 8
 }
 
@@ -118,7 +136,8 @@ data "coder_parameter" "repo_branch" {
   name         = "repo_branch"
   display_name = "Branch/tag/commit of the addons repo."
   type         = "string"
-  default      = "uat"
+  # No default: the user must supply their own branch/commit (or use a preset).
+  default      = ""
   order        = 9
 }
 
@@ -177,7 +196,7 @@ data "coder_parameter" "agent_name" {
   display_name = "AI agent the launcher drives (opencode|claude-code)."
   type         = "string"
   default      = "opencode"
-  order        = 17
+  order        = 16
 }
 
 # Per-project system prompt (base64). The startup script decodes + stages it
@@ -188,7 +207,7 @@ data "coder_parameter" "agent_system_prompt_b64" {
   display_name = "Base64 of the per-project agent system prompt (empty = built-in)."
   type         = "string"
   default      = ""
-  order        = 18
+  order        = 17
 }
 
 # --- Template presets --------------------------------------------------------
@@ -229,8 +248,8 @@ data "aws_subnets" "default_vpc" {
 locals {
   # Resolve infra: explicit parameter wins, else data-source / known-name fallback.
   # ami_id: an explicitly-passed "" must NOT become the AMI (=> MissingParameter:
-  # ImageId), so fall back to the coder_parameter default via length()>0.
-  ami_id           = length(data.coder_parameter.ami_id.value) > 0 ? data.coder_parameter.ami_id.value : data.coder_parameter.ami_id.default
+  # ImageId), so fall back to the dynamically-resolved Ubuntu 22.04 AMI.
+  ami_id           = length(data.coder_parameter.ami_id.value) > 0 ? data.coder_parameter.ami_id.value : data.aws_ami.ubuntu_2204.id
   sg_id            = length(data.coder_parameter.security_group_id.value) > 0 ? data.coder_parameter.security_group_id.value : (length(data.aws_security_groups.env_sg.ids) > 0 ? data.aws_security_groups.env_sg.ids[0] : "")
   instance_profile = length(data.coder_parameter.instance_profile.value) > 0 ? data.coder_parameter.instance_profile.value : "odoo-synth-env-instance"
   subnet_id        = length(data.coder_parameter.subnet_id.value) > 0 ? data.coder_parameter.subnet_id.value : (length(data.aws_subnets.default_vpc.ids) > 0 ? data.aws_subnets.default_vpc.ids[0] : "")
@@ -390,48 +409,12 @@ resource "coder_agent" "main" {
             || true
         fi
         if [ -n "$GIT_TOKEN" ] && [ -d "$REPO_DIR/.git" ]; then
-          # Keep the token in the push URL so the agent can push without
-          # re-auth. origin fetch stays the bare URL (clean); the push URL
-          # embeds the token. Survives agent restarts; no credential helper
-          # or extra config files needed.
-          sudo -u dev git -C "$REPO_DIR" remote set-url origin "$REPO_URL" || true
-          PUSH_URL="$(printf '%s' "$REPO_URL" | sed -E "s#https://#https://x-access-token:$GIT_TOKEN@#")"
-          sudo -u dev git -C "$REPO_DIR" remote set-url --push origin "$PUSH_URL" || true
-        elif [ -d "$REPO_DIR/.git" ]; then
           sudo -u dev git -C "$REPO_DIR" remote set-url origin "$REPO_URL" || true
         fi
       fi
       [ "$CLONE_OK" = 1 ] && echo "[env] repo cloned -> $REPO_DIR" || echo "[env] repo NOT cloned (addons won't be live-mounted)"
     fi
     chown -R dev:dev /home/dev
-
-    # --- 4b. install gh CLI + expose GH_TOKEN so the agent can open PRs ---
-    # The same Secrets-Manager git token (a GitHub PAT with repo scope) is
-    # reused for `gh`. We install the static gh binary at boot (not in the
-    # AMI, to keep the golden image tool-agnostic) and write GH_TOKEN to a
-    # 0600 dev-owned env file the agent's launcher sources. The token never
-    # goes through a credential helper or git config (fetch stays bare); gh
-    # reads GH_TOKEN from the environment directly.
-    if ! command -v gh >/dev/null 2>&1; then
-      GH_ARCH="$(uname -m)"
-      case "$GH_ARCH" in x86_64) GH_ARCH="amd64" ;; aarch64) GH_ARCH="arm64" ;; *) GH_ARCH="" ;; esac
-      if [ -n "$GH_ARCH" ] && curl -fsSL "https://github.com/cli/cli/releases/latest/download/gh_$${GH_ARCH}.tar.gz" \
-           -o /tmp/gh.tgz 2>/dev/null; then
-        tar -xzf /tmp/gh.tgz -C /tmp 2>/dev/null
-        GH_BIN="$(find /tmp -name gh -type f -path '*/bin/*' 2>/dev/null | head -1)"
-        [ -n "$GH_BIN" ] && install -m 0755 "$GH_BIN" /usr/local/bin/gh
-        rm -rf /tmp/gh.tgz /tmp/gh_*
-      fi
-    fi
-    install -d -o dev -g dev -m 0700 /home/dev/.config
-    : > /home/dev/.config/agent-env && chmod 600 /home/dev/.config/agent-env
-    chown dev:dev /home/dev/.config/agent-env
-    if [ -n "$GIT_TOKEN" ]; then
-      printf 'export GH_TOKEN=%q\n' "$GIT_TOKEN" >> /home/dev/.config/agent-env
-      echo "[env] gh installed + GH_TOKEN staged for agent"
-    else
-      echo "[env] gh installed but GH_TOKEN empty (no git_token_secret) -- PR creation will fail"
-    fi
 
     # --- 5. pull + run the provenance-baked odoo image ---
     if [ -n "$ODOO_IMAGE" ]; then
@@ -505,7 +488,6 @@ PY
             >/dev/null 2>&1 || true
         fi
       fi
-
     fi
 
     # --- 6. in-env info page (Env Guide app) ---------------------------------
@@ -669,15 +651,8 @@ EISVC
 ## AI agents installed (on the AMI)
 - claude   -- Claude Code (Anthropic). API key from your Coder user secret `anthropic-api-key`.
 - opencode -- open-source agent. Web app on the workspace page; add a provider with: opencode auth
-- superpowers -- agentic-skills plugin (TDD, planning, git-worktrees, code review) loaded for both
-              claude and opencode. It drives the agent autonomously through a task: brainstorm ->
-              plan -> worktree -> TDD subagent dev -> review -> finish branch (merge/PR).
-- chrome   -- headless Chrome for Testing. View a page / test Odoo UI AND capture PNG screenshots. See AGENT_CONTEXT.md.
-
-## When you need a browser
-Do NOT launch a GUI browser. Use headless Chrome for Testing (installed on the AMI as `chrome`):
-- Render a page to HTML: `chrome --headless=new --no-sandbox --disable-gpu --dump-dom http://127.0.0.1:18069/web/login`
-- Capture a PNG screenshot: `chrome --headless=new --no-sandbox --disable-gpu --hide-scrollbars --window-size=1280,800 --screenshot=out.png http://127.0.0.1:18069/<route>`
+- ralph    -- autonomous loop over an agent. e.g. ralph "fix the login 500" --agent claude-code --max-iterations 10
+              (agents: opencode, claude-code, codex, copilot, cursor-agent, qwen-code)
 CMDOC
       chown dev:dev /home/dev/workspace/CLAUDE.md 2>/dev/null || true
 
@@ -692,7 +667,7 @@ Wants=network-online.target
 Type=simple
 User=root
 Environment=HOME=/root
-ExecStart=/usr/bin/ttyd -i 127.0.0.1 -p 8091 -t fontSize=14 sudo -u dev HOME=/home/dev bash -lc 'cd /home/dev/workspace/repo 2>/dev/null || cd /home/dev/workspace; claude'
+ExecStart=/usr/bin/ttyd -i 127.0.0.1 -p 8091 -t fontSize=14 sudo -u dev HOME=/home/dev bash -lc 'cd /home/dev/workspace && claude'
 Restart=always
 [Install]
 WantedBy=multi-user.target
@@ -702,7 +677,7 @@ CCSVC
 
       # OpenCode: same ttyd-served-TUI pattern as Claude Code, on a separate
       # port (8092) so both apps can run side by side. OpenCode is a TUI by
-      # default; superpowers (loaded from opencode.json) drives it autonomously.
+      # default; `ralph` can drive it (or Claude) in an autonomous loop.
       ln -sf /usr/local/bin/opencode /home/dev/.local/bin/opencode 2>/dev/null
       cat > /etc/systemd/system/opencode.service <<OCSVC
 [Unit]
@@ -713,7 +688,7 @@ Wants=network-online.target
 Type=simple
 User=root
 Environment=HOME=/root
-ExecStart=/usr/bin/ttyd -i 127.0.0.1 -p 8092 -t fontSize=14 sudo -u dev HOME=/home/dev bash -lc 'cd /home/dev/workspace/repo 2>/dev/null || cd /home/dev/workspace; opencode'
+ExecStart=/usr/bin/ttyd -i 127.0.0.1 -p 8092 -t fontSize=14 sudo -u dev HOME=/home/dev bash -lc 'cd /home/dev/workspace && opencode'
 Restart=always
 [Install]
 WantedBy=multi-user.target
@@ -732,9 +707,9 @@ OCSVC
     # opencode reads AGENT.md / opencode.json from cwd; Claude Code reads
     # CLAUDE.md. Empty prompt = the launcher supplies the built-in default.
     if [ -n "$AGENT_SYSTEM_PROMPT_B64" ]; then
-      prompt="$(printf '%%s' "$AGENT_SYSTEM_PROMPT_B64" | base64 -d 2>/dev/null || true)"
+      prompt="$(printf '%s' "$AGENT_SYSTEM_PROMPT_B64" | base64 -d 2>/dev/null || true)"
       if [ -n "$prompt" ]; then
-        printf '%%s\n' "$prompt" > "$WORKSPACE/AGENT_CONTEXT.md"
+        printf '%s\n' "$prompt" > "$WORKSPACE/AGENT_CONTEXT.md"
         chown dev:dev "$WORKSPACE/AGENT_CONTEXT.md" 2>/dev/null || true
         if [ -d "$REPO_DIR" ] && [ ! -f "$REPO_DIR/AGENT.md" ]; then
           cp "$WORKSPACE/AGENT_CONTEXT.md" "$REPO_DIR/AGENT.md"

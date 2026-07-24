@@ -323,9 +323,9 @@ def main() -> int:
 
     # The PR base branch the agent must target with `gh pr create --base`.
     # Per-profile (profile.pr_base) so each repo lands on its own integration
-    # branch; default uat (the prs-backend integration branch). The issue
+    # branch; default is the repo's main branch. The issue
     # launcher passes this explicitly so the agent doesn't have to guess.
-    pr_base = (profile.get("pr_base") or "").strip() or "uat"
+    pr_base = (profile.get("pr_base") or "").strip() or "main"
 
     _log(f"creating env: name={label} issue={issue_ref} branch={repo_branch} "
          f"pr_base={pr_base}")

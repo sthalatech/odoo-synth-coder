@@ -178,8 +178,8 @@ _NAME_IS_PERSON_TABLES = {
 # identifying data that must be masked, NOT an Odoo document sequence. The
 # person-allowlist above does not cover these because their ``name`` is an org
 # / object label, not a person. Without this set these names leak unmasked
-# (e.g. res_company.name = "isha foundation inc", stock_warehouse.name =
-# "ISHA LIFE STORES", product_template.name = {"en_US": "Hand Bag"}).
+# (e.g. res_company.name = "Acme Corp Inc", stock_warehouse.name =
+# "ACME WAREHOUSE", product_template.name = {"en_US": "Hand Bag"}).
 #
 # These are the *only* non-person tables whose bare ``name`` we mask; every
 # other bare ``name`` is still treated as a document sequence and kept (see the

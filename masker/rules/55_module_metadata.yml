@@ -7,7 +7,7 @@
 # denormalized caches.
 #
 # These are the residual matches from the darkstore leak-scan: the org's
-# own name ("Isha Life Pvt Ltd") appeared in custom-module metadata.
+# own name ("Acme Corp Pvt Ltd") appeared in custom-module metadata.
 # Customer PII was already clean; this file closes the org-self-reference
 # residue so the FULL leak baseline (not just the customer-PII subset)
 # scans clean.
@@ -15,7 +15,7 @@
 ir.module.module:
   fields:
     # ir_module_module.author holds the module author string. For a
-    # custom module it's the customer's own org name ("Isha Life Pvt
+    # custom module it's the customer's own org name ("Acme Corp Pvt
     # Ltd"); for OCA/Odoo SA modules it's the third party's author. A
     # masked dev instance has no functional need for any of these
     # (nothing reads author at runtime), so null the column globally
@@ -29,8 +29,8 @@ ir.ui.view:
     # (Odoo's view-edit history). A custom report template that hardcoded
     # the org name in arch_db almost always has the same literal in its
     # archived prior revision -- leak-scan proved exactly that for the
-    # isha_darkstore packing-slip view (arch_db rewritten clean, arch_prev
-    # still carried "Isha Life Pvt Ltd"). A masked dev copy has no need
+    # acme_darkstore packing-slip view (arch_db rewritten clean, arch_prev
+    # still carried "Acme Corp Pvt Ltd"). A masked dev copy has no need
     # for view-edit history at all: nothing reads arch_prev at runtime.
     # Null it globally -- same rule class as ir.module.module.author above.
     arch_prev:
@@ -57,9 +57,9 @@ ir.ui.view:
   # org name as a literal (verified by leak-scan). Do NOT add views
   # speculatively -- this rewrites live template XML.
   scoped_arch_replace:
-    - view_key: "isha_darkstore.report_invoice_ds_packing_slip"
+    - view_key: "acme_darkstore.report_invoice_ds_packing_slip"
       note: >
         Custom module report template hardcodes the org name as a footer
-        literal ("Dark Store Fulfillment — Isha Life Pvt Ltd"). Replace
+        literal ("Dark Store Fulfillment — Acme Corp Pvt Ltd"). Replace
         with the masked company name so the rendered report no longer
         leaks whose data this is.

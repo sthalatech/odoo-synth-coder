@@ -3,7 +3,7 @@
 # Explicit coverage for high-value operational models the v0.1.0 darkstore
 # run found leaking partner names / emails via denormalized caches. These
 # are reviewed entries (not pattern backstops) -- the field list comes from
-# the actual isha schema, not a guess. Pattern rules in 05_patterns.yml
+# the actual source schema, not a guess. Pattern rules in 05_patterns.yml
 # already catch the *_display_name / complete_name families generically; the
 # entries here cover model-specific free-text that doesn't follow a cache
 # naming convention (ir_sequence.name, stock_move.origin, etc.).
@@ -40,7 +40,7 @@ stock.picking:
 
 ir.sequence:
   fields:
-    # name embeds the company/sequence name ("Isha Life Pvt Ltd Sequence
+    # name embeds the company/sequence name ("Acme Corp Pvt Ltd Sequence
     # scrap") -- the darkstore run found ir_sequence leaking 10 rows via
     # this. Redact; the prefix/suffix/code stay (they're the actual format
     # template the sequence uses, operational).

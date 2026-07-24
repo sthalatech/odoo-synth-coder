@@ -3,7 +3,7 @@
 
 Runs ON THE CODER SERVER (the always-on control plane at CODER_SERVER_IP), NOT
 on a dev VM. GitHub POSTs `issues` events from the *profile's addons repo*
-(e.g. IshaFoundationIT/erp.life.in) to this listener; it verifies the
+(e.g. your-org/your-addons-repo) to this listener; it verifies the
 HMAC-SHA256 signature with a shared webhook secret, dedupes by
 X-GitHub-Delivery (replay protection), and:
   * on `issue.opened`  -> runs scripts/issue_to_env.py in a background thread

@@ -155,6 +155,11 @@ logs to stdout. Bastion/SSH settings on a profile can be overridden per-run with
   `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `CODER_URL`,
   `CODER_SESSION_TOKEN`, `TARGET_DB_*`, `SOURCE_DB_*`.
 
+Because this tool routinely handles production dumps and cloud credentials,
+run a secret scanner (e.g. `gitleaks detect` or `git secrets --scan`) over your
+working tree before your first commit in a new clone — see
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Repository layout for builds
 
 The Odoo Dockerfile (`odoo/Dockerfile`) bakes:
@@ -170,5 +175,6 @@ does this for both templates.
 
 ## License
 
-See `LICENSE` if present. This repo bundles third-party tooling (Odoo, Greenmask,
-Coder) under their own licenses.
+Apache License 2.0 — see [`LICENSE`](LICENSE). This repo orchestrates
+third-party tooling (Odoo, Greenmask, Coder) under their own licenses; none of
+it is redistributed here.
