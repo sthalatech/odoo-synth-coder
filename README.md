@@ -30,7 +30,24 @@ You want this if the AWS stack is **already deployed** and you just want to run
 `./cli/odoo-synth` from your machine against it. This installs local tools and
 config only — it does **not** provision or modify any AWS infrastructure.
 
-### 1. Install prerequisites
+### Guided setup (recommended for first run)
+
+`deploy/00_setup.sh` is an interactive wizard that walks you through every step:
+installs prerequisites, sets up AWS auth, collects the values `config.yaml`
+needs, generates the DB/Odoo passwords, writes `config.yaml` +
+a gitignored `deploy/secrets.env`, then validates and smoke-tests the CLI.
+
+```bash
+bash deploy/00_setup.sh
+```
+
+Idempotent — re-run anytime; it keeps your existing config unless you choose to
+overwrite. The manual steps below are the same flow spelled out in detail (use
+them if you prefer to control each step, or to understand what the wizard does).
+
+### Manual setup
+
+#### 1. Install prerequisites
 
 ```bash
 bash deploy/00_install_prereqs.sh
