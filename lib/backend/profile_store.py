@@ -39,7 +39,7 @@ try:  # boto3 is a hard dep (run_store uses it too); import lazily so the
 except Exception:  # noqa: BLE001
     _HAVE_BOTO3 = False
 
-# profiles/ lives at the repo root (one level above controlpanel/). It is a
+# profiles/ lives at the repo root (one level above lib/). It is a
 # *local cache*; the source of truth is S3 (profiles/<id>.yaml under the dumps
 # bucket, same prefix scheme as run_store) so every machine that runs the CLI
 # sees every profile and no preset ever drops when publishing the Coder

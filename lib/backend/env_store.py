@@ -5,7 +5,7 @@ A developer environment is a Coder workspace; Coder owns its lifecycle
 which profile + which mask run + which masked dump + which addons repo seeded
 a given workspace, plus the ARN of the per-env code-server/Odoo password secret.
 
-One file: ``controlpanel/backend/envs.yaml`` (gitignored — contains secret
+One file: ``lib/backend/envs.yaml`` (gitignored — contains secret
 ARNs + source hostnames). It's a dict keyed by env_id (= the Coder workspace
 name), so ``env list`` joins it with a live ``coder list -a`` to show status +
 URLs without a database.

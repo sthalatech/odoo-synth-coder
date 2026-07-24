@@ -3,7 +3,7 @@ the panel is usable out of the box. Provenance (Odoo core ref + addons repo/ref
 + series) is read from config.yaml/state.env; NO secrets are embedded — the source
 database URL and any tokens are added later from the UI.
 
-Run with:  python -m backend.seed        (from the controlpanel/ dir)
+Run with:  python -m backend.seed        (from the lib/ dir)
 It is a no-op if any profile already exists.
 """
 from __future__ import annotations

@@ -2,7 +2,7 @@
 and deploy/state.env so the backend uses the
 exact same infra values as the shell pipeline. No values are duplicated here.
 
-config.yaml also carries the structured sections the old controlpanel/config.yml
+config.yaml also carries the structured sections the old lib/config.yml
 held (destination, mask_profiles, neutralize_defaults, environments) — now
 consolidated into the one file. ``panel()`` returns those sections as a dict.
 """
@@ -13,7 +13,7 @@ from functools import lru_cache
 
 import yaml
 
-# controlpanel/backend/config.py -> repo root is two levels up
+# lib/backend/config.py -> repo root is two levels up
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PANEL_DIR = Path(__file__).resolve().parents[1]
 YAML_CONFIG = REPO_ROOT / "config.yaml"
@@ -117,7 +117,7 @@ def require(key: str) -> str:
 # ---------------------------------------------------------------------------
 # structured panel sections (destination, mask profiles, neutralize defaults,
 # environments) — now consolidated into config.yaml. Falls back to the legacy
-# controlpanel/config.yml for back-compat if config.yaml has no such section.
+# lib/config.yml for back-compat if config.yaml has no such section.
 # ---------------------------------------------------------------------------
 
 @lru_cache(maxsize=1)
@@ -133,7 +133,7 @@ def _yaml_doc() -> dict:
 @lru_cache(maxsize=1)
 def panel() -> dict:
     """The structured config sections. config.yaml is the source of truth; the
-    legacy controlpanel/config.yml overlays only keys not present in config.yaml
+    legacy lib/config.yml overlays only keys not present in config.yaml
     (so an old config.yml still works, but config.yaml wins).
 
     Normalizes the mask-related keys to a flat top-level shape

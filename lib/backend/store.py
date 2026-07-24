@@ -4,7 +4,7 @@ Profiles, runs/logs, and environments each have their own backing store now:
 
 - profiles      -> one YAML file per profile (profile_store.py, profiles/*.yaml)
 - runs + logs   -> S3 (run_store.py, s3://bucket/.../runs/<id>/)
-- environments  -> one YAML file (env_store.py, controlpanel/backend/envs.yaml),
+- environments  -> one YAML file (env_store.py, lib/backend/envs.yaml),
                    with status/URLs read live from Coder at list time
 
 This module keeps the ``store.*`` names the rest of the backend was written

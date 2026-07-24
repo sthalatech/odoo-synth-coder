@@ -28,7 +28,7 @@ sudo ln -sf /home/exedev/odoo-synth-coder/cli/odoo-synth /usr/local/bin/odoo-syn
 ```
 
 Run from anywhere — the CLI resolves the repo root from its own location and
-adds `controlpanel/` to `sys.path` so it can `from backend import …`.
+adds `lib/` to `sys.path` so it can `from backend import …`.
 
 ## Commands
 
@@ -78,7 +78,7 @@ logs afterwards.
 
 ```
 cli/odoo-synth            argparse CLI (this is the whole UI now)
-controlpanel/
+lib/
   backend/                reusable library (unchanged)
     profiles.py           source-binding profiles + run_params
     discovery.py          discovery op + masking-rule validation
