@@ -321,14 +321,14 @@ PROVISIONED=0
 if [ "$VALID_OK" = 0 ]; then
   warn "config not valid -- skipping provisioning. Fix config and re-run."
 else
+  # Load any existing provisioning state so the handoff + coder-login step
+  # can detect a prior deploy (even if the user skips re-provisioning here).
+  [ -f "$HERE/deploy/state.env" ] && { set -a; . "$HERE/deploy/state.env"; set +a; }
   echo "  ${DIM}This provisions real AWS resources in your account (costs a few cents for${OFF}"
   echo "  ${DIM}the build + a t3.large Coder server while it runs). It takes ~10-20 min for${OFF}"
   echo "  ${DIM}the base Odoo image build. You can re-run it safely -- each step is idempotent.${OFF}"
   echo
   if confirm "Provision the basic infrastructure now?"; then
-    # Source state.env so CODER_URL etc. are visible if already deployed.
-    [ -f "$HERE/deploy/state.env" ] && { set -a; . "$HERE/deploy/state.env"; set +a; }
-
     # --- 7a. ECR + base image + builder IAM + Coder server (no coder login yet) ---
     say "7a/7c: ECR, base Odoo image, builder IAM, Coder server ..."
     # Order: ECR repos -> masker+discovery images -> builder IAM ->
