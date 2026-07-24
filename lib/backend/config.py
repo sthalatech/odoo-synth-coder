@@ -35,6 +35,39 @@ def _parse_env_file(path: Path) -> dict[str, str]:
     return out
 
 
+def _load_secrets_env() -> None:
+    """Auto-source deploy/secrets.env into os.environ (var not already set).
+
+    config.yaml stores secrets as ``{ ref: env:NAME }``; at runtime those are
+    resolved from the process environment by lib/backend/yamlconfig.py
+    (ref_value -> os.environ.get). secrets.env is the gitignored file the
+    guided installer (deploy/00_setup.sh) writes the DB/Odoo passwords to, so
+    secrets stay out of config.yaml (which is more likely to be shared or
+    committed). Auto-loading it here -- before config is parsed -- means users
+    no longer have to manually run `set -a; . deploy/secrets.env; set +a` in
+    every shell. Real env vars always win (CI/containers can inject directly);
+    a missing or unreadable file is a silent no-op.
+    """
+    path = REPO_ROOT / "deploy" / "secrets.env"
+    if not path.exists():
+        return
+    try:
+        for raw in path.read_text().splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            key = key.strip()
+            if not key or key in os.environ:
+                continue  # real env wins; never clobber
+            val = val.strip()
+            if len(val) >= 2 and val[0] in "\"'" and val[-1] == val[0]:
+                val = val[1:-1]
+            os.environ[key] = val
+    except OSError:
+        pass  # best-effort: never block config load on a secrets read error
+
+
 def _parse_yaml_env(path: Path) -> dict[str, str]:
     """Load config.yaml into a flat {ENV_VAR: value} dict in-process.
 
@@ -54,6 +87,7 @@ def load() -> dict[str, str]:
     """config.yaml is the base; state.env (created by the deploy scripts)
     overlays the resolved AWS resource ids/endpoints. Real OS env wins over
     both so the container can be reconfigured without editing files."""
+    _load_secrets_env()  # make ref:env: secrets resolvable before yaml parse
     cfg: dict[str, str] = {}
     yaml_path = REPO_ROOT / "config.yaml"
     if not yaml_path.exists():
@@ -80,6 +114,7 @@ def _load_fresh() -> dict[str, str]:
     """Same as load() but WITHOUT the lru_cache — re-reads config.yaml +
     state.env from disk on every call. Used for secrets so a value rotated on
     disk takes effect on the next run without restarting the panel."""
+    _load_secrets_env()  # pick up rotated secrets on disk each call
     cfg: dict[str, str] = {}
     yaml_path = REPO_ROOT / "config.yaml"
     if not yaml_path.exists():
