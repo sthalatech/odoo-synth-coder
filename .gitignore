@@ -4,6 +4,9 @@ config.yaml
 # auto-generated Coder presets
 coder/templates/odoo-synth-env/presets.tf
 __pycache__/
+*.egg-info/
+build/
+dist/
 *.log
 
 # Runtime state files (YAML configs + S3-backed runs) — may contain secrets.
@@ -29,4 +32,4 @@ odoo/enterprise/*
 !odoo/enterprise/.gitignore
 !odoo/enterprise/README.md
 profiles/
-controlpanel/backend/envs.yaml
+lib/backend/envs.yaml

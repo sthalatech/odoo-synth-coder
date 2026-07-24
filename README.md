@@ -13,8 +13,7 @@ prod DB ──mask──▶ masked pg_dump in S3 ──build──▶ ECR image 
 | Path | Purpose |
 |------|---------|
 | `cli/odoo-synth` | The CLI. Calls the backend library directly (no HTTP). |
-| `controlpanel/backend/` | Python backend: profiles, runs, builds, environments, config loader. |
-| `controlpanel/frontend/` | Web control panel (optional; the CLI does everything the panel does). |
+| `lib/backend/` | Python backend: profiles, runs, builds, environments, config loader. |
 | `masker/` | Greenmask-based masking rules + profile YAMLs baked into the masker image. |
 | `coder/templates/odoo-synth-env/` | Coder template for developer workspaces. |
 | `coder/templates/odoo-synth-builder/` | Coder template for ephemeral image-builder workspaces. |
@@ -125,6 +124,21 @@ Requires `coder login` once (interactive) before the publish step.
 ./cli/odoo-synth env --help            # Coder workspaces
 ./cli/odoo-synth config                # resolved infra summary
 ```
+
+### Install as a package (optional)
+
+The CLI can also be installed as an editable package, which puts `odoo-synth`
+on PATH and makes the `backend` library importable without a `sys.path` hack:
+
+```bash
+python3 -m venv .venv && . .venv/bin/activate
+pip install -e .            # installs boto3/PyYAML + the odoo-synth console script
+odoo-synth --help           # now on PATH
+python -c "from backend import config"   # importable directly
+```
+
+The thin launcher at `cli/odoo-synth` and the `deploy/00_install_prereqs.sh`
+symlink path keep working unchanged.
 
 Long-running ops (`run mask`, `profile build`) run in the foreground and stream
 logs to stdout. Bastion/SSH settings on a profile can be overridden per-run with
