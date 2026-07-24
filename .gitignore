@@ -1,6 +1,7 @@
 state.env
 config.env
 config.yaml
+deploy/secrets.env
 # auto-generated Coder presets
 coder/templates/odoo-synth-env/presets.tf
 __pycache__/
