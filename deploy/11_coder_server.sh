@@ -155,6 +155,9 @@ if [ -z "$EXISTING" ] || [ "$EXISTING" = "None" ]; then
 #!/usr/bin/env bash
 set -euo pipefail
 export HOME=/root
+# Port the Coder server listens on (SG already opens it). Defined here because
+# the host-side CODER_PORT isn't available inside cloud-init.
+CODER_PORT=8943
 if ! command -v coder >/dev/null 2>&1; then
   cd /tmp
   curl -fsSL -o coder.tar.gz "https://github.com/coder/coder/releases/download/v2.34.6/coder_2.34.6_linux_amd64.tar.gz"
