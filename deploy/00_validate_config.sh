@@ -15,7 +15,6 @@ echo "== config source: config.yaml =="
 
 # required values (from either source)
 for v in AWS_REGION PROJECT ODOO_SERIES ODOO_GIT_REF ODOO_GIT_URL \
-         CUSTOM_ADDONS_GIT_URL CUSTOM_ADDONS_GIT_REF \
          PG_MAJOR SOURCE_DB_NAME TARGET_DB_NAME TARGET_DB_USER TARGET_DB_PASSWORD \
          SOURCE_DB_MASTER_PASSWORD DUMP_S3_BUCKET \
          ODOO_ADMIN_PASSWORD ODOO_MASTER_PASSWORD GREENMASK_VERSION; do
@@ -29,6 +28,17 @@ for v in ODOO_GIT_REF CUSTOM_ADDONS_GIT_URL CUSTOM_ADDONS_GIT_REF DUMP_S3_BUCKET
     \<*\>) echo "PLACEHOLDER not filled: $v=$val" >&2; err=1;;
   esac
 done
+
+# Custom addons are OPTIONAL (empty git_url = core modules only, per
+# config.example.yaml). But if one of url/ref is set, the other must be too,
+# and neither may be left as the <...> example placeholder.
+for v in CUSTOM_ADDONS_GIT_URL CUSTOM_ADDONS_GIT_REF; do
+  val="${!v:-}"
+  case "$val" in \<*\>) echo "PLACEHOLDER not filled: $v=$val" >&2; err=1;; esac
+done
+cu="${CUSTOM_ADDONS_GIT_URL:-}"; cr="${CUSTOM_ADDONS_GIT_REF:-}"
+if [ -n "$cu" ] && [ -z "$cr" ]; then echo "MISSING config: CUSTOM_ADDONS_GIT_REF (url is set)" >&2; err=1; fi
+if [ -z "$cu" ] && [ -n "$cr" ]; then echo "MISSING config: CUSTOM_ADDONS_GIT_URL (ref is set)" >&2; err=1; fi
 
 # CLI tools
 for c in aws python3; do
