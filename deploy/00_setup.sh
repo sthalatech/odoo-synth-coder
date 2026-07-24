@@ -215,19 +215,6 @@ echo "  ${DIM}A bucket in your AWS account to hold masked pg_dump artifacts + up
 echo "  ${DIM}source dumps. Must be globally unique. We'll create it if it doesn't exist.${OFF}"
 BUCKET="$(prompt_required "Dumps S3 bucket name (e.g. <project>-dumps-<suffix>)")"
 
-# ---- passwords: deferred to mask/env time -------------------------------
-# The four DB/Odoo passwords (ODOO_ADMIN_PASSWORD, ODOO_MASTER_PASSWORD,
-# TARGET_DB_PASSWORD, SOURCE_DB_MASTER_PASSWORD) are NOT needed to provision
-# basic infra -- they're consumed by the mask run (target DB + admin pw) and
-# dev-env launch (Odoo master pw), or live in the per-profile --source-dsn
-# (source DB master pw). So the wizard does NOT collect them at install time.
-# config.yaml keeps the ref:env: references; when you run your first mask/env,
-# create deploy/secrets.env with the four values (the CLI auto-loads it), or
-# pass --admin-password / --source-dsn at call time. See step 7 below.
-note "DB/Odoo passwords are NOT collected now -- they're a mask/env-time step."
-note "    ${DIM}config.yaml keeps the ref:env: refs; fill deploy/secrets.env before${OFF}"
-note "    ${DIM}your first mask run (the CLI auto-loads it). See 'What's left' below.${OFF}"
-
 # ---- write config.yaml ----------------------------------------------------
 # Build it from the example, substituting only the collected non-secret values.
 # Secrets stay as ref:env: (already in the example).
