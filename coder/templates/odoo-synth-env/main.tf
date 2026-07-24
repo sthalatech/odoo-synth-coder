@@ -41,16 +41,35 @@ data "coder_parameter" "instance_type" {
 # from the shared infra (deploy/state.env: ENV_AMI_ID/ENV_INSTANCE_PROFILE/
 # ENV_SUBNET_ID/ENV_SG_ID). They can still be overridden per-workspace.
 #
-# AMI: the thin golden AMI has no stable tags, so it stays a parameter with a
-# real default (set by deploy/12_publish_template.sh from ENV_AMI_ID). SG +
-# instance-profile are name-stable, so we resolve them with data sources and the
-# parameters fall back to those when left empty.
+# AMI: resolved dynamically from the latest Ubuntu 22.04 AMI in the current
+# region (see the aws_ami data source below). The deploy script
+# (deploy/12_publish_template.sh) overrides this with the golden AMI ID from
+# ENV_AMI_ID when available. Users can also override per-workspace.
 data "coder_parameter" "ami_id" {
   name         = "ami_id"
-  display_name = "Thin golden AMI (ubuntu + docker + awscli)."
+  display_name = "Thin golden AMI (ubuntu + docker + awscli). Empty = auto-resolve latest Ubuntu 22.04."
   type         = "string"
-  default      = "ami-0e94ad593421c5023"
+  default      = ""
   order        = 1
+}
+
+# Dynamically resolve the latest Ubuntu 22.04 AMI for the current region.
+# Used as a fallback when no explicit ami_id is provided (parameter or
+# deploy-time override). This keeps the template portable across AWS accounts
+# and regions without hardcoding account-specific AMI IDs.
+data "aws_ami" "ubuntu_2204" {
+  most_recent = true
+  owners      = ["099720109477"]  # Canonical
+
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
 }
 
 data "coder_parameter" "instance_profile" {
@@ -105,12 +124,11 @@ data "coder_parameter" "repo_url" {
   name         = "repo_url"
   display_name = "Addons repo cloned + live-mounted into Odoo."
   type         = "string"
-  # Pre-filled with the default addons repo but EDITABLE in the create form
-  # (preset-provided values are locked by Coder; a parameter default is not,
-  # so we use default here instead of the preset for repo_url/repo_branch).
-  # A workspace with no addons repo is useless for dev, so the default is a
-  # real working repo rather than empty.
-  default = "git@github.com:your-org/internal-addons.git"
+  # No default: the user must supply their own addons repo URL at workspace
+  # creation time (or use a preset that pre-fills it). Preset-provided values
+  # are locked by Coder; a parameter default is not, so presets use the
+  # parameter mechanism instead of a hardcoded default here.
+  default = ""
   order   = 8
 }
 
@@ -118,7 +136,8 @@ data "coder_parameter" "repo_branch" {
   name         = "repo_branch"
   display_name = "Branch/tag/commit of the addons repo."
   type         = "string"
-  default      = "uat"
+  # No default: the user must supply their own branch/commit (or use a preset).
+  default      = ""
   order        = 9
 }
 
@@ -208,8 +227,8 @@ data "aws_subnets" "default_vpc" {
 locals {
   # Resolve infra: explicit parameter wins, else data-source / known-name fallback.
   # ami_id: an explicitly-passed "" must NOT become the AMI (=> MissingParameter:
-  # ImageId), so fall back to the coder_parameter default via length()>0.
-  ami_id           = length(data.coder_parameter.ami_id.value) > 0 ? data.coder_parameter.ami_id.value : data.coder_parameter.ami_id.default
+  # ImageId), so fall back to the dynamically-resolved Ubuntu 22.04 AMI.
+  ami_id           = length(data.coder_parameter.ami_id.value) > 0 ? data.coder_parameter.ami_id.value : data.aws_ami.ubuntu_2204.id
   sg_id            = length(data.coder_parameter.security_group_id.value) > 0 ? data.coder_parameter.security_group_id.value : (length(data.aws_security_groups.env_sg.ids) > 0 ? data.aws_security_groups.env_sg.ids[0] : "")
   instance_profile = length(data.coder_parameter.instance_profile.value) > 0 ? data.coder_parameter.instance_profile.value : "odoo-synth-env-instance"
   subnet_id        = length(data.coder_parameter.subnet_id.value) > 0 ? data.coder_parameter.subnet_id.value : (length(data.aws_subnets.default_vpc.ids) > 0 ? data.aws_subnets.default_vpc.ids[0] : "")

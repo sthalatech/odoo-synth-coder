@@ -3,11 +3,16 @@
 # Python packages + wkhtmltopdf). Core Odoo is then replaced by a source clone
 # at ODOO_GIT_REF so the running code matches a specific commit/branch (e.g. from
 # the provenance step). Custom addons are optionally cloned too.
-ARG ODOO_IMAGE=odoo:19
+# No default: ODOO_IMAGE must always be passed explicitly via --build-arg
+# (deploy/02_build_push.sh does this from config.yaml). This prevents silent
+# wrong-version builds — the Odoo series must be intentionally pinned.
+ARG ODOO_IMAGE
 FROM ${ODOO_IMAGE}
 
 ARG ODOO_GIT_URL=https://github.com/odoo/odoo
-ARG ODOO_GIT_REF=19.0
+# No default: ODOO_GIT_REF must always be passed explicitly via --build-arg
+# to pin the exact Odoo source commit (provenance requirement).
+ARG ODOO_GIT_REF
 ARG CUSTOM_ADDONS_GIT_URL=
 ARG CUSTOM_ADDONS_GIT_REF=
 # Space-separated list of extra pip packages discovered for this profile

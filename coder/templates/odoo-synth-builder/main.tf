@@ -55,12 +55,32 @@ data "aws_subnets" "default_vpc" {
   }
 }
 
+# Dynamically resolve the latest Ubuntu 22.04 AMI for the current region.
+# Used as a fallback when no explicit ami_id is provided. This keeps the
+# template portable across AWS accounts and regions without hardcoding
+# account-specific AMI IDs.
+data "aws_ami" "ubuntu_2204" {
+  most_recent = true
+  owners      = ["099720109477"]  # Canonical
+
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+}
+
 locals {
   # builders are beefier (docker build of Odoo + addons clone); overridable.
   default_instance_type = "m5.xlarge"
 
-  # the same thin golden AMI the dev env uses (docker preinstalled).
-  default_ami_id = "ami-0e94ad593421c5023"
+  # Fallback AMI: dynamically resolved latest Ubuntu 22.04. Override per
+  # launch via the ami_id parameter if a custom golden AMI exists.
+  default_ami_id = data.aws_ami.ubuntu_2204.id
 
   # builder instance profile (ECR push + S3 + Secrets + self-terminate).
   # Falls back to the well-known name if the param is empty.

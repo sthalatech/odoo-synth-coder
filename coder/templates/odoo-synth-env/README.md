@@ -24,8 +24,8 @@ database, with an addons repo live-mounted for development.
 ## Create with the preset
 
 The default preset **"Latest masked profile"** pre-fills the Odoo image, the
-masked dump URI, and the `your-addons` addons repo + ref. Click **Create** and
-the env hydrates and serves Odoo automatically.
+masked dump URI, and the addons repo + ref from your profile store. Click
+**Create** and the env hydrates and serves Odoo automatically.
 
 ## Parameters you must supply
 
