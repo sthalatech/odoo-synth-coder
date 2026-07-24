@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # 00_setup.sh -- guided first-time setup for a community user.
 #
-# Walks you through every step: install prerequisites, configure AWS auth,
-# collect the values config.yaml needs, generate the DB/Odoo passwords, write
-# config.yaml + a gitignored secrets.env, then validate + smoke-test the CLI.
+# Walks you through every step: install prerequisites, collect + configure AWS
+# credentials, collect the values config.yaml needs, generate the DB/Odoo
+# passwords, write config.yaml + a gitignored secrets.env, then validate +
+# smoke-test the CLI.
 #
 # Safe to re-run: it offers to keep or overwrite your existing config. It never
 # commits anything (config.yaml + secrets.env are gitignored).
@@ -75,39 +76,86 @@ ok "prerequisites present"
 # ===========================================================================
 # 2. AWS AUTHENTICATION
 # ===========================================================================
-step 2/7 "Authenticate to AWS"
+step 2/7 "Configure AWS credentials"
 echo "  odoo-synth provisions AWS resources (ECR, EC2, S3, Coder server). You"
-echo "  need an AWS account + an access key. Two ways to set it up:"
-echo "    ${DIM}(a) aws configure${OFF}  -- interactive; writes ~/.aws/credentials (recommended)"
-echo "    ${DIM}(b) env vars${OFF}       -- export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_REGION"
+echo "  need an AWS account + an IAM access key with permission to create those."
+echo "  Create one in the AWS console: IAM -> Users -> your user -> Security"
+echo "  credentials -> Create access key. The wizard writes it to the standard"
+echo "  shared-credentials file (~/.aws/credentials + ~/.aws/config) used by the"
+echo "  AWS CLI -- nothing is committed to this repo."
 echo
 
 aws_ok=false
-if have aws; then
-  if aws sts get-caller-identity >/dev/null 2>&1; then
-    aws_ok=true
-    cid="$(aws sts get-caller-identity --query Account --output text 2>/dev/null)"
-    ok "already authenticated (account $cid)"
+aws_account=""
+# Detect existing credentials first (shared file OR env vars).
+if aws sts get-caller-identity >/dev/null 2>&1; then
+  aws_account="$(aws sts get-caller-identity --query Account --output text 2>/dev/null || echo '')"
+  aws_region_cur="$(aws configure get region 2>/dev/null || aws configure get region 2>/dev/null || echo '')"
+  ok "AWS credentials already configured (account ${aws_account:-?}, region ${aws_region_cur:-?})."
+  if confirm "Re-enter different credentials?"; then
+    aws_ok=false        # fall through to the guided collection below
   else
-    warn "AWS is not authenticated yet."
-    if confirm "Run 'aws configure' now?"; then
-      aws configure
-      if aws sts get-caller-identity >/dev/null 2>&1; then
-        aws_ok=true
-        cid="$(aws sts get-caller-identity --query Account --output text 2>/dev/null)"
-        ok "authenticated (account $cid)"
-      else
-        warn "still not authenticated after 'aws configure'."
-      fi
-    fi
+    aws_ok=true
   fi
 fi
+
 if [ "$aws_ok" = false ]; then
-  warn "AWS auth not confirmed. You can continue filling config.yaml now and"
-  warn "run 'aws configure' (or export the env vars) before the deploy step."
-  warn "The validate + smoke steps below will report 'AWS: not authenticated'."
+  if ! have aws; then
+    die "aws CLI missing -- run step 1 (deploy/00_install_prereqs.sh) first."
+  fi
+  echo
+  say "Enter your AWS access key"
+  echo "  ${DIM}Access key id  : 20-char, starts with AKIA (e.g. AKIAIOSFODNN7EXAMPLE)${OFF}"
+  echo "  ${DIM}Secret access key: 40-char. Both are shown once when you create the key.${OFF}"
+  echo "  ${DIM}Type is hidden; paste carefully. Press Ctrl-C to abort.${OFF}"
+  echo
+  AKID="$(prompt_required "AWS Access Key ID")"
+  SAK="$(prompt_secret  "AWS Secret Access Key")"
+  [ -n "$AKID" ] && [ -n "$SAK" ] || die "both access key id and secret are required"
+  # Region: the wizard asks again in step 4 as the config.yaml region, but we
+  # need it now for sts to pick the right partition. Default from any existing
+  # shared config, else us-east-1.
+  REGION_DEFAULT="$(aws configure get region 2>/dev/null || echo us-east-1)"
+  AWS_REGION_Q="$(prompt_default "AWS region for these credentials" "$REGION_DEFAULT")"
+
+  # Write to the shared credentials/config files non-interactively.
+  # `aws configure set` is idempotent and writes the right file per key.
+  aws configure set aws_access_key_id     "$AKID"       # -> ~/.aws/credentials
+  aws configure set aws_secret_access_key "$SAK"        # -> ~/.aws/credentials
+  aws configure set region                "$AWS_REGION_Q"  # -> ~/.aws/config
+  # scrub the values from this shell's variables + history so they don't linger
+  unset AKID SAK
+  export AWS_REGION="$AWS_REGION_Q"
+
+  echo
+  say "Verifying credentials..."
+  if cid="$(aws sts get-caller-identity --query Account --output text 2>/dev/null)"; then
+    aws_ok=true
+    aws_account="$cid"
+    ok "authenticated -- AWS account $cid, region $AWS_REGION_Q"
+    arn="$(aws sts get-caller-identity --query Arn --output text 2>/dev/null || true)"
+    [ -n "$arn" ] && note "identity: $arn"
+  else
+    warn "AWS could not authenticate with those credentials. Common causes:"
+    warn "  - wrong secret key (re-create the access key in IAM and re-run)"
+    warn "  - key belongs to a different region/partition (check the region)"
+    warn "  - the IAM user lacks sts:GetCallerIdentity (very unlikely)."
+    warn "You can continue filling config.yaml now and fix AWS auth before the"
+    warn "deploy step. The validate + smoke steps below will report 'AWS: not'."
+    aws_ok=false
+  fi
+  REGION_DEFAULT="$AWS_REGION_Q"
 fi
-REGION_DEFAULT="$(aws configure get region 2>/dev/null || echo us-east-1)"
+
+if [ "$aws_ok" = false ] && [ -z "${AWS_ACCESS_KEY_ID:-}${AWS_SECRET_ACCESS_KEY:-}" ]; then
+  # only warn if we genuinely have nothing
+  if ! aws sts get-caller-identity >/dev/null 2>&1; then
+    warn "AWS auth not confirmed. You can continue filling config.yaml now and"
+    warn "re-run this wizard (or 'aws configure') before the deploy step."
+    warn "The validate + smoke steps below will report 'AWS: not authenticated'."
+  fi
+fi
+[ -z "${REGION_DEFAULT:-}" ] && REGION_DEFAULT="$(aws configure get region 2>/dev/null || echo us-east-1)"
 
 # ===========================================================================
 # 3. EXISTING CONFIG?
@@ -281,8 +329,8 @@ ${BOLD}Setup is complete.${OFF} Remaining steps before you can build/mask/env:
 ${BOLD}1. Source secrets in every shell${OFF} that runs odoo-synth (or add to ~/.bashrc):
     ${DIM}set -a; . deploy/secrets.env; set +a${OFF}
 
-${BOLD}2. (If you didn't already) authenticate to AWS${OFF}:
-    ${DIM}aws configure${OFF}  ${DIM}# or export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY${OFF}
+${BOLD}2. (If AWS wasn't confirmed above) re-run this wizard${OFF} to enter credentials:
+    ${DIM}bash deploy/00_setup.sh${OFF}  ${DIM}# writes ~/.aws/credentials + ~/.aws/config${OFF}
     verify:  ${DIM}aws sts get-caller-identity${OFF}
 
 ${BOLD}3. Log into Coder${OFF} (needed for build/env/run commands):
