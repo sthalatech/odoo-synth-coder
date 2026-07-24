@@ -303,7 +303,7 @@ odoo-synth profile list >/dev/null 2>&1 && ok "odoo-synth profile list" || warn 
 # role + the Coder server + the Coder templates. This is the one-time AWS
 # provisioning that must exist before you can build/mask/env. Profiles (source
 # bindings) are created AFTER this, on demand via the CLI.
-step 6/7 "Provision basic infrastructure (ECR, base Odoo image, builder IAM, Coder server, templates)"
+step 6/7 "Provision basic infrastructure (ECR, base images, builder IAM, Coder server, templates)"
 PROVISIONED=0
 if [ "$VALID_OK" = 0 ]; then
   warn "config not valid -- skipping provisioning. Fix config and re-run."
@@ -323,7 +323,7 @@ else
     #        (needs ENV_INSTANCE_PROFILE for iam:PassRole) -> coder login ->
     #        publish templates.
     if bash deploy/01_ecr.sh            && bash deploy/02_build_push.sh --quiet            && bash deploy/09_dev_env.sh --infra-only            && bash deploy/10_builder.sh            && bash deploy/11_coder_server.sh; then
-      ok "basic infra provisioned (ECR, images, IAM, Coder server)"
+      ok "basic infra provisioned (ECR, IAM, Coder server, templates)"
       set -a; . "$HERE/deploy/state.env"; set +a
     else
       warn "a provisioning step failed (see logs above)."
@@ -336,34 +336,62 @@ else
       echo
       say "7b/7c: Log into Coder"
       echo "  The Coder server is up at ${BOLD}${CODER_URL}${OFF}."
-      # Are we already logged in? `coder whoami` is the real check (works against
-      # the current server's DB -- a stale token from a previous server says so).
+      # Are we already logged in? A persisted CODER_SESSION_TOKEN (state.env) or
+      # a valid keyring session both count. `coder whoami` verifies against the
+      # current server's DB -- a stale token from a previous server says so.
       if coder whoami >/dev/null 2>&1; then
         ok "already logged into Coder"
       else
-        echo "  ${DIM}A fresh Coder server needs a first admin user. The wizard creates one${OFF}"
-        echo "  ${DIM}headlessly (no browser) -- you can change the password later via the UI.${OFF}"
-        if confirm "Create the first admin + log in now (headless, no browser)?"; then
-          ADMIN_EMAIL="${CODER_ADMIN_EMAIL:-acct.exedev@sthala.dev}"
-          ADMIN_USER="${CODER_ADMIN_USER:-admin}"
-          ADMIN_PW="${CODER_ADMIN_PASSWORD:-$(python3 -c 'import secrets,string as s; print("".join(secrets.choice(s.ascii_letters+s.digits) for _ in range(20)))')}"
-          if CODER_FIRST_USER_EMAIL="$ADMIN_EMAIL" \
-             CODER_FIRST_USER_USERNAME="$ADMIN_USER" \
-             CODER_FIRST_USER_PASSWORD="$ADMIN_PW" \
-             coder login "$CODER_URL" >/dev/null 2>&1; then
-            # 'coder login' stores the session in the keyring; create a named
-            # API token the publish step (12_publish_template.sh) can use.
-            CODER_SESSION_TOKEN="$(coder tokens create --name wizard-$(date +%s) 2>/dev/null | tail -1)"
-            export CODER_SESSION_TOKEN
-            ok "first admin created ($ADMIN_EMAIL) + logged in"
-            note "    ${DIM}admin password: $ADMIN_PW (change it in the UI later)${OFF}"
-          else
-            warn "headless admin setup failed -- open $CODER_URL in a browser to create"
-            warn "    the first admin, then run: coder login $CODER_URL"
-          fi
+        # Does the server still have NO admin (fresh)? CODER_FIRST_USER_* only
+        # works in that case; if an admin already exists, that path falls through
+        # to interactive browser auth -> hangs under piped stdin.
+        FIRST="$(curl -fsS "$CODER_URL/api/v2/users/first" </dev/null 2>/dev/null || true)"
+        if printf '%s' "$FIRST" | grep -q '"The initial user has already been created!"'; then
+          echo "  ${DIM}This Coder server already has an admin user. To publish templates${OFF}"
+          echo "  ${DIM}you need a valid session token. Run on the server host:${OFF}"
+          echo "    ${BOLD}coder login $CODER_URL${OFF}  ${DIM}(browser/CLI auth)${OFF}"
+          echo "  ${DIM}then:  coder tokens create --name wizard | tee -a deploy/state.env${OFF}"
+          warn "skipping template publish (no valid session token)."
         else
-          warn "skipped coder login -- open $CODER_URL in a browser to create the"
-          warn "    first admin, then 'coder login $CODER_URL' + re-run this wizard."
+          echo "  ${DIM}A fresh Coder server needs a first admin user. The wizard creates one${OFF}"
+          echo "  ${DIM}headlessly (no browser) -- you can change the password later via the UI.${OFF}"
+          if confirm "Create the first admin + log in now (headless, no browser)?"; then
+            ADMIN_EMAIL="${CODER_ADMIN_EMAIL:-acct.exedev@sthala.dev}"
+            ADMIN_USER="${CODER_ADMIN_USER:-admin}"
+            ADMIN_PW="${CODER_ADMIN_PASSWORD:-$(python3 -c 'import secrets,string as s; print("".join(secrets.choice(s.ascii_letters+s.digits) for _ in range(20)))')}"
+            # CODER_FIRST_USER_TRIAL=false skips the interactive "Start a trial
+            # of Enterprise? (yes/no)" prompt that otherwise blocks forever when
+            # stdin isn't a TTY. </dev/null is a safety net against any prompt.
+            if CODER_FIRST_USER_EMAIL="$ADMIN_EMAIL" \
+               CODER_FIRST_USER_USERNAME="$ADMIN_USER" \
+               CODER_FIRST_USER_PASSWORD="$ADMIN_PW" \
+               CODER_FIRST_USER_TRIAL=false \
+               coder login "$CODER_URL" </dev/null >/dev/null 2>&1; then
+              # 'coder login' stores the session in the keyring; create a named
+              # API token the publish step (12_publish_template.sh) can use, and
+              # PERSIST it to state.env so re-runs stay logged in.
+              TOK="$(coder tokens create --name wizard-$(date +%s) 2>/dev/null | tail -1)"
+              if [ -n "$TOK" ]; then
+                export CODER_SESSION_TOKEN="$TOK"
+                if ! grep -q '^CODER_SESSION_TOKEN=' "$HERE/deploy/state.env" 2>/dev/null; then
+                  printf 'CODER_SESSION_TOKEN=%s\n' "$TOK" >> "$HERE/deploy/state.env"
+                else
+                  sed -i "s|^CODER_SESSION_TOKEN=.*|CODER_SESSION_TOKEN=$TOK|" "$HERE/deploy/state.env"
+                fi
+                ok "first admin created ($ADMIN_EMAIL) + logged in"
+                note "    ${DIM}admin password: $ADMIN_PW (change it in the UI later)${OFF}"
+              else
+                warn "admin created but could not mint an API token -- run:"
+                warn "    coder tokens create --name wizard  (then export CODER_SESSION_TOKEN)"
+              fi
+            else
+              warn "headless admin setup failed -- open $CODER_URL in a browser to create"
+              warn "    the first admin, then run: coder login $CODER_URL"
+            fi
+          else
+            warn "skipped coder login -- open $CODER_URL in a browser to create the"
+            warn "    first admin, then 'coder login $CODER_URL' + re-run this wizard."
+          fi
         fi
       fi
     else
