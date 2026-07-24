@@ -208,18 +208,35 @@ systemctl daemon-reload
 systemctl enable --now coder-server
 echo "coder-server started; access_url=${MYIP}:8943"
 UD_EOF
-  I_ID="$(aws ec2 run-instances --region "$AWS_REGION" \
-    --image-id "$(aws ssm get-parameters --region "$AWS_REGION" \
-      --names /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id \
-      --query 'Parameters[0].Value' --output text)" \
-    --instance-type "$CODER_INSTANCE_TYPE" \
-    --subnet-id "$SUBNET" --associate-public-ip-address \
-    --security-group-ids "$CODER_SG_ID" \
-    --iam-instance-profile "Name=$CODER_PROFILE" \
-    --block-device-mappings "DeviceName=/dev/sda1,Ebs={VolumeSize=$CODER_VOLUME_GB,VolumeType=gp3}" \
-    --user-data "file://$UD" \
-    --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$CODER_NAME},{Key=odoo-synth:managed,Value=true}]" \
-    --query 'Instances[0].InstanceId' --output text)"
+  # AMI id (Ubuntu 24.04 LTS via SSM public parameter).
+  CODER_AMI="$(aws ssm get-parameters --region "$AWS_REGION" \
+    --names /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id \
+    --query 'Parameters[0].Value' --output text)"
+  # RunInstances can fail with "Invalid IAM Instance Profile name" for ~10-30s
+  # after create-instance-profile -- IAM -> EC2 control-plane propagation lag.
+  # Retry a few times with a short sleep on that specific error.
+  I_ID=""
+  for _try in 1 2 3 4 5; do
+    I_ID="$(aws ec2 run-instances --region "$AWS_REGION" \
+      --image-id "$CODER_AMI" \
+      --instance-type "$CODER_INSTANCE_TYPE" \
+      --subnet-id "$SUBNET" --associate-public-ip-address \
+      --security-group-ids "$CODER_SG_ID" \
+      --iam-instance-profile "Name=$CODER_PROFILE" \
+      --block-device-mappings "DeviceName=/dev/sda1,Ebs={VolumeSize=$CODER_VOLUME_GB,VolumeType=gp3}" \
+      --user-data "file://$UD" \
+      --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$CODER_NAME},{Key=odoo-synth:managed,Value=true}]" \
+      --query 'Instances[0].InstanceId' --output text 2>&1)" || I_ID=""
+    case "$I_ID" in
+      i-*) break ;;                       # got an instance id -> success
+      *InvalidParameterValue*|*Invalid*IAM*Instance*Profile*) sleep 10 ;;
+      *) break ;;                          # a real error -- stop, surface below
+    esac
+  done
+  if ! printf '%s' "$I_ID" | grep -qi '^i-'; then
+    log "ERROR: RunInstances failed:$I_ID"
+    exit 1
+  fi
   log "instance $I_ID launching; waiting for running + public IP ..."
   aws ec2 wait instance-running --region "$AWS_REGION" --instance-ids "$I_ID" 2>/dev/null || true
 fi
