@@ -1,13 +1,21 @@
 #!/usr/bin/env bash
 # 00_setup.sh -- guided first-time setup for a community user.
 #
-# Walks you through every step: install prerequisites, collect + configure AWS
-# credentials, collect the values config.yaml needs, generate the DB/Odoo
-# passwords, write config.yaml + a gitignored secrets.env, then validate +
-# smoke-test the CLI.
+# Walks you through the full first-run, in order:
+#   1. install prerequisites (incl. the coder CLI)
+#   2. collect + configure AWS credentials
+#   3-5. build config.yaml + a gitignored secrets.env (passwords)
+#   6. validate config + CLI smoke test
+#   7. provision BASIC infrastructure (ECR, base Odoo image, builder IAM, Coder
+#      server, Coder templates) -- with an interactive `coder login` seam in
+#      the middle (the Coder server must be up before you can log in, and the
+#      templates need the login token to publish)
+#   8. hand off to profile creation (the on-demand CLI: per-source-DB profiles,
+#      mask, dev envs)
 #
-# Safe to re-run: it offers to keep or overwrite your existing config. It never
-# commits anything (config.yaml + secrets.env are gitignored).
+# Safe to re-run: it offers to keep or overwrite your existing config, and every
+# provisioning step is idempotent. It never commits anything (config.yaml +
+# secrets.env are gitignored).
 #
 # Usage:
 #   bash deploy/00_setup.sh
@@ -62,7 +70,7 @@ note "is kept unless you choose to overwrite."
 # ===========================================================================
 # 1. PREREQUISITES
 # ===========================================================================
-step 1/7 "Install prerequisites (AWS CLI, python deps, Coder CLI, odoo-synth on PATH)"
+step 1/8 "Install prerequisites (AWS CLI, python deps, Coder CLI, odoo-synth on PATH)"
 if confirm "Run deploy/00_install_prereqs.sh now?"; then
   bash deploy/00_install_prereqs.sh
 else
@@ -76,7 +84,7 @@ ok "prerequisites present"
 # ===========================================================================
 # 2. AWS AUTHENTICATION
 # ===========================================================================
-step 2/7 "Configure AWS credentials"
+step 2/8 "Configure AWS credentials"
 echo "  odoo-synth provisions AWS resources (ECR, EC2, S3, Coder server). You"
 echo "  need an AWS account + an IAM access key with permission to create those."
 echo "  Create one in the AWS console: IAM -> Users -> your user -> Security"
@@ -160,7 +168,7 @@ fi
 # ===========================================================================
 # 3. EXISTING CONFIG?
 # ===========================================================================
-step 3/7 "config.yaml"
+step 3/8 "config.yaml"
 CFG="$HERE/config.yaml"
 if [ -f "$CFG" ]; then
   ok "config.yaml already exists."
@@ -176,7 +184,7 @@ fi
 
 if [ "${SKIP_CONFIG:-0}" = 0 ]; then
 # ---- collect values -------------------------------------------------------
-step 4/7 "Collect configuration values"
+step 4/8 "Collect configuration values"
 echo "  ${DIM}Press Enter to accept the [default].${OFF}"
 echo
 
@@ -210,7 +218,7 @@ echo "  ${DIM}source dumps. Must be globally unique. We'll create it if it doesn
 BUCKET="$(prompt_required "Dumps S3 bucket name (e.g. <project>-dumps-<suffix>)")"
 
 # ---- generate / collect secrets -------------------------------------------
-step 5/7 "Secrets (DB + Odoo passwords)"
+step 5/8 "Secrets (DB + Odoo passwords)"
 echo "  ${DIM}Secrets are written to deploy/secrets.env (gitignored, chmod 600) and${OFF}"
 echo "  ${DIM}read via the ref:env: form -- they never go into config.yaml.${OFF}"
 echo "  ${DIM}You can let the wizard generate strong random passwords, or supply your own.${OFF}"
@@ -294,61 +302,150 @@ fi
 else  # SKIP_CONFIG
   BUCKET="$(python3 -c "import sys;sys.path.insert(0,'lib');from backend import config;print(config.get('DUMP_S3_BUCKET',''))" 2>/dev/null || echo '')"
   REGION="$(python3 -c "import sys;sys.path.insert(0,'lib');from backend import config;print(config.get('AWS_REGION',''))" 2>/dev/null || echo '')"
-  step 4/7 "Collect configuration values (skipped -- keeping existing config.yaml)"
-  step 5/7 "Secrets (skipped -- keeping existing)"
+  step 4/8 "Collect configuration values (skipped -- keeping existing config.yaml)"
+  step 5/8 "Secrets (skipped -- keeping existing)"
 fi
 
 # ===========================================================================
-# 6. VALIDATE + SMOKE
+# 6. VALIDATE CONFIG
 # ===========================================================================
-step 6/7 "Validate config + smoke-test the CLI"
+step 6/8 "Validate config"
 echo "  ${DIM}Sourcing secrets.env so the ref:env: passwords resolve...${OFF}"
 if [ -f "$HERE/deploy/secrets.env" ]; then
   set -a; . "$HERE/deploy/secrets.env"; set +a
 fi
+VALID_OK=0
 if bash deploy/00_validate_config.sh; then
   ok "config valid"
+  VALID_OK=1
 else
-  warn "config validation reported issues (see above). Fix them and re-run this script."
+  warn "config validation reported issues (see above)."
+  warn "Fix them (edit config.yaml / source secrets) and re-run this wizard."
+  warn "You can skip provisioning for now and come back to it."
 fi
 
 echo
 say "CLI smoke test:"
 odoo-synth --help >/dev/null 2>&1 && ok "odoo-synth --help" || die "odoo-synth --help failed"
-odoo-synth config >/dev/null 2>&1 && ok "odoo-synth config"  || warn "odoo-synth config emitted warnings (expected if AWS unconfigured)"
+odoo-synth config  >/dev/null 2>&1 && ok "odoo-synth config"  || warn "odoo-synth config emitted warnings"
 odoo-synth profile list >/dev/null 2>&1 && ok "odoo-synth profile list" || warn "profile list had issues"
 
 # ===========================================================================
-# 7. NEXT STEPS
+# 7. PROVISION BASIC INFRASTRUCTURE
 # ===========================================================================
-step 7/7 "What's left"
+# Basic infra = ECR + the provenance-baked base Odoo image + the builder IAM
+# role + the Coder server + the Coder templates. This is the one-time AWS
+# provisioning that must exist before you can build/mask/env. Profiles (source
+# bindings) are created AFTER this, on demand via the CLI.
+step 7/8 "Provision basic infrastructure (ECR, base Odoo image, builder IAM, Coder server, templates)"
+PROVISIONED=0
+if [ "$VALID_OK" = 0 ]; then
+  warn "config not valid -- skipping provisioning. Fix config and re-run."
+else
+  echo "  ${DIM}This provisions real AWS resources in your account (costs a few cents for${OFF}"
+  echo "  ${DIM}the build + a t3.large Coder server while it runs). It takes ~10-20 min for${OFF}"
+  echo "  ${DIM}the base Odoo image build. You can re-run it safely -- each step is idempotent.${OFF}"
+  echo
+  if confirm "Provision the basic infrastructure now?"; then
+    # Source state.env so CODER_URL etc. are visible if already deployed.
+    [ -f "$HERE/deploy/state.env" ] && { set -a; . "$HERE/deploy/state.env"; set +a; }
+
+    # --- 7a. ECR + base image + builder IAM + Coder server (no coder login yet) ---
+    say "7a/7c: ECR, base Odoo image, builder IAM, Coder server ..."
+    if bash deploy/01_ecr.sh       && bash deploy/02_build_push.sh       && bash deploy/10_builder.sh       && bash deploy/11_coder_server.sh; then
+      ok "ECR + base image + builder IAM + Coder server provisioned"
+      # reload state.env written by 11_coder_server.sh
+      set -a; . "$HERE/deploy/state.env"; set +a
+    else
+      warn "one of ECR/base-image/builder/coder-server failed (see logs above)."
+      warn "fix it and re-run this wizard -- the completed steps are idempotent."
+      warn "skipping Coder login + template publish for now."
+    fi
+
+    # --- 7b. Coder login (interactive seam) ---
+    if [ -n "${CODER_URL:-}" ]; then
+      echo
+      say "7b/7c: Log into Coder"
+      echo "  The Coder server is up at ${BOLD}${CODER_URL}${OFF}."
+      echo "  ${DIM}First-time setup: open that URL in a browser and create the first admin${OFF}"
+      echo "  ${DIM}user (email + password). Then run coder login here to authenticate this${OFF}"
+      echo "  ${DIM}shell -- it stores a session token the template-publish step needs.${OFF}"
+      echo
+      # If already logged in (CODER_SESSION_TOKEN set, or `coder` has a token),
+      # skip the interactive login.
+      ALREADY_IN=0
+      if [ -n "${CODER_SESSION_TOKEN:-}" ]; then
+        ALREADY_IN=1
+      elif coder tokens 2>/dev/null | grep -q .; then
+        ALREADY_IN=1
+      fi
+      if [ "$ALREADY_IN" = 1 ]; then
+        ok "already logged into Coder"
+      else
+        if confirm "Run 'coder login $CODER_URL' now? (opens a browser/prints a URL)"; then
+          coder login "$CODER_URL" || warn "coder login did not complete -- you can run it manually later."
+          # export the token into this shell for the publish step
+          if tok="$(coder tokens 2>/dev/null | tail -1)"; then
+            [ -n "$tok" ] && export CODER_SESSION_TOKEN="$tok"
+          fi
+        else
+          warn "skipped coder login -- template publish will be skipped (run it manually)."
+        fi
+      fi
+    else
+      warn "CODER_URL not in deploy/state.env -- did 11_coder_server.sh run? Skipping Coder login."
+    fi
+
+    # --- 7c. Publish the Coder templates (needs coder login) ---
+    if [ -n "${CODER_URL:-}" ] && [ -n "${CODER_SESSION_TOKEN:-}" ]; then
+      echo
+      say "7c/7c: Publish Coder templates"
+      if bash deploy/12_publish_template.sh; then
+        ok "Coder templates published (odoo-synth-env, odoo-synth-builder)"
+        PROVISIONED=1
+      else
+        warn "template publish failed (see above). Run 'coder login $CODER_URL' then"
+        warn "    bash deploy/12_publish_template.sh"
+      fi
+    fi
+  else
+    warn "skipped provisioning. Run it later with:"
+    warn "    bash deploy/run_all.sh   ${DIM}# or re-run this wizard${OFF}"
+  fi
+fi
+
+# ===========================================================================
+# 8. NEXT STEPS (profiles + on-demand ops)
+# ===========================================================================
+step 8/8 "What's left: create profiles and run"
 cat <<NEXT
 
-${BOLD}Setup is complete.${OFF} Remaining steps before you can build/mask/env:
+${BOLD}Basic infra is${OFF} $([ "$PROVISIONED" = 1 ] && echo "${GREEN}provisioned${OFF}" || echo "${YELLOW}not yet provisioned${OFF}").
+The rest is on-demand via the CLI -- you create a profile per source Odoo DB,
+then mask + launch dev environments from it.
 
 ${BOLD}1. Source secrets in every shell${OFF} that runs odoo-synth (or add to ~/.bashrc):
     ${DIM}set -a; . deploy/secrets.env; set +a${OFF}
 
-${BOLD}2. (If AWS wasn't confirmed above) re-run this wizard${OFF} to enter credentials:
-    ${DIM}bash deploy/00_setup.sh${OFF}  ${DIM}# writes ~/.aws/credentials + ~/.aws/config${OFF}
-    verify:  ${DIM}aws sts get-caller-identity${OFF}
+${BOLD}2. Create a profile${OFF} (binds a source Odoo DB + its addons repo):
+    ${DIM}odoo-synth profile create --label 'my-profile' \${OFF}
+    ${DIM}    --source-dsn 'postgresql://user:pass@host:5432/db' \${OFF}
+    ${DIM}    --odoo-series 17.0 --addons-git-url <url> --addons-git-ref <ref>${OFF}
+    ${DIM}odoo-synth profile list   ${OFF}# see your profiles${OFF}
 
-${BOLD}3. Log into Coder${OFF} (needed for build/env/run commands):
-    ${DIM}coder login <CODER_URL>${OFF}   ${DIM}# URL comes from step 4 after the Coder server is deployed${OFF}
-
-${BOLD}4. (Optional) Enterprise addons${OFF} -- drop at odoo/enterprise.zip
-    ${DIM}(only if a profile has needs_enterprise: 1)${OFF}
-
-${BOLD}5. Deploy the stack to your AWS account${OFF} (first time only):
-    ${DIM}bash deploy/run_all.sh${OFF}
-    ${DIM}# provisions ECR, base images, Coder server, publishes templates -> deploy/state.env${OFF}
-
-${BOLD}6. Then use the CLI${OFF}:
-    ${DIM}odoo-synth profile create --label 'my-profile' --source-dsn 'postgresql://...' ${OFF}
+${BOLD}3. Mask${OFF} the source DB -> masked pg_dump in S3:
     ${DIM}odoo-synth run mask --profile <id> ...${OFF}
-    ${DIM}odoo-synth env create --profile <id> ...${OFF}
 
-Re-run ${BOLD}bash deploy/00_setup.sh${OFF} anytime to reconfigure. See README.md
-for the full CLI reference.
+${BOLD}4. Launch a dev environment${OFF} (one Coder workspace per GitHub issue):
+    ${DIM}odoo-synth env create --profile <id> --issue <num> --repo-url <url>${OFF}
+
+${BOLD}If provisioning was skipped or failed${OFF}, re-run this wizard (or
+${DIM}bash deploy/run_all.sh${OFF}) to finish the basic infra first.
+
+${BOLD}(Optional)${OFF} Enterprise addons at odoo/enterprise.zip (only if a profile
+has needs_enterprise: 1).
+
+Re-run ${BOLD}bash deploy/00_setup.sh${OFF} anytime to reconfigure or re-provision.
+See README.md for the full CLI reference.
 NEXT
 ok "done."
