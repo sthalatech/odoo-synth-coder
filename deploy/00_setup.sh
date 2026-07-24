@@ -400,6 +400,9 @@ fi
 # 8. NEXT STEPS (profiles + on-demand ops)
 # ===========================================================================
 step 7/7 "What's left: create profiles and run"
+# Detect existing provisioning from state.env (so a re-run that skips the
+# provision prompt still reports the real state, not "not yet provisioned").
+if [ "$PROVISIONED" = 0 ] && [ -n "${CODER_URL:-}" ]; then PROVISIONED=1; fi
 cat <<NEXT
 
 ${BOLD}Basic infra:${OFF} $([ "$PROVISIONED" = 1 ] && echo "${GREEN}provisioned${OFF}" || echo "${YELLOW}not yet provisioned${OFF}").
