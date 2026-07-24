@@ -15,7 +15,8 @@
 ir.module.module:
   fields:
     # ir_module_module.author holds the module author string. For a
-    # custom module it's the customer's own org name ("Acme Corp Pvt Ltd"); for OCA/Odoo SA modules it's the third party's author. A
+    # custom module it's the customer's own org name ("Acme Corp Pvt
+    # Ltd"); for OCA/Odoo SA modules it's the third party's author. A
     # masked dev instance has no functional need for any of these
     # (nothing reads author at runtime), so null the column globally
     # -- all rows, all modules. No per-module logic: a blanket `drop`
