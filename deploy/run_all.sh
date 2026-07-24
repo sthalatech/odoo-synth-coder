@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
-# Full pipeline provisioning: ECR + base images + builder IAM + Coder server
-# + templates. Masking + envs run on demand via the `odoo-synth` CLI (Coder
-# runner/builder/env workspaces) -- no standing ECS/Fargate cluster to provision.
+# DEPRECATED: use the guided installer instead:  bash deploy/00_setup.sh
+# Kept temporarily as a thin non-interactive wrapper around the same deploy
+# scripts. Will be removed once the guided installer is confirmed end-to-end.
+#
+# Full pipeline provisioning: ECR + basic images (masker, discovery) + builder
+# IAM + Coder server + templates. Masking + envs run on demand via the
+# `odoo-synth` CLI (Coder runner/builder/env workspaces) -- no standing
+# ECS/Fargate cluster to provision. The Odoo image is NOT built here; it's
+# baked per-profile via `odoo-synth profile build`.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # Install local prerequisites (idempotent): aws + python (pyyaml, boto3) +

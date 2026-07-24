@@ -322,7 +322,7 @@ else
     #        env-instance IAM (09 --infra-only, no AMI bake) -> Coder server
     #        (needs ENV_INSTANCE_PROFILE for iam:PassRole) -> coder login ->
     #        publish templates.
-    if bash deploy/01_ecr.sh            && bash deploy/02_build_push.sh --no-odoo --quiet            && bash deploy/09_dev_env.sh --infra-only            && bash deploy/10_builder.sh            && bash deploy/11_coder_server.sh; then
+    if bash deploy/01_ecr.sh            && bash deploy/02_build_push.sh --quiet            && bash deploy/09_dev_env.sh --infra-only            && bash deploy/10_builder.sh            && bash deploy/11_coder_server.sh; then
       ok "basic infra provisioned (ECR, images, IAM, Coder server)"
       set -a; . "$HERE/deploy/state.env"; set +a
     else

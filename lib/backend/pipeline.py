@@ -496,11 +496,10 @@ def run_operation(operation: str, params: dict, emit: LogSink,
         # Provenance: the exact Odoo image this masked dataset pairs with, so a
         # developer environment seeded from this run runs identical code. When
         # the run came from a profile, params["odoo_image"] is that profile's
-        # immutable build (odoo:<profile>-<hash>); only fall back to :latest for
-        # the inline path that has no profile image.
-        proj = config.get("PROJECT")
-        result["odoo_image"] = (params.get("odoo_image")
-                                or f"{_ecr()}/{proj}/odoo:latest")
+        # immutable build (odoo:<profile>-<hash>). An inline (no-profile) run
+        # has no baked image -- record None and let env-create resolve the
+        # image from config at environment-launch time.
+        result["odoo_image"] = params.get("odoo_image")
     elif exit_code == 3:
         result["error"] = ("preflight failed: source or destination DB was "
                             "not reachable from the masker (check the URL, "

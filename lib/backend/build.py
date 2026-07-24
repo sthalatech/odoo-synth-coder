@@ -159,7 +159,11 @@ def _launch_builder_workspace(image_uri: str, context_get: str, result_put: str,
     import os
     import subprocess
 
-    base = s.get("odoo_image_base") or config.get("ODOO_IMAGE") or "odoo:17"
+    # The FROM image for the per-profile build. The public odoo:<series> image
+    # is the default; odoo_image_base (from state/Coder param) can override it
+    # (e.g. a pre-warmed base mirrored into ECR for airgapped builds). We no
+    # longer build a project-level odoo:latest base at install time.
+    base = s.get("odoo_image_base") or "odoo:17"
     deps = " ".join(profile.get("python_deps") or [])
     odoo_ref = (profile.get("odoo_git_ref")
                 or profile.get("odoo_series") or "")

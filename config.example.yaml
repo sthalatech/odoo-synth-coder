@@ -129,7 +129,7 @@ environments:
   security_group_id_env: ENV_SG_ID             # env SG (egress only; Coder tunnel)
   instance_profile_env: ENV_INSTANCE_PROFILE    # IAM: S3 dump read + ECR pull
   db_name: odoo                                 # local DB name seeded from the dump
-  odoo_image_tag: latest                        # resolves to <acct>.../odoo:<tag>
+  odoo_image_tag: latest                        # fallback tag if no profile image is set
   repo_url_env: ENV_REPO_URL                    # addons repo (default: addons.custom_git_url)
   repo_branch_env: ENV_REPO_BRANCH              # default: addons.custom_git_ref
   git_token_secret_env: ENV_GIT_TOKEN_SECRET    # optional: Secrets Manager arn for private repo clone

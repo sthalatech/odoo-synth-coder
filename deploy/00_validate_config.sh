@@ -16,8 +16,8 @@ echo "== config source: config.yaml =="
 # required values (from either source)
 # Required for BASIC infrastructure. ODOO_GIT_REF + custom addons are NOT
 # here -- they're profile-level (tied to a source DB) and only needed when you
-# build a profile's provenance image (`odoo-synth profile build`). The base
-# odoo image built by run_all.sh / 02_build_push.sh is optional cache.
+# build a profile's provenance image (`odoo-synth profile build`). The Odoo
+# image is never built at install time; it's baked per-profile.
 for v in AWS_REGION PROJECT ODOO_SERIES ODOO_GIT_URL \
          PG_MAJOR SOURCE_DB_NAME TARGET_DB_NAME TARGET_DB_USER DUMP_S3_BUCKET \
          GREENMASK_VERSION; do
