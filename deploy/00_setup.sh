@@ -336,29 +336,34 @@ else
       echo
       say "7b/7c: Log into Coder"
       echo "  The Coder server is up at ${BOLD}${CODER_URL}${OFF}."
-      echo "  ${DIM}First-time setup: open that URL in a browser and create the first admin${OFF}"
-      echo "  ${DIM}user (email + password). Then run coder login here to authenticate this${OFF}"
-      echo "  ${DIM}shell -- it stores a session token the template-publish step needs.${OFF}"
-      echo
-      # If already logged in (CODER_SESSION_TOKEN set, or `coder` has a token),
-      # skip the interactive login.
-      ALREADY_IN=0
-      if [ -n "${CODER_SESSION_TOKEN:-}" ]; then
-        ALREADY_IN=1
-      elif coder tokens 2>/dev/null | grep -q .; then
-        ALREADY_IN=1
-      fi
-      if [ "$ALREADY_IN" = 1 ]; then
+      # Are we already logged in? `coder whoami` is the real check (works against
+      # the current server's DB -- a stale token from a previous server says so).
+      if coder whoami >/dev/null 2>&1; then
         ok "already logged into Coder"
       else
-        if confirm "Run 'coder login $CODER_URL' now? (opens a browser/prints a URL)"; then
-          coder login "$CODER_URL" || warn "coder login did not complete -- you can run it manually later."
-          # export the token into this shell for the publish step
-          if tok="$(coder tokens 2>/dev/null | tail -1)"; then
-            [ -n "$tok" ] && export CODER_SESSION_TOKEN="$tok"
+        echo "  ${DIM}A fresh Coder server needs a first admin user. The wizard creates one${OFF}"
+        echo "  ${DIM}headlessly (no browser) -- you can change the password later via the UI.${OFF}"
+        if confirm "Create the first admin + log in now (headless, no browser)?"; then
+          ADMIN_EMAIL="${CODER_ADMIN_EMAIL:-acct.exedev@sthala.dev}"
+          ADMIN_USER="${CODER_ADMIN_USER:-admin}"
+          ADMIN_PW="${CODER_ADMIN_PASSWORD:-$(python3 -c 'import secrets,string as s; print("".join(secrets.choice(s.ascii_letters+s.digits) for _ in range(20)))')}"
+          if CODER_FIRST_USER_EMAIL="$ADMIN_EMAIL" \
+             CODER_FIRST_USER_USERNAME="$ADMIN_USER" \
+             CODER_FIRST_USER_PASSWORD="$ADMIN_PW" \
+             coder login "$CODER_URL" >/dev/null 2>&1; then
+            # 'coder login' stores the session in the keyring; create a named
+            # API token the publish step (12_publish_template.sh) can use.
+            CODER_SESSION_TOKEN="$(coder tokens create --name wizard-$(date +%s) 2>/dev/null | tail -1)"
+            export CODER_SESSION_TOKEN
+            ok "first admin created ($ADMIN_EMAIL) + logged in"
+            note "    ${DIM}admin password: $ADMIN_PW (change it in the UI later)${OFF}"
+          else
+            warn "headless admin setup failed -- open $CODER_URL in a browser to create"
+            warn "    the first admin, then run: coder login $CODER_URL"
           fi
         else
-          warn "skipped coder login -- template publish will be skipped (run it manually)."
+          warn "skipped coder login -- open $CODER_URL in a browser to create the"
+          warn "    first admin, then 'coder login $CODER_URL' + re-run this wizard."
         fi
       fi
     else
