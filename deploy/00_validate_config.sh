@@ -19,10 +19,22 @@ echo "== config source: config.yaml =="
 # build a profile's provenance image (`odoo-synth profile build`). The base
 # odoo image built by run_all.sh / 02_build_push.sh is optional cache.
 for v in AWS_REGION PROJECT ODOO_SERIES ODOO_GIT_URL \
-         PG_MAJOR SOURCE_DB_NAME TARGET_DB_NAME TARGET_DB_USER TARGET_DB_PASSWORD \
-         SOURCE_DB_MASTER_PASSWORD DUMP_S3_BUCKET \
-         ODOO_ADMIN_PASSWORD ODOO_MASTER_PASSWORD GREENMASK_VERSION; do
+         PG_MAJOR SOURCE_DB_NAME TARGET_DB_NAME TARGET_DB_USER DUMP_S3_BUCKET \
+         GREENMASK_VERSION; do
   req_cfg "$v"
+done
+
+# The four DB/Odoo passwords are NOT needed to provision basic infra -- they're
+# consumed by the mask run (TARGET_DB_PASSWORD, ODOO_ADMIN_PASSWORD), the
+# dev-env launch (ODOO_MASTER_PASSWORD), or the per-profile --source-dsn
+# (SOURCE_DB_MASTER_PASSWORD). Warn (don't fail) if any are still empty so a
+# first-time install can validate + provision before the first mask/env run.
+# Fill deploy/secrets.env (auto-loaded by the CLI) before your first mask run.
+for v in TARGET_DB_PASSWORD SOURCE_DB_MASTER_PASSWORD \
+         ODOO_ADMIN_PASSWORD ODOO_MASTER_PASSWORD; do
+  if [ -z "${!v:-}" ]; then
+    echo "WARN (not fatal): $v not set -- needed at mask/env time, not provisioning" >&2
+  fi
 done
 
 # placeholders left from the example? DUMP_S3_BUCKET is required and must be
