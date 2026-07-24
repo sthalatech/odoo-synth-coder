@@ -39,7 +39,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "controlpanel"))
+sys.path.insert(0, str(REPO_ROOT / "lib"))
 
 from backend import config, environments, store  # noqa: E402
 

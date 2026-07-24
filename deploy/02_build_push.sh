@@ -3,8 +3,13 @@
 source "$(dirname "$0")/lib.sh"
 
 log "building masker image ..."
+# Optional: override the pinned greenmask tarball checksum (see masker/Dockerfile)
+# by exporting GREENMASK_TARBALL_SHA256 in your env. If unset, the Dockerfile's
+# default (pinned for the default GREENMASK_VERSION) is used, and the build
+# fails on any mismatch -- update both together when bumping GREENMASK_VERSION.
 docker build --platform linux/amd64 \
   --build-arg GREENMASK_VERSION="$GREENMASK_VERSION" \
+  ${GREENMASK_TARBALL_SHA256:+--build-arg GREENMASK_TARBALL_SHA256="$GREENMASK_TARBALL_SHA256"} \
   -t "$ECR/$PROJECT/masker:latest" "$HERE/masker"
 docker push "$ECR/$PROJECT/masker:latest"
 

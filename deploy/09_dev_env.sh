@@ -7,7 +7,7 @@
 #   * an IAM role + instance profile (S3 masked-dump read, Secrets Manager read,
 #     ECR pull) attached to every environment instance
 #   * a THIN golden AMI (ubuntu + docker + code-server) baked from
-#     controlpanel/environments/provision.sh  --  Odoo is NOT baked in
+#     lib/environments/provision.sh  --  Odoo is NOT baked in
 #
 # Writes ENV_AMI_ID / ENV_SG_ID / ENV_SUBNET_ID / ENV_INSTANCE_PROFILE (and
 # AWS_ACCOUNT_ID) to deploy/state.env, which the panel reads via config.yaml.
@@ -162,7 +162,7 @@ if [ -n "${ENV_AMI_ID:-}" ] && [ "$REBAKE" = 0 ]; then
 fi
 
 ENV_INSTANCE_TYPE="${ENV_INSTANCE_TYPE:-t3.large}"
-PROVISION="$HERE/controlpanel/environments/provision.sh"
+PROVISION="$HERE/lib/environments/provision.sh"
 [ -f "$PROVISION" ] || { log "missing $PROVISION"; exit 1; }
 
 # latest Ubuntu 22.04 LTS AMI (Canonical's SSM public parameter)

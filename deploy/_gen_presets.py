@@ -12,8 +12,8 @@ odoo.conf extras -- everything the panel used to pass. Adding a new repo+DB is
 now: build + mask it (via the CLI), then re-run `deploy/12_publish_template.sh`.
 
 Stores (no-SQL thin architecture, no SQLite):
-  * profiles  -> controlpanel/backend/profile_store.py (one YAML per profile)
-  * runs/logs -> controlpanel/backend/run_store.py   (S3: params.json + logs)
+  * profiles  -> lib/backend/profile_store.py (one YAML per profile)
+  * runs/logs -> lib/backend/run_store.py   (S3: params.json + logs)
 
 Usage: python3 deploy/_gen_presets.py
 """
@@ -24,7 +24,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 # allow running from a checkout without the package installed
-sys.path.insert(0, str(REPO / "controlpanel"))
+sys.path.insert(0, str(REPO / "lib"))
 from backend import profile_store, run_store  # noqa: E402
 
 OUT = REPO / "coder" / "templates" / "odoo-synth-env" / "presets.tf"

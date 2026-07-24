@@ -97,23 +97,23 @@ ssh "${SSH_OPTS[@]}" "$SSH_TARGET" "sudo mkdir -p \"$REMOTE_DIR\" && sudo chown 
 # the runtime stores -- the Coder server holds its own envs.yaml / profiles /
 # runs (live per-issue workspace linkage + secret ARNs). Syncing them from a
 # dev VM would clobber the server's records (e.g. an env a webhook created
-# since the last deploy). Exclude them defensively even though controlpanel/***
+# since the last deploy). Exclude them defensively even though lib/***
 # is included.
 if command -v rsync >/dev/null 2>&1; then
   # rsync filter rules are first-match-wins, so the runtime-store excludes MUST
-  # come BEFORE the broad `controlpanel/***` include -- otherwise envs.yaml etc.
+  # come BEFORE the broad `lib/***` include -- otherwise envs.yaml etc.
   # match the include first and get shipped, clobbering the server's live per-issue
   # env linkage (this exact bug silently wiped the 493/495 env records on a
   # previous deploy). Excludes first; then include the rest of the code tree.
   rsync -az --delete \
-    --exclude='controlpanel/backend/envs.yaml' \
-    --exclude='controlpanel/backend/profiles/' \
-    --exclude='controlpanel/backend/runs.yaml' \
-    --exclude='controlpanel/backend/__pycache__/' \
-    --exclude='controlpanel/.venv/' \
+    --exclude='lib/backend/envs.yaml' \
+    --exclude='lib/backend/profiles/' \
+    --exclude='lib/backend/runs.yaml' \
+    --exclude='lib/backend/__pycache__/' \
+    --exclude='lib/.venv/' \
     --exclude='__pycache__' \
     --include='scripts/' --include='scripts/***' \
-    --include='controlpanel/' --include='controlpanel/***' \
+    --include='lib/' --include='lib/***' \
     --include='deploy/' --include='deploy/_yaml_to_env.py' --include='deploy/lib.sh' \
     --exclude='deploy/state.env' \
     --include='coder/templates/odoo-synth-env/agent-system-prompt.md' \
@@ -121,10 +121,10 @@ if command -v rsync >/dev/null 2>&1; then
     --exclude='*' \
     "$HERE/" "$SSH_TARGET:$REMOTE_DIR/"
 else
-  tar -czf - -C "$HERE" scripts controlpanel \
-    --exclude='controlpanel/backend/envs.yaml' \
-    --exclude='controlpanel/backend/profiles' \
-    --exclude='controlpanel/backend/runs.yaml' \
+  tar -czf - -C "$HERE" scripts lib \
+    --exclude='lib/backend/envs.yaml' \
+    --exclude='lib/backend/profiles' \
+    --exclude='lib/backend/runs.yaml' \
     deploy/_yaml_to_env.py deploy/lib.sh \
     coder/templates/odoo-synth-env/agent-system-prompt.md \
     | ssh "${SSH_OPTS[@]}" "$SSH_TARGET" "tar -xzf - -C $REMOTE_DIR"

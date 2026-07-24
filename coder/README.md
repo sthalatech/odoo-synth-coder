@@ -2,7 +2,7 @@
 
 This directory holds the Coder template that replaces the project's former
 hand-rolled EC2/Secrets-Manager/SG-ingress developer-environment lifecycle
-(`controlpanel/backend/environments.py` is now a thin CLI/API shim over Coder).
+(`lib/backend/environments.py` is now a thin CLI/API shim over Coder).
 
 ## Architecture
 
@@ -15,7 +15,7 @@ hand-rolled EC2/Secrets-Manager/SG-ingress developer-environment lifecycle
 - **Workspace VMs** — launched by the Coder server from the `odoo-synth-env`
   template (below). Each reuses the existing thin golden AMI
   (`ENV_AMI_ID`, baked by `deploy/09_dev_env.sh` from
-  `controlpanel/environments/provision.sh`) + the existing env instance profile
+  `lib/environments/provision.sh`) + the existing env instance profile
   (`ENV_INSTANCE_PROFILE`) + the existing env SG (now **egress-only** — the Coder
   tunnel brokers all access). No public ingress, no per-env Secrets Manager
   secret, no nginx TLS sidecar.

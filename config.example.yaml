@@ -13,7 +13,7 @@
 # A plain string is taken literally.
 #
 # This is the single source of truth (it replaces the old flat `config.env`
-# and `controlpanel/config.yml`). `deploy/lib.sh` loads it via
+# and `lib/config.yml`). `deploy/lib.sh` loads it via
 # `deploy/_yaml_to_env.py` and exports the same env vars the pipeline scripts
 # expect, so no script had to change. The Python backend reads it directly.
 # =====================================================================

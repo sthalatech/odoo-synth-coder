@@ -2,7 +2,7 @@
 # 11: Coder server (control plane for developer environments).
 #
 # Replaces the hand-rolled EC2/Secrets-Manager/SG-ingress lifecycle that used to
-# live in controlpanel/backend/environments.py. The Coder server is the only NEW
+# live in lib/backend/environments.py. The Coder server is the only NEW
 # long-running AWS artifact this step creates: one t3.small EC2 instance in the
 # default VPC running `coder server` + its bundled PostgreSQL. Workspace VMs (the
 # actual per-issue dev environments) are launched later by Coder from the existing

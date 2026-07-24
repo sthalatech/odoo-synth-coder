@@ -36,22 +36,17 @@ def _parse_env_file(path: Path) -> dict[str, str]:
 
 
 def _parse_yaml_env(path: Path) -> dict[str, str]:
-    """Run the shared YAML loader and parse its KEY='value' output into a dict.
-    Resolves ref:env: / ref:ssm: forms via deploy/_yaml_to_env.py."""
-    import subprocess
-    try:
-        out = subprocess.check_output(
-            ["python3", str(REPO_ROOT / "deploy" / "_yaml_to_env.py"), str(path)],
-            stderr=subprocess.DEVNULL, text=True)
-    except Exception:
-        return {}
-    d: dict[str, str] = {}
-    for raw in out.splitlines():
-        if "=" not in raw:
-            continue
-        k, _, v = raw.partition("=")
-        d[k.strip()] = v.strip().strip("'")
-    return d
+    """Load config.yaml into a flat {ENV_VAR: value} dict in-process.
+
+    Shares one loader with deploy/_yaml_to_env.py (lib/backend/yamlconfig.py)
+    so the Python backend and the shell pipeline read identical values.
+    Resolves ref:env: / ref:ssm: secret forms. Raises FileNotFoundError if
+    *path* is missing -- load() treats a missing config.yaml as a hard error,
+    which is what we want (the old subprocess path silently returned {} and
+    produced an empty config that failed opaquely downstream).
+    """
+    from . import yamlconfig
+    return yamlconfig.load_env_dict(path)
 
 
 @lru_cache(maxsize=1)
