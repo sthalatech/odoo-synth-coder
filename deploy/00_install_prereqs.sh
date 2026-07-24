@@ -119,10 +119,10 @@ if ! have coder; then
   if [ "$os" = "darwin" ]; then ext="zip"; else ext="tar.gz"; fi
   asset_re="^coder_[0-9].*_${os}_${arch}\.${ext}$"
   url=$(curl -fsSL https://api.github.com/repos/coder/coder/releases/latest \
-        | python3 -c "import sys,json,sys; 
+        | python3 -c "import sys,json,re; 
 assets=json.load(sys.stdin).get('assets',[]);
-pat='$asset_re';
-print(next((a['browser_download_url'] for a in assets if __import__('re').match(pat,a['name'])), ''))")
+pat=r'$asset_re';
+print(next((a['browser_download_url'] for a in assets if re.match(pat,a['name'])), ''))")
   if [ -n "$url" ] && curl -fsSL "$url" -o "$tmp/coder-archive"; then
     case "$ext" in
       tar.gz) tar -xzf "$tmp/coder-archive" -C "$tmp" ;;

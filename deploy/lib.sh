@@ -24,8 +24,13 @@ _load_config() {
 }
 _load_config
 
-ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
-ECR="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+# ACCOUNT_ID requires live AWS auth. Resolve it best-effort so that sourcing
+# lib.sh does not abort (under `set -e`) before a caller can report a friendly
+# "not authenticated" error -- e.g. 00_validate_config.sh sources this to read
+# config values but must not die on missing creds. Scripts that actually need
+# ACCOUNT_ID (09_dev_env/10_builder/11_coder_server) re-check it explicitly.
+ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)"
+ECR="${ACCOUNT_ID:+${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com}"
 export HERE ACCOUNT_ID ECR
 export AWS_PAGER=""
 
