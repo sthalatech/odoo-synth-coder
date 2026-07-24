@@ -192,26 +192,6 @@ REGION="$(prompt_default "AWS region" "$REGION_DEFAULT")"
 PROJECT="$(prompt_default "Project name (AWS resources are named <project>-*)" "odoo-synth")"
 
 echo
-say "Odoo core source"
-echo "  ${DIM}Pin to the Odoo commit your production DB was taken at, so the running${OFF}"
-echo "  ${DIM}code's schema matches the restored dump without a -u all migration.${OFF}"
-echo "  ${DIM}Find a commit sha on https://github.com/odoo/odoo (e.g. 17.0 branch).${OFF}"
-ODOO_SERIES="$(prompt_default "Odoo series" "17.0")"
-ODOO_GIT_REF="$(prompt_required "Odoo core git ref (commit sha or branch, e.g. 17.0)")"
-
-echo
-say "Custom addons repo"
-echo "  ${DIM}The addons repo baked into the Odoo image + live-mounted in dev workspaces.${OFF}"
-echo "  ${DIM}Leave blank if you run core modules only (enter 'none' to skip).${OFF}"
-CUSTOM_URL="$(prompt_default "Custom addons git URL" "none")"
-if [ "$CUSTOM_URL" = "none" ] || [ -z "$CUSTOM_URL" ]; then
-  CUSTOM_URL=""
-  CUSTOM_REF=""
-else
-  CUSTOM_REF="$(prompt_required "Custom addons git ref (commit sha or branch)")"
-fi
-
-echo
 say "S3 bucket for masked dumps"
 echo "  ${DIM}A bucket in your AWS account to hold masked pg_dump artifacts + uploaded${OFF}"
 echo "  ${DIM}source dumps. Must be globally unique. We'll create it if it doesn't exist.${OFF}"
@@ -257,20 +237,22 @@ note "    ${DIM}set -a; . deploy/secrets.env; set +a${OFF}"
 # Build it from the example, substituting only the collected non-secret values.
 # Secrets stay as ref:env: (already in the example).
 EXAMPLE="$HERE/config.example.yaml"
-python3 - "$EXAMPLE" "$CFG" "$REGION" "$PROJECT" "$ODOO_SERIES" "$ODOO_GIT_REF" "$CUSTOM_URL" "$CUSTOM_REF" "$BUCKET" <<'PY'
+# Only the basic-infra values are filled here. The Odoo core git_ref +
+# custom addons repo are profile-level concerns (tied to a specific source DB),
+# so they're blanked here and set per-profile via
+# `odoo-synth profile create --odoo-git-ref ... --addons-git-url ...`.
+python3 - "$EXAMPLE" "$CFG" "$REGION" "$PROJECT" "$BUCKET" <<'PY'
 import sys, re
-ex, out, region, project, series, ref, curl, cref, bucket = sys.argv[1:10]
+ex, out, region, project, bucket = sys.argv[1:6]
 s = open(ex).read()
-# \g<1> preserves the leading whitespace captured in group 1.
 s = re.sub(r'(?m)^(\s*region:\s*).*',         r'\g<1>'+region,  s, count=1)
 s = re.sub(r'(?m)^(\s*project:\s*).*',        r'\g<1>'+project, s, count=1)
-s = re.sub(r'(?m)^(\s*series:\s*").*(")',     r'\g<1>'+series+r'\g<2>', s, count=1)
-s = re.sub(r'(?m)^(\s*git_ref:\s*").*(")',    r'\g<1>'+ref+r'\g<2>',   s, count=1)
-# custom addons: raw URL/ref in quotes (no <> wrapping -- that triggers the
-# validate placeholder check). Empty string = core modules only.
-s = re.sub(r'(?m)^(\s*custom_git_url:\s*).*', r'\g<1>'+('"'+curl+'"' if curl else '""'), s, count=1)
-s = re.sub(r'(?m)^(\s*custom_git_ref:\s*).*', r'\g<1>'+('"'+cref+'"' if cref else '""'), s, count=1)
 s = re.sub(r'(?m)^(\s*dumps_bucket:\s*).*',   r'\g<1>'+bucket, s, count=1)
+# blank the profile-level fields (example leaves <...> placeholders; blank =
+# "not set yet, fill at profile create"). Series stays as the example default.
+s = re.sub(r'(?m)^(\s*git_ref:\s*).*',        r'\g<1>""',       s, count=1)
+s = re.sub(r'(?m)^(\s*custom_git_url:\s*).*', r'\g<1>""',       s, count=1)
+s = re.sub(r'(?m)^(\s*custom_git_ref:\s*).*', r'\g<1>""',       s, count=1)
 open(out,'w').write(s)
 print("wrote", out)
 PY
@@ -352,7 +334,7 @@ else
 
     # --- 7a. ECR + base image + builder IAM + Coder server (no coder login yet) ---
     say "7a/7c: ECR, base Odoo image, builder IAM, Coder server ..."
-    if bash deploy/01_ecr.sh       && bash deploy/02_build_push.sh       && bash deploy/10_builder.sh       && bash deploy/11_coder_server.sh; then
+    if bash deploy/01_ecr.sh       && bash deploy/02_build_push.sh --no-odoo       && bash deploy/10_builder.sh       && bash deploy/11_coder_server.sh; then
       ok "ECR + base image + builder IAM + Coder server provisioned"
       # reload state.env written by 11_coder_server.sh
       set -a; . "$HERE/deploy/state.env"; set +a

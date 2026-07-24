@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
-# 02: build + push masker and odoo images.
+# 02: build + push masker, discovery, and odoo images.
+#
+# The masker + discovery images are basic infrastructure (no Odoo source
+# needed) -- they're built every run. The odoo image is a base-layer cache for
+# the per-profile provenance build (odoo-synth profile build); it needs an
+# ODOO_GIT_REF + optional custom-addons repo, which are profile-level concerns.
+# Pass --no-odoo to skip it (used by the guided installer's basic-infra step,
+# which has no Odoo ref yet).
 source "$(dirname "$0")/lib.sh"
+
+NO_ODOO=0
+for a in "$@"; do case "$a" in --no-odoo) NO_ODOO=1;; *) ;; esac; done
 
 log "building masker image ..."
 # Optional: override the pinned greenmask tarball checksum (see masker/Dockerfile)
@@ -18,6 +28,9 @@ docker build --platform linux/amd64 \
   -t "$ECR/$PROJECT/discovery:latest" "$HERE/discovery"
 docker push "$ECR/$PROJECT/discovery:latest"
 
+if [ "$NO_ODOO" = 1 ]; then
+  log "skipping odoo base image (--no-odoo); it's built per-profile via 'odoo-synth profile build'"
+else
 log "building odoo image (from source ref ${ODOO_GIT_REF}) ..."
 export DOCKER_BUILDKIT=1
 # Resolve a GitHub token for cloning the (possibly private) custom addons repo.
@@ -62,5 +75,6 @@ docker build --platform linux/amd64 \
   --secret id=gh_token,src="$GH_TOKEN_FILE" \
   -t "$ECR/$PROJECT/odoo:latest" "$HERE/odoo"
 docker push "$ECR/$PROJECT/odoo:latest"
+fi
 
 log "images pushed"

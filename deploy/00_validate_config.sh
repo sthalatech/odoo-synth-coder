@@ -14,15 +14,21 @@ req_cfg() { # varname
 echo "== config source: config.yaml =="
 
 # required values (from either source)
-for v in AWS_REGION PROJECT ODOO_SERIES ODOO_GIT_REF ODOO_GIT_URL \
+# Required for BASIC infrastructure. ODOO_GIT_REF + custom addons are NOT
+# here -- they're profile-level (tied to a source DB) and only needed when you
+# build a profile's provenance image (`odoo-synth profile build`). The base
+# odoo image built by run_all.sh / 02_build_push.sh is optional cache.
+for v in AWS_REGION PROJECT ODOO_SERIES ODOO_GIT_URL \
          PG_MAJOR SOURCE_DB_NAME TARGET_DB_NAME TARGET_DB_USER TARGET_DB_PASSWORD \
          SOURCE_DB_MASTER_PASSWORD DUMP_S3_BUCKET \
          ODOO_ADMIN_PASSWORD ODOO_MASTER_PASSWORD GREENMASK_VERSION; do
   req_cfg "$v"
 done
 
-# placeholders left from the example?
-for v in ODOO_GIT_REF CUSTOM_ADDONS_GIT_URL CUSTOM_ADDONS_GIT_REF DUMP_S3_BUCKET; do
+# placeholders left from the example? DUMP_S3_BUCKET is required and must be
+# filled. ODOO_GIT_REF + custom addons are profile-level/optional (blank = set
+# them per-profile via `odoo-synth profile create`), so they're not checked here.
+for v in DUMP_S3_BUCKET; do
   val="${!v:-}"
   case "$val" in
     \<*\>) echo "PLACEHOLDER not filled: $v=$val" >&2; err=1;;
