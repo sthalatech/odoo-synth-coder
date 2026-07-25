@@ -379,10 +379,15 @@ def run_runner(image_name: str, env_pairs: list[tuple[str, object]],
     # result.json as a fallback so the user sees what the container did.
     log_tail = result.get("log_tail") or ""
     if log_tail:
+        emit("[panel] --- runner log tail ---")
         for line in log_tail.splitlines():
             emit(line)
+        emit("[panel] --- end runner log tail ---")
     if exit_code != 0:
-        out["error"] = result.get("error") or f"runner exited {exit_code}"
+        err = result.get("error") or ""
+        if err:
+            emit(f"[panel] runner error: {err}")
+        out["error"] = err or f"runner exited {exit_code}"
     return out
 
 
