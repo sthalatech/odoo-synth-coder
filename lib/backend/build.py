@@ -44,10 +44,12 @@ def _coder_env() -> dict:
     environments._coder_env so the builder workspace launches with the same
     auth as dev envs."""
     s = config.environments_settings()
-    env = {
-        "CODER_URL": s.get("coder_url") or "",
-        "CODER_SESSION_TOKEN": s.get("coder_session_token") or "",
+    env: dict = {
+        "CODER_URL": s.get("coder_url") or config.coder_url() or "",
     }
+    tok = config.coder_token()
+    if tok:
+        env["CODER_SESSION_TOKEN"] = tok
     for k in ("AWS_REGION", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
               "AWS_SESSION_TOKEN", "AWS_DEFAULT_REGION"):
         v = config.get(k)

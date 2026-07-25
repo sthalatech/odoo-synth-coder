@@ -38,11 +38,17 @@ def _region() -> str:
 
 
 def _coder_env() -> dict:
-    """Env for the coder CLI: the server URL + a session token, plus AWS creds."""
-    env = {
-        "CODER_URL": config.get("CODER_URL", "") or "",
-        "CODER_SESSION_TOKEN": config.get_fresh("CODER_SESSION_TOKEN", "") or "",
+    """Env for the coder CLI: the server URL + a session token, plus AWS creds.
+
+    CODER_SESSION_TOKEN resolves via config.coder_token(), which validates the
+    configured token and falls back to "" (keyring) when it is stale. The env
+    var is omitted when empty so the coder CLI reads its keyring session."""
+    env: dict = {
+        "CODER_URL": config.coder_url() or "",
     }
+    tok = config.coder_token()
+    if tok:
+        env["CODER_SESSION_TOKEN"] = tok
     for k in ("AWS_REGION", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
               "AWS_SESSION_TOKEN", "AWS_DEFAULT_REGION"):
         v = config.get(k)
@@ -122,8 +128,8 @@ def _subdomain_url(subdomain_name: str) -> str:
 
 def _api(path: str) -> dict:
     """Call the Coder HTTP API (CODER_URL/api/v2/<path>) and return JSON."""
-    url = f"{config.get('CODER_URL','').rstrip('/')}/api/v2/{path.lstrip('/')}"
-    tok = config.get_fresh("CODER_SESSION_TOKEN", "") or ""
+    url = f"{config.coder_url().rstrip('/')}/api/v2/{path.lstrip('/')}"
+    tok = config.coder_token()
     req = urllib.request.Request(url, headers={"Coder-Session-Token": tok})
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
@@ -136,8 +142,8 @@ def _api_send(path: str, method: str = "POST", body: dict | None = None) -> dict
     """Call the Coder HTTP API with a request body (POST/PUT/DELETE). Raises
     RuntimeError with the server's message on a non-2xx so the panel surfaces
     the real error (e.g. 'email already taken')."""
-    url = f"{config.get('CODER_URL','').rstrip('/')}/api/v2/{path.lstrip('/')}"
-    tok = config.get_fresh("CODER_SESSION_TOKEN", "") or ""
+    url = f"{config.coder_url().rstrip('/')}/api/v2/{path.lstrip('/')}"
+    tok = config.coder_token()
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method,
                                  headers={"Coder-Session-Token": tok,

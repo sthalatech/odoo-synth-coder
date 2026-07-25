@@ -764,7 +764,10 @@ def cmd_env_config(args) -> int:
 def cmd_config(args) -> int:
     dest = config.destination()
     env = config.environments_settings()
-    coder_ok = bool(env.get("coder_url")) and bool(env.get("coder_session_token"))
+    # coder_connected reflects a USABLE token (configured-and-valid OR the
+    # on-disk keyring session from an interactive `coder login`), not just a
+    # configured (possibly stale) value.
+    coder_ok = bool(env.get("coder_url")) and bool(config.coder_token())
     out = {
         "project": config.get("PROJECT"),
         "region": config.get("AWS_REGION"),

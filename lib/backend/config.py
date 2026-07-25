@@ -365,8 +365,120 @@ def odoo_image() -> str | None:
 
 def environments_configured() -> bool:
     s = environments_settings()
-    # The Coder control plane (URL + session token) is required; the AMI/SG/
-    # profile/subnet are required to pass to the Coder template as parameters.
-    return bool(s["enabled"] and s["coder_url"] and s["coder_session_token"]
+    # The Coder control plane (URL + a usable session token) is required; the
+    # AMI/SG/profile/subnet are required to pass to the Coder template. The
+    # token check uses coder_token() (validates the configured token and falls
+    # back to the on-disk keyring session) so an interactive `coder login` is
+    # sufficient even when config.yaml/state.env still holds a stale token.
+    return bool(s["enabled"] and s["coder_url"] and coder_token()
                 and s["ami_id"] and s["security_group_id"] and s["instance_profile"])
+
+
+# ---------------------------------------------------------------------------
+# Coder session token resolution with keyring fallback.
+# ---------------------------------------------------------------------------
+# The configured CODER_SESSION_TOKEN (from config.yaml / state.env / env) is
+# the *preferred* auth for the `coder` CLI shim + the direct HTTP API calls.
+# But it can go stale: the wizard mints a long-lived token, yet a redeploy of
+# the Coder server (or a manual --rebuild) invalidates it, and an interactive
+# `coder login` after that stores a fresh session only in the OS keyring --
+# NOT in config.yaml/state.env. If we then shell out to `coder ...` with the
+# stale CODER_SESSION_TOKEN set in the subprocess env, the Coder CLI uses it
+# *instead of* the keyring (a non-empty env var wins over the keyring fallback
+# in the CLI's InitClient), and every call fails with "signed out".
+#
+# coder_token() validates the configured token against CODER_URL with a cheap
+# /api/v2/users/me probe and, if it is rejected, returns "" so the caller omits
+# CODER_SESSION_TOKEN from the subprocess env (or the Coder-Session-Token
+# header) -- letting the coder CLI fall back to its keyring session. The probe
+# result is cached for the process lifetime (a single CLI invocation) so the
+# many coder subprocess calls in one `profile create` / `env create` do not
+# each re-probe.
+@lru_cache(maxsize=1)
+def _configured_coder_token() -> str:
+    return get_fresh("CODER_SESSION_TOKEN", "") or ""
+
+
+def coder_url() -> str:
+    """The Coder server origin (CODER_URL), resolved the same way the env
+    settings resolve it (config.yaml -> state.env -> env var)."""
+    s = environments_settings()
+    return s.get("coder_url") or get("CODER_URL", "") or ""
+
+
+@lru_cache(maxsize=1)
+def _configured_token_valid() -> bool | None:
+    """Has the configured CODER_SESSION_TOKEN been verified against CODER_URL?
+
+    Returns True (valid), False (rejected/stale), or None (unverified -- e.g.
+    no token configured or no URL to probe). Cached for the process lifetime.
+    """
+    tok = _configured_coder_token()
+    url = coder_url()
+    if not tok or not url:
+        return None
+    import urllib.request
+    import urllib.error
+    req = urllib.request.Request(
+        f"{url.rstrip('/')}/api/v2/users/me",
+        headers={"Coder-Session-Token": tok})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.status == 200
+    except Exception:  # noqa: BLE001 -- any failure => don't trust the token
+        return False
+
+
+@lru_cache(maxsize=1)
+def _keyring_session_token() -> str:
+    """Read the session token the Coder CLI stores on disk after an interactive
+    `coder login` (Linux: no OS keyring, so it is a plain file). On Linux the
+    CLI writes the token to ~/.config/coderv2/session and the server URL it
+    authenticated against to ~/.config/coderv2/url. We return the token only if
+    that URL matches CODER_URL, so a session for a different (e.g. previous)
+    Coder server is not reused. Returns "" if absent/mismatched."""
+    import os
+    url = coder_url()
+    if not url:
+        return ""
+    url = url.rstrip("/")
+    cfg_dir = os.environ.get(
+        "CODER_CONFIG_DIR",
+        os.path.join(os.path.expanduser("~"), ".config", "coderv2"))
+    try:
+        with open(os.path.join(cfg_dir, "url"), "r") as f:
+            sess_url = f.read().strip()
+        if not sess_url or sess_url.rstrip("/") != url:
+            return ""
+        with open(os.path.join(cfg_dir, "session"), "r") as f:
+            tok = f.read().strip()
+        return tok or ""
+    except Exception:  # noqa: BLE001 -- missing/unreadable => no fallback
+        return ""
+
+
+@lru_cache(maxsize=1)
+def _resolved_coder_token() -> str:
+    """Pick the effective Coder session token: the configured one if valid,
+    else the on-disk keyring/session token (from an interactive `coder login`)
+    if it matches CODER_URL. Returns "" if neither is usable, so the coder CLI
+    subprocess falls back to its own keyring read, and direct HTTP API calls
+    (which cannot use the keyring) fail with a clear auth error instead of
+    silently using a stale token."""
+    if _configured_token_valid() is True:
+        return _configured_coder_token()
+    return _keyring_session_token()
+
+
+def coder_token() -> str:
+    """The session token to use for Coder CLI/API calls.
+
+    Returns the configured CODER_SESSION_TOKEN if it is valid against CODER_URL,
+    otherwise the on-disk session token from an interactive `coder login` (if
+    it matches CODER_URL), otherwise "" (so the coder CLI subprocess falls back
+    to its own keyring read). This is what makes an interactive `coder login`
+    on the operator's host sufficient even when config.yaml/state.env still
+    holds a stale token from a prior deploy."""
+    return _resolved_coder_token()
+
 

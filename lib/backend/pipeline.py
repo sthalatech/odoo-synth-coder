@@ -50,10 +50,17 @@ def _require_coder() -> None:
 
 def _coder_env() -> dict:
     s = config.environments_settings()
-    env = {
-        "CODER_URL": s.get("coder_url") or "",
-        "CODER_SESSION_TOKEN": s.get("coder_session_token") or "",
+    env: dict = {
+        "CODER_URL": s.get("coder_url") or config.coder_url() or "",
     }
+    # coder_token() validates the configured token and falls back to "" (so
+    # the coder CLI reads its keyring session) when it is stale. Omit the env
+    # var entirely when empty -- a present-but-empty CODER_SESSION_TOKEN would
+    # still let the Coder CLI fall back to the keyring, but omitting it is
+    # unambiguous and survives any future CLI env-parsing change.
+    tok = config.coder_token()
+    if tok:
+        env["CODER_SESSION_TOKEN"] = tok
     for k in ("AWS_REGION", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
               "AWS_SESSION_TOKEN", "AWS_DEFAULT_REGION"):
         v = config.get(k)
