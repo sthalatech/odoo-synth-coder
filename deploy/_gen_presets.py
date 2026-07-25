@@ -107,7 +107,11 @@ def main() -> int:
         desc = (p.get("description") or f"Profile {p['id']}").strip()
         repo_url = p.get("addons_git_url") or ""
         repo_branch = p.get("addons_git_ref") or ""
-        git_tok = p.get("git_token_secret") or ""
+        # The git token is a Coder user secret injected as $GIT_TOKEN_<UPPER_ID>;
+        # the preset carries the env-var NAME (not the value -- write-only in Coder).
+        from backend import profiles as _profiles
+        git_tok_env = (_profiles.git_token_env_name(p["id"])
+                       if p.get("git_token_secret") else "")
         agent_name = (p.get("agent_name") or "opencode").strip() or "opencode"
         agent_prompt = (p.get("agent_system_prompt") or "").strip()
         # base64 the prompt so multi-line HCL strings stay safe; the template
@@ -123,7 +127,7 @@ data "coder_workspace_preset" "profile_{res_id}" {{
   parameters = {{
     odoo_image          = "{_hcl_string(p["image_uri"])}"
     dump_s3_uri         = "{_hcl_string(dump_uri)}"
-    git_token_secret    = "{_hcl_string(git_tok)}"
+    git_token_env      = "{_hcl_string(git_tok_env)}"
     instance_type       = "{DEFAULT_INSTANCE}"
     odoo_conf_extra_b64 = "{conf_b64}"
     agent_name          = "{_hcl_string(agent_name)}"

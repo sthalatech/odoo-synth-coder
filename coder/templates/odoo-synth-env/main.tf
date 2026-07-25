@@ -141,9 +141,9 @@ data "coder_parameter" "repo_branch" {
   order        = 9
 }
 
-data "coder_parameter" "git_token_secret" {
-  name         = "git_token_secret"
-  display_name = "Secrets Manager secret id of a GitHub token (private addons clone)."
+data "coder_parameter" "git_token_env" {
+  name         = "git_token_env"
+  display_name = "Env var name holding the GitHub token (Coder user secret, profile-specific)"
   type         = "string"
   default      = ""
   order        = 10
@@ -280,7 +280,7 @@ resource "coder_agent" "main" {
     ODOO_IMAGE="${data.coder_parameter.odoo_image.value}"
     REPO_URL="${data.coder_parameter.repo_url.value}"
     REPO_BRANCH="${data.coder_parameter.repo_branch.value}"
-    GIT_TOKEN_SECRET="${data.coder_parameter.git_token_secret.value}"
+    GIT_TOKEN_ENV="${data.coder_parameter.git_token_env.value}"
     DB_NAME="${data.coder_parameter.db_name.value}"
     ODOO_MASTER_PASSWORD="${data.coder_parameter.odoo_master_password.value}"
     ODOO_CONF_EXTRA_B64="${data.coder_parameter.odoo_conf_extra_b64.value}"
@@ -346,13 +346,14 @@ resource "coder_agent" "main" {
     #       grants access, so add the user's Coder public key to the repo's
     #       deploy/user keys on the Git host. Requires HOME for the gitssh
     #       wrapper and accept-new host-key handling (no known_hosts baked in).
-    #   (b) HTTPS -- fall back to a Secrets Manager token (git_token_secret)
-    #       injected into the URL, for users without a registered SSH key.
+    #   (b) HTTPS -- fall back to a GitHub token injected into the URL by
+    #       Coder (a per-profile user secret named git-token-<profile_id>,
+    #       injected as $GIT_TOKEN_<UPPER_ID>; the name arrives in
+    #       GIT_TOKEN_ENV). For users without a registered SSH key.
     GIT_TOKEN=""
     GIT_TOKEN_RC="n/a"
-    if [ -n "$GIT_TOKEN_SECRET" ]; then
-      GIT_TOKEN="$(aws secretsmanager get-secret-value --secret-id "$GIT_TOKEN_SECRET" \
-        --region "$REGION" --query SecretString --output text 2>/dev/null || echo '')"
+    if [ -n "$GIT_TOKEN_ENV" ]; then
+      GIT_TOKEN="$${!GIT_TOKEN_ENV:-}"
       if [ -n "$GIT_TOKEN" ]; then GIT_TOKEN_RC="ok"; else GIT_TOKEN_RC="EMPTY"; fi
     fi
     SSH_MODE=0
@@ -360,7 +361,7 @@ resource "coder_agent" "main" {
       git@*|ssh://*) SSH_MODE=1 ;;
     esac
     _M=$([ "$SSH_MODE" = 1 ] && echo ssh || echo https)
-    echo "[env] repo: url=$REPO_URL branch=$REPO_BRANCH mode=$_M git_token_secret=$GIT_TOKEN_SECRET git_token=$GIT_TOKEN_RC"
+    echo "[env] repo: url=$REPO_URL branch=$REPO_BRANCH mode=$_M git_token_env=$GIT_TOKEN_ENV git_token=$GIT_TOKEN_RC"
 
     # --- 4. clone the addons repo ---
     if [ -n "$REPO_URL" ]; then
@@ -391,7 +392,7 @@ resource "coder_agent" "main" {
         # with "could not read Username". Surface that clearly instead of a
         # silent bare-URL clone.
         if [ -z "$GIT_TOKEN" ]; then
-          echo "[env] WARN: https repo but no git token (git_token_secret empty or unreadable); clone will fail for a private repo"
+          echo "[env] WARN: https repo but no git token (GIT_TOKEN_ENV empty or Coder user secret unset); clone will fail for a private repo"
         fi
         CLONE_URL="$REPO_URL"
         if [ -n "$GIT_TOKEN" ]; then
@@ -400,7 +401,7 @@ resource "coder_agent" "main" {
         if sudo -u dev git clone "$CLONE_URL" "$REPO_DIR" 2>&1; then
           CLONE_OK=1
         else
-          echo "[env] WARN: https clone failed (token=$${GIT_TOKEN_RC}) -- check git_token_secret IAM read access on the env instance profile"
+          echo "[env] WARN: https clone failed (token=$${GIT_TOKEN_RC}) -- check the profile's Coder user secret (git-token-<profile_id>) is set"
         fi
         if [ -n "$REPO_BRANCH" ] && [ -d "$REPO_DIR/.git" ]; then
           sudo -u dev git -C "$REPO_DIR" checkout "$REPO_BRANCH" 2>/dev/null \
@@ -590,7 +591,8 @@ echo "\$ODOO_MASTER_PASSWORD"
 <ul>
   <li>The DB volume (<code>/var/lib/env-db</code>) persists across workspace
       stop/start; the masked dump is restored only on first boot.</li>
-  <li>If the addons repo is private, set <code>git_token_secret</code> (a
+  <li>If the addons repo is private, set a GitHub token on the profile via
+  <code>odoo-synth profile create --git-token &lt;PAT&gt;</code> (stored as a
       Secrets Manager GitHub token) at create time; otherwise the clone is
       skipped and Odoo runs from image-baked addons only.</li>
 </ul>

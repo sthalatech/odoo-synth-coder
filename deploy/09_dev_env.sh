@@ -24,8 +24,6 @@
 #   ENV_INGRESS_CIDR    (legacy, unused -- the SG is egress-only now; Coder
 #                       current public IP /32; set 0.0.0.0/0 at your own risk)
 #   ENV_INSTANCE_TYPE   builder instance type for the bake (default t3.large)
-#   ENV_GIT_TOKEN_SECRET  Secrets Manager arn/name of a GitHub token (private
-#                       addons repo) -- granted to the instance profile if set
 #   DUMP_S3_PREFIX      masked-dump key prefix (default masked-dumps)
 source "$(dirname "$0")/lib.sh"
 
@@ -83,23 +81,21 @@ if ! aws iam get-role --role-name "$ENV_ROLE" >/dev/null 2>&1; then
     --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}' >/dev/null
 fi
 
-# inline policy: S3 masked-dump read + Secrets Manager (env passwords + optional
-# git token) + ECR pull. Scoped to this project's resources.
-TOKEN_SECRET_ARN=""
-if [ -n "${ENV_GIT_TOKEN_SECRET:-}" ]; then
-  case "$ENV_GIT_TOKEN_SECRET" in
-    arn:aws:*) TOKEN_SECRET_ARN="$ENV_GIT_TOKEN_SECRET" ;;
-    *) TOKEN_SECRET_ARN="arn:aws:secretsmanager:${AWS_REGION}:${ACCOUNT_ID}:secret:${ENV_GIT_TOKEN_SECRET}*" ;;
-  esac
-fi
+# inline policy: S3 masked-dump read + Secrets Manager (env passwords) + ECR
+# pull. Scoped to this project's resources. (The GitHub token for private
+# addons clone is no longer an AWS secret -- it's a Coder user secret injected
+# into the workspace env, so no Secrets Manager grant is needed for it.)
 
-POLICY_JSON="$(python3 - "$AWS_REGION" "$ACCOUNT_ID" "$DUMP_S3_BUCKET" "$DUMP_S3_PREFIX" "$PROJECT" "$TOKEN_SECRET_ARN" <<'PY'
+POLICY_JSON="$(python3 - "$AWS_REGION" "$ACCOUNT_ID" "$DUMP_S3_BUCKET" "$DUMP_S3_PREFIX" "$PROJECT" <<'PY'
 import json, sys
-region, acct, bucket, prefix, project, token_arn = sys.argv[1:7]
+region, acct, bucket, prefix, project = sys.argv[1:6]
+# Env workspace reads masked dumps (S3) + pulls the odoo image (ECR). The GitHub
+# token for private addons clone is a Coder user secret (injected into the
+# workspace env), NOT an AWS secret, so no per-token grant here. Env/admin
+# passwords are Coder env vars too. The profile/env secret read is kept for the
+# runner (mask) workspaces that share this profile and read source creds.
 secret_arns = [f"arn:aws:secretsmanager:{region}:{acct}:secret:{project}/env/*",
                   f"arn:aws:secretsmanager:{region}:{acct}:secret:{project}/profile/*"]
-if token_arn:
-    secret_arns.append(token_arn)
 doc = {
   "Version": "2012-10-17",
   "Statement": [
@@ -146,9 +142,8 @@ log "env instance profile: $ENV_PROFILE (role $ENV_ROLE)"
 # per-PROFILE / per-workspace concerns, supplied at `odoo-synth env create`
 # time (the env template's repo_url/repo_branch Coder parameters have no
 # default; a profile/preset pre-fills them). Nothing in config.yaml drives
-# this anymore. ENV_GIT_TOKEN_SECRET (optional Secrets Manager ARN for a
-# private-repo clone token) is still threaded through if set.
-[ -n "${ENV_GIT_TOKEN_SECRET:-}" ] && put_state ENV_GIT_TOKEN_SECRET "$ENV_GIT_TOKEN_SECRET"
+# this anymore. (The private-repo clone token is a Coder user secret, not an
+# AWS secret, so nothing is threaded through state.env here.)
 
 if [ "$INFRA_ONLY" = 1 ]; then
   log "infra-only: skipping AMI bake"

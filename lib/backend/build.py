@@ -184,7 +184,11 @@ def _launch_builder_workspace(image_uri: str, context_get: str, result_put: str,
         ("custom_addons_git_url", profile.get("addons_git_url") or ""),
         ("custom_addons_git_ref", profile.get("addons_git_ref") or ""),
         ("python_deps", deps),
-        ("git_token_secret", profile.get("git_token_secret") or ""),
+        # The git token is a Coder user secret injected into the workspace as
+        # $GIT_TOKEN_<UPPER_ID>; pass the env-var NAME (not the value) so the
+        # builder startup can read it. Empty when the profile has no token.
+        ("git_token_env", profiles.git_token_env_name(profile.get("id") or "")
+         if profile.get("git_token_secret") else ""),
         ("issue", profile.get("id") or ""),
     ]
     ws_name = f"build-{uuid.uuid4().hex[:8]}"

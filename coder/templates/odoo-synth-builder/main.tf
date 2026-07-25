@@ -241,12 +241,12 @@ data "coder_parameter" "python_deps" {
   order        = 15
 }
 
-data "coder_parameter" "git_token_secret" {
-  name         = "git_token_secret"
+data "coder_parameter" "git_token_env" {
+  name         = "git_token_env"
   type         = "string"
-  display_name = "Secrets Manager secret id holding the GitHub token (private addons)"
+  display_name = "Env var name holding the GitHub token (Coder user secret, profile-specific)"
   default      = ""
-  icon         = "/icon/aws.svg"
+  icon         = "/icon/github.svg"
   order        = 16
 }
 
@@ -289,7 +289,7 @@ resource "coder_agent" "main" {
     CUSTOM_ADDONS_GIT_URL="${data.coder_parameter.custom_addons_git_url.value}"
     CUSTOM_ADDONS_GIT_REF="${data.coder_parameter.custom_addons_git_ref.value}"
     PYTHON_DEPS="${data.coder_parameter.python_deps.value}"
-    GIT_TOKEN_SECRET="${data.coder_parameter.git_token_secret.value}"
+    GIT_TOKEN_ENV="${data.coder_parameter.git_token_env.value}"
 
     LOG=/var/log/odoo-synth-build.log
     STATUS="failed"
@@ -346,12 +346,15 @@ resource "coder_agent" "main" {
     fi
 
     # --- resolve git token for private addons clone ----------------------
+    # The token is a Coder user secret injected into the workspace as
+    # $GIT_TOKEN_<UPPER_ID> (the name is passed in GIT_TOKEN_ENV). Coder
+    # injects it into the agent env; we write it to a file for the BuildKit
+    # --secret mount the Dockerfile uses. No AWS Secrets Manager round-trip.
     GH_TOKEN_FILE="$(mktemp)"; chmod 600 "$GH_TOKEN_FILE"
-    if [ -n "$GIT_TOKEN_SECRET" ]; then
-      aws secretsmanager get-secret-value --region "$REGION" --secret-id "$GIT_TOKEN_SECRET" \
-        --query SecretString --output text > "$GH_TOKEN_FILE" 2>/dev/null || true
+    if [ -n "$GIT_TOKEN_ENV" ]; then
+      printf '%s' "$${!GIT_TOKEN_ENV:-}" > "$GH_TOKEN_FILE" 2>/dev/null || true
     fi
-    [ -s "$GH_TOKEN_FILE" ] && echo "[build] git token resolved for custom-addons clone" \
+    [ -s "$GH_TOKEN_FILE" ] && echo "[build] git token resolved from $${GIT_TOKEN_ENV:-} (Coder user secret)" \
       || echo "[build] no git token (public addons or none)"
 
     # --- ECR login ---------------------------------------------------------

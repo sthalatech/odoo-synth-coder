@@ -5,8 +5,10 @@
 # throwaway EC2 instances that build per-profile provenance Odoo images:
 #   * ECR push + pull (build & publish odoo:<profile>-<hash>)
 #   * S3 get/put on the dumps bucket (download build context, upload result)
-#   * Secrets Manager read (the profile's git token for private addons clone)
 #   * ec2:TerminateInstances on self (the builder self-terminates when done)
+# (The GitHub token for private addons clone is no longer an AWS secret -- it's
+# a Coder user secret injected into the builder workspace env, so no Secrets
+# Manager grant is needed for the git token.)
 #
 # The builder reuses the developer-environment AMI (docker preinstalled); no new
 # AMI is baked. Writes BUILD_INSTANCE_PROFILE (+ reuses ENV_AMI_ID/SG/SUBNET) to
@@ -21,8 +23,6 @@ BUCKET="${DUMP_S3_BUCKET:-odoo-synth-dumps-$ACCOUNT_ID}"
 PREFIX="${DUMP_S3_PREFIX:-masked-dumps}"
 # build artifacts live in a sibling prefix under the same bucket
 BUILD_PREFIX="$(dirname "$PREFIX")"; [ "$BUILD_PREFIX" = "." ] && BUILD_PREFIX="" || BUILD_PREFIX="$BUILD_PREFIX/"
-TOKEN_ARN="${ENV_GIT_TOKEN_SECRET:-}"
-
 ASSUME='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
 if ! aws iam get-role --role-name "$BUILD_ROLE" >/dev/null 2>&1; then
   aws iam create-role --role-name "$BUILD_ROLE" \
@@ -30,13 +30,13 @@ if ! aws iam get-role --role-name "$BUILD_ROLE" >/dev/null 2>&1; then
   log "created role $BUILD_ROLE"
 fi
 
-POLICY_JSON="$(python3 - "$AWS_REGION" "$ACCOUNT_ID" "$BUCKET" "$PROJECT" "$TOKEN_ARN" <<'PY'
+POLICY_JSON="$(python3 - "$AWS_REGION" "$ACCOUNT_ID" "$BUCKET" "$PROJECT" <<'PY'
 import json, sys
-region, acct, bucket, project, token_arn = sys.argv[1:6]
+region, acct, bucket, project = sys.argv[1:5]
+# Builder reads no AWS secrets: the git token is a Coder user secret. (Kept
+# broad profile/env read in case future build-time secrets are added.)
 secret_arns = [f"arn:aws:secretsmanager:{region}:{acct}:secret:{project}/profile/*",
                f"arn:aws:secretsmanager:{region}:{acct}:secret:{project}/env/*"]
-if token_arn:
-    secret_arns.append(token_arn)
 doc = {
   "Version": "2012-10-17",
   "Statement": [

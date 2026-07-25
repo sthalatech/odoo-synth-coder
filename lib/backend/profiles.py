@@ -3,12 +3,20 @@ provenance (Odoo core ref + addons repo/ref + discovered deps) and the immutable
 Odoo image built from that provenance. Mask runs and developer environments are
 launched *from* a profile, so the data and the code always match.
 
-Secrets (source DB password, SSH bastion key, git token) are stored in AWS
-Secrets Manager and referenced by ARN; only non-secret metadata lives in the
-profile's YAML file (profiles/<id>.yaml).
+Secrets:
+  * source DB password + SSH bastion key -> AWS Secrets Manager (referenced by
+    ARN; only non-secret metadata lives in the profile's YAML file).
+  * GitHub token (for cloning the private addons repo) -> a Coder *user secret*
+    named ``git-token-<profile_id>`` with a per-profile env-var target
+    ``GIT_TOKEN_<UPPER_ID>``. Coder injects it into every workspace the owner
+    launches, so discover / build / env-launch all read it from the workspace
+    env with no AWS Secrets Manager round-trip and no plaintext in the profile
+    or in template parameters. Only the secret *name* is persisted in the
+    profile (``git_token_secret`` field); the value is write-only in Coder.
 """
 from __future__ import annotations
 
+import subprocess
 import uuid
 from typing import Any, Optional
 from urllib.parse import quote
@@ -51,18 +59,75 @@ def _put_secret(name: str, value: str) -> str:
         return sm.describe_secret(SecretId=name)["ARN"]
 
 
+def _coder_git_token_name(profile_id: str) -> str:
+    """The Coder user-secret name for a profile's GitHub token."""
+    return f"git-token-{profile_id}"
+
+
+def _coder_git_token_env(profile_id: str) -> str:
+    """The per-profile env-var target Coder injects the token under.
+
+    One unique env var per profile avoids collisions, since Coder user secrets
+    are per-user global (a single user owns every workspace, so two profiles
+    can't both own ``GIT_TOKEN`` -- last write would win). Workspaces re-export
+    this as ``GIT_TOKEN`` for the container / git clone."""
+    return "GIT_TOKEN_" + profile_id.upper().replace("-", "_")
+
+
+def _coder_env() -> dict[str, str]:
+    """Env for shelling out to the coder CLI (CODER_URL + session token)."""
+    import os
+    from .pipeline import _coder_env as _pipeline_coder_env
+    return {**os.environ, **_pipeline_coder_env()}
+
+
+def _put_coder_git_token(profile_id: str, token: str) -> str:
+    """Create-or-update the profile's Coder user secret holding the GitHub PAT.
+
+    The token is injected into every workspace the owner launches as
+    ``$GIT_TOKEN_<UPPER_ID>``. Returns the secret *name* (not an ARN) so it can
+    be stored in the profile and deleted later. The value is write-only in
+    Coder -- it cannot be read back via the CLI/API."""
+    name = _coder_git_token_name(profile_id)
+    env_target = _coder_git_token_env(profile_id)
+    # create; if it already exists, fall back to update.
+    create = subprocess.run(
+        ["coder", "secret", "create", name,
+         "--description", f"odoo-synth git token for profile {profile_id}",
+         "--env", env_target, "--value", token],
+        env=_coder_env(), capture_output=True, text=True, timeout=30)
+    if create.returncode == 0:
+        return name
+    # exists -> update the value + env target
+    update = subprocess.run(
+        ["coder", "secret", "update", name, "--env", env_target, "--value", token],
+        env=_coder_env(), capture_output=True, text=True, timeout=30)
+    if update.returncode != 0:
+        raise RuntimeError(
+            f"could not create/update Coder secret {name!r}: "
+            f"create rc={create.returncode} ({create.stderr.strip()}); "
+            f"update rc={update.returncode} ({update.stderr.strip()})")
+    return name
+
+
+def _delete_coder_git_token(name: Optional[str]) -> None:
+    if not name:
+        return
+    subprocess.run(["coder", "secret", "delete", name],
+                   env=_coder_env(), capture_output=True, text=True, timeout=30)
+
+
 def _resolve_git_token_secret(payload: dict[str, Any], profile_id: str) -> str | None:
-    """Mint the GitHub token secret for a profile from a raw PAT.
+    """Mint the profile's GitHub token into a Coder user secret.
 
-    ``git_token`` -- a raw PAT; minted into a new secret under
-    ``<prefix>/profile/<id>/git-token``. Secrets are always created fresh
-    (never reused from an existing ARN) so each profile owns its own secret.
-
-    If no token is supplied, returns None (caller leaves the field as-is on
-    update, or unset on create)."""
+    ``git_token`` -- a raw PAT; stored as the Coder user secret
+    ``git-token-<profile_id>`` (injected into workspaces as
+    ``$GIT_TOKEN_<UPPER_ID>``). Returns the secret *name* (persisted in the
+    profile's ``git_token_secret`` field). If no token is supplied, returns
+    None (caller leaves the field as-is on update, or unset on create)."""
     token = payload.get("git_token")
     if token:
-        return _put_secret(f"{_secret_prefix()}/{profile_id}/git-token", token)
+        return _put_coder_git_token(profile_id, token)
     return None
 
 
@@ -180,8 +245,11 @@ def delete(profile_id: str) -> None:
     p = store.get_profile(profile_id)
     if not p:
         return
-    for k in ("source_password_secret", "ssh_key_secret", "git_token_secret"):
+    # AWS Secrets Manager: source DB password + SSH key.
+    for k in ("source_password_secret", "ssh_key_secret"):
         _delete_secret(p.get(k))
+    # Coder user secret: GitHub token (field holds the secret NAME, not an ARN).
+    _delete_coder_git_token(p.get("git_token_secret"))
     store.delete_profile(profile_id)
 
 
@@ -245,3 +313,12 @@ _MASK_KEYS = (
 
 def _mask_inputs(payload: dict[str, Any]) -> dict[str, Any]:
     return {k: payload[k] for k in _MASK_KEYS if k in payload and payload[k] is not None}
+
+
+def git_token_env_name(profile_id: str) -> str:
+    """The env var Coder injects the profile's git token under (GIT_TOKEN_<ID>).
+
+    Used by the discover/build/env-launch paths to tell each workspace which
+    Coder-injected env var holds this profile's token.
+    """
+    return _coder_git_token_env(profile_id)

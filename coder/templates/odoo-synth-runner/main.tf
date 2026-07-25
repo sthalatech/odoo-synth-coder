@@ -292,6 +292,21 @@ resource "coder_agent" "main" {
       echo "[runner] no env-setup URL; running with no env"
     fi
 
+    # --- resolve the profile's GitHub token (Coder user secret) -----------
+    # The CLI passes GIT_TOKEN_ENV (the name of the Coder-injected env var for
+    # this profile, e.g. GIT_TOKEN_PROF_749C8A90). Coder injects the value into
+    # the workspace agent env automatically; we re-export it as GIT_TOKEN for
+    # the container (which reads GIT_TOKEN). No AWS Secrets Manager round-trip.
+    if [ -n "$${GIT_TOKEN_ENV:-}" ]; then
+      _val="$(printf '%s' "$${!GIT_TOKEN_ENV:-}")"
+      if [ -n "$_val" ]; then
+        export GIT_TOKEN="$_val"
+        echo "[runner] git token resolved from $${GIT_TOKEN_ENV}"
+      else
+        echo "[runner] WARN: $${GIT_TOKEN_ENV} is empty (secret not set in Coder?)"
+      fi
+    fi
+
     # --- build the -e KEY args --------------------------------------------
     ENV_ARGS=()
     if [ -n "$ENV_KEYS" ]; then
@@ -299,6 +314,11 @@ resource "coder_agent" "main" {
       for _k in "$${_KEYS[@]}"; do
         [ -n "$_k" ] && ENV_ARGS+=("-e" "$_k")
       done
+    fi
+    # Forward the resolved GIT_TOKEN (from the Coder user secret) into the
+    # container so the discovery image can clone a private addons repo.
+    if [ -n "$${GIT_TOKEN:-}" ]; then
+      ENV_ARGS+=("-e" "GIT_TOKEN")
     fi
 
     # --- mask phase: a local postgres target (no shared DB) ---------------

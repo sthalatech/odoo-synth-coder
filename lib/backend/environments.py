@@ -28,7 +28,7 @@ import uuid
 import yaml
 from typing import Optional
 
-from . import config, store
+from . import config, profiles, store
 
 TEMPLATE_NAME = "odoo-synth-env"
 
@@ -251,7 +251,11 @@ def create(source_run_id: Optional[str], issue: Optional[str],
         odoo_img = profile.get("image_uri") or _resolve_odoo_image(source_run_id, s)
         r_url = repo_url or profile.get("addons_git_url") or s.get("repo_url")
         r_branch = repo_branch or profile.get("addons_git_ref") or s.get("repo_branch")
-        git_token_secret = profile.get("git_token_secret") or s.get("git_token_secret")
+        # The git token is a Coder user secret injected as $GIT_TOKEN_<UPPER_ID>;
+        # pass the env-var NAME to the template (the value is write-only in
+        # Coder, so we never hold it). Empty when the profile has no token.
+        git_token_env = (profiles.git_token_env_name(profile.get("id") or "")
+                         if profile.get("git_token_secret") else "") or s.get("git_token_env", "")
         conf_extra = profile.get("odoo_conf_extra") or ""
         agent_name = (profile.get("agent_name") or "").strip()
         agent_system_prompt = profile.get("agent_system_prompt") or ""
@@ -259,7 +263,7 @@ def create(source_run_id: Optional[str], issue: Optional[str],
         odoo_img = _resolve_odoo_image(source_run_id, s)
         r_url = repo_url or s.get("repo_url")
         r_branch = repo_branch or s.get("repo_branch")
-        git_token_secret = s.get("git_token_secret")
+        git_token_env = s.get("git_token_env", "")
         conf_extra = ""
         agent_name = ""
         agent_system_prompt = ""
@@ -288,7 +292,7 @@ def create(source_run_id: Optional[str], issue: Optional[str],
         ("dump_s3_uri", dump or ""),
         ("repo_url", r_url or ""),
         ("repo_branch", r_branch or ""),
-        ("git_token_secret", git_token_secret or ""),
+        ("git_token_env", git_token_env or ""),
         ("issue", issue or ""),
         ("db_name", s.get("db_name") or "odoo"),
         ("odoo_master_password",
