@@ -8,7 +8,7 @@ Secrets:
     ARN; only non-secret metadata lives in the profile's YAML file).
   * GitHub token (for cloning the private addons repo) -> a Coder *user secret*
     named ``git-token-<profile_id>`` with a per-profile env-var target
-    ``GIT_TOKEN_<UPPER_ID>``. Coder injects it into every workspace the owner
+    ``GH_PAT_<UPPER_ID>``. Coder injects it into every workspace the owner
     launches, so discover / build / env-launch all read it from the workspace
     env with no AWS Secrets Manager round-trip and no plaintext in the profile
     or in template parameters. Only the secret *name* is persisted in the
@@ -69,9 +69,11 @@ def _coder_git_token_env(profile_id: str) -> str:
 
     One unique env var per profile avoids collisions, since Coder user secrets
     are per-user global (a single user owns every workspace, so two profiles
-    can't both own ``GIT_TOKEN`` -- last write would win). Workspaces re-export
-    this as ``GIT_TOKEN`` for the container / git clone."""
-    return "GIT_TOKEN_" + profile_id.upper().replace("-", "_")
+    can't both own the same var -- last write would win). The name must NOT
+    start with ``GIT_`` (Coder reserves ``GIT_*`` env vars), so we use
+    ``GH_PAT_<UPPER_ID>``. Workspaces re-export it as ``GIT_TOKEN`` for the
+    container / git clone (via ``${!GIT_TOKEN_ENV}`` indirection)."""
+    return "GH_PAT_" + profile_id.upper().replace("-", "_")
 
 
 def _coder_env() -> dict[str, str]:
@@ -85,7 +87,7 @@ def _put_coder_git_token(profile_id: str, token: str) -> str:
     """Create-or-update the profile's Coder user secret holding the GitHub PAT.
 
     The token is injected into every workspace the owner launches as
-    ``$GIT_TOKEN_<UPPER_ID>``. Returns the secret *name* (not an ARN) so it can
+    ``$GH_PAT_<UPPER_ID>``. Returns the secret *name* (not an ARN) so it can
     be stored in the profile and deleted later. The value is write-only in
     Coder -- it cannot be read back via the CLI/API."""
     name = _coder_git_token_name(profile_id)
@@ -115,7 +117,7 @@ def _resolve_git_token_secret(payload: dict[str, Any], profile_id: str) -> str |
 
     ``git_token`` -- a raw PAT; stored as the Coder user secret
     ``git-token-<profile_id>`` (injected into workspaces as
-    ``$GIT_TOKEN_<UPPER_ID>``). Returns the secret *name* (persisted in the
+    ``$GH_PAT_<UPPER_ID>``). Returns the secret *name* (persisted in the
     profile's ``git_token_secret`` field). If no token is supplied, returns
     None (caller leaves the field as-is on update, or unset on create)."""
     token = payload.get("git_token")
@@ -310,7 +312,7 @@ def _mask_inputs(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def git_token_env_name(profile_id: str) -> str:
-    """The env var Coder injects the profile's git token under (GIT_TOKEN_<ID>).
+    """The env var Coder injects the profile's git token under (GH_PAT_<ID>).
 
     Used by the discover/build/env-launch paths to tell each workspace which
     Coder-injected env var holds this profile's token.

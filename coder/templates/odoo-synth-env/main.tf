@@ -348,7 +348,7 @@ resource "coder_agent" "main" {
     #       wrapper and accept-new host-key handling (no known_hosts baked in).
     #   (b) HTTPS -- fall back to a GitHub token injected into the URL by
     #       Coder (a per-profile user secret named git-token-<profile_id>,
-    #       injected as $GIT_TOKEN_<UPPER_ID>; the name arrives in
+    #       injected as $GH_PAT_<UPPER_ID>; the name arrives in
     #       GIT_TOKEN_ENV). For users without a registered SSH key.
     GIT_TOKEN=""
     GIT_TOKEN_RC="n/a"

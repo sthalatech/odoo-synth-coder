@@ -294,7 +294,7 @@ resource "coder_agent" "main" {
 
     # --- resolve the profile's GitHub token (Coder user secret) -----------
     # The CLI passes GIT_TOKEN_ENV (the name of the Coder-injected env var for
-    # this profile, e.g. GIT_TOKEN_PROF_749C8A90). Coder injects the value into
+    # this profile, e.g. GH_PAT_PROF_749C8A90). Coder injects the value into
     # the workspace agent env automatically; we re-export it as GIT_TOKEN for
     # the container (which reads GIT_TOKEN). No AWS Secrets Manager round-trip.
     if [ -n "$${GIT_TOKEN_ENV:-}" ]; then

@@ -38,7 +38,7 @@ masked dump URI, and the addons repo + ref from your profile store. Click
 - `repo_branch` *(required)* — branch / tag / commit to check out.
 - `git_token_env` *(optional)* — only used when `repo_url` is HTTPS. The name
   of the Coder user secret env var holding a GitHub token for cloning a private
-  HTTPS repo (e.g. `GIT_TOKEN_PROF_749C8A90`). Set on the profile via
+  HTTPS repo (e.g. `GH_PAT_PROF_749C8A90`). Set on the profile via
   `odoo-synth profile create --git-token <PAT>`; Coder injects it into the
   workspace. SSH URLs ignore this and use your Coder key instead.
 - `odoo_image`, `dump_s3_uri` — the preset fills these; override only if you

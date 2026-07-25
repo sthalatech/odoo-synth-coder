@@ -58,9 +58,9 @@ def _discovery_env_pairs(profile: dict, put_url: str) -> list[tuple[str, str]]:
         ("ADDONS_GIT_URL", profile.get("addons_git_url") or ""),
         ("ADDONS_GIT_REF", profile.get("addons_git_ref") or ""),
         # The git token lives in a Coder user secret injected into the runner
-        # workspace as $GIT_TOKEN_<UPPER_ID>. Forward the *name* (not the value --
+        # workspace as $GH_PAT_<UPPER_ID>. Forward the *name* (not the value --
         # Coder secrets are write-only) so the runner startup re-exports it as
-        # GIT_TOKEN for the discovery container.
+        # as GIT_TOKEN for the discovery container.
         ("GIT_TOKEN_ENV", profiles.git_token_env_name(profile["id"])
          if profile.get("git_token_secret") else ""),
         ("DISCOVERY_PUT_URL", put_url),

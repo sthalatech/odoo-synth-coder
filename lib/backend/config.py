@@ -338,7 +338,7 @@ def environments_settings() -> dict:
         "repo_url": _env_val("repo_url", "repo_url_env"),
         "repo_branch": _env_val("repo_branch", "repo_branch_env"),
         # Optional GitHub token for cloning a private addons repo, stored as a
-        # Coder user secret injected into the workspace as $GIT_TOKEN_<UPPER_ID>.
+        # Coder user secret injected into the workspace as $GH_PAT_<UPPER_ID>.
         # Here we expose the env-var NAME the workspace reads (state.env:
         # ENV_GIT_TOKEN_ENV), not the value (write-only in Coder).
         "git_token_env": _env_val("git_token_env", "git_token_env_env"),

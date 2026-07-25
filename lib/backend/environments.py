@@ -251,7 +251,7 @@ def create(source_run_id: Optional[str], issue: Optional[str],
         odoo_img = profile.get("image_uri") or _resolve_odoo_image(source_run_id, s)
         r_url = repo_url or profile.get("addons_git_url") or s.get("repo_url")
         r_branch = repo_branch or profile.get("addons_git_ref") or s.get("repo_branch")
-        # The git token is a Coder user secret injected as $GIT_TOKEN_<UPPER_ID>;
+        # The git token is a Coder user secret injected as $GH_PAT_<UPPER_ID>;
         # pass the env-var NAME to the template (the value is write-only in
         # Coder, so we never hold it). Empty when the profile has no token.
         git_token_env = (profiles.git_token_env_name(profile.get("id") or "")

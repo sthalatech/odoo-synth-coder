@@ -802,7 +802,7 @@ def _build_parser() -> argparse.ArgumentParser:
     pc.add_argument("--description", default=None)
     pc.add_argument("--source-dsn", default=None,
                     help="postgresql://user:pass@host:port/db")
-    pc.add_argument("--git-token", default=None, help="PAT for the private addons repo (stored as a Coder user secret, injected into workspaces as GIT_TOKEN_<profile_id>)")
+    pc.add_argument("--git-token", default=None, help="PAT for the private addons repo (stored as a Coder user secret, injected into workspaces as GH_PAT_<profile_id>)")
     pc.add_argument("--odoo-series", default=None, help='e.g. "19.0"')
     pc.add_argument("--odoo-git-url", default=None)
     pc.add_argument("--odoo-git-ref", default=None, help="manual git ref")

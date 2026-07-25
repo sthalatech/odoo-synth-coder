@@ -347,7 +347,7 @@ resource "coder_agent" "main" {
 
     # --- resolve git token for private addons clone ----------------------
     # The token is a Coder user secret injected into the workspace as
-    # $GIT_TOKEN_<UPPER_ID> (the name is passed in GIT_TOKEN_ENV). Coder
+    # $GH_PAT_<UPPER_ID> (the name is passed in GIT_TOKEN_ENV). Coder
     # injects it into the agent env; we write it to a file for the BuildKit
     # --secret mount the Dockerfile uses. No AWS Secrets Manager round-trip.
     GH_TOKEN_FILE="$(mktemp)"; chmod 600 "$GH_TOKEN_FILE"
