@@ -52,21 +52,14 @@ def _put_secret(name: str, value: str) -> str:
 
 
 def _resolve_git_token_secret(payload: dict[str, Any], profile_id: str) -> str | None:
-    """Resolve the GitHub token secret for a profile.
+    """Mint the GitHub token secret for a profile from a raw PAT.
 
-    Two ways to supply it:
-      * ``git_token_secret`` -- an existing Secrets Manager ARN (or secret
-        name) to reuse directly, e.g. from another profile or the env secret.
-        Avoids minting a duplicate secret.
-      * ``git_token`` -- a raw PAT; minted into a new secret under
-        ``<prefix>/profile/<id>/git-token``.
+    ``git_token`` -- a raw PAT; minted into a new secret under
+    ``<prefix>/profile/<id>/git-token``. Secrets are always created fresh
+    (never reused from an existing ARN) so each profile owns its own secret.
 
-    If neither is supplied, returns None (caller should leave the field as-is
-    on update, or unset on create)."""
-    arn = payload.get("git_token_secret")
-    if arn:
-        # Accept either a full ARN or a bare secret name.
-        return arn
+    If no token is supplied, returns None (caller leaves the field as-is on
+    update, or unset on create)."""
     token = payload.get("git_token")
     if token:
         return _put_secret(f"{_secret_prefix()}/{profile_id}/git-token", token)

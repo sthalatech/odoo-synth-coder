@@ -263,7 +263,6 @@ def cmd_profile_create(args) -> int:
         "ssh_bastion": args.ssh_bastion,
         "ssh_key": _read_ssh_key(args.ssh_key),
         "git_token": args.git_token,
-        "git_token_secret": getattr(args, "git_token_secret", None),
         "odoo_series": args.odoo_series,
         "odoo_git_url": args.odoo_git_url,
         "odoo_git_ref": args.odoo_git_ref,
@@ -277,17 +276,6 @@ def cmd_profile_create(args) -> int:
             if args.agent_system_prompt and args.agent_system_prompt.startswith("@")
             else args.agent_system_prompt),
         "pr_base": args.pr_base,
-        "mask_profile": args.mask_profile,
-        "admin_password": args.admin_password,
-        "gm_jobs": args.gm_jobs,
-        "neutralize_mail": args.neutralize_mail,
-        "neutralize_fetchmail": args.neutralize_fetchmail,
-        "neutralize_payment": args.neutralize_payment,
-        "neutralize_smtp_param": args.neutralize_smtp_param,
-        "reset_admin_login": args.reset_admin_login,
-        "produce_dump": args.produce_dump,
-        "subset_days": args.subset_days,
-        "exclude_table_data": args.exclude_table_data,
     }
     payload = {k: v for k, v in payload.items() if v is not None}
     if not payload.get("label"):
@@ -325,7 +313,7 @@ def cmd_profile_update(args) -> int:
     payload: dict[str, Any] = {}
     for k in ("label", "description", "odoo_series", "odoo_git_url",
               "odoo_git_ref", "addons_git_url", "addons_git_ref",
-              "enterprise_source", "mask_profile", "admin_password"):
+              "enterprise_source"):
         v = getattr(args, k.replace("-", "_"), None)
         if v is not None:
             payload[k] = v
@@ -341,8 +329,6 @@ def cmd_profile_update(args) -> int:
         payload["ssh_key"] = _read_ssh_key(args.ssh_key)
     if args.git_token is not None:
         payload["git_token"] = args.git_token
-    if getattr(args, "git_token_secret", None) is not None:
-        payload["git_token_secret"] = args.git_token_secret
     if args.agent_name is not None:
         payload["agent_name"] = args.agent_name
     if args.agent_system_prompt is not None:
@@ -352,15 +338,6 @@ def cmd_profile_update(args) -> int:
         payload["agent_system_prompt"] = sp
     if args.pr_base is not None:
         payload["pr_base"] = args.pr_base
-    for k in ("gm_jobs", "subset_days", "exclude_table_data"):
-        v = getattr(args, k, None)
-        if v is not None:
-            payload[k] = v
-    for k in ("neutralize_mail", "neutralize_fetchmail", "neutralize_payment",
-              "neutralize_smtp_param", "reset_admin_login", "produce_dump"):
-        v = getattr(args, k, None)
-        if v is not None:
-            payload[k] = v
     if not payload:
         _err("no update fields supplied")
         return 2
@@ -825,10 +802,7 @@ def _build_parser() -> argparse.ArgumentParser:
     pc.add_argument("--description", default=None)
     pc.add_argument("--source-dsn", default=None,
                     help="postgresql://user:pass@host:port/db")
-    pc.add_argument("--git-token", default=None, help="PAT for private addons repo")
-    pc.add_argument("--git-token-secret", default=None, metavar="ARN",
-                   help="reuse an existing Secrets Manager secret (ARN or name) "
-                        "for the private addons repo token; avoids minting a duplicate")
+    pc.add_argument("--git-token", default=None, help="PAT for the private addons repo (minted into a new Secrets Manager secret)")
     pc.add_argument("--odoo-series", default=None, help='e.g. "19.0"')
     pc.add_argument("--odoo-git-url", default=None)
     pc.add_argument("--odoo-git-ref", default=None, help="manual git ref")
@@ -848,7 +822,6 @@ def _build_parser() -> argparse.ArgumentParser:
                         "uses this so the agent opens its PR against the right "
                         "integration branch.")
     _add_ssh_args(pc)
-    _add_mask_args(pc)
     pc.add_argument("--json", action="store_true")
     pc.set_defaults(func=cmd_profile_create)
 
@@ -866,9 +839,6 @@ def _build_parser() -> argparse.ArgumentParser:
     pu.add_argument("--description", default=None)
     pu.add_argument("--source-dsn", default=None)
     pu.add_argument("--git-token", default=None)
-    pu.add_argument("--git-token-secret", default=None, metavar="ARN",
-                   help="reuse an existing Secrets Manager secret (ARN or name) "
-                        "for the private addons repo token")
     pu.add_argument("--odoo-series", default=None)
     pu.add_argument("--odoo-git-url", default=None)
     pu.add_argument("--odoo-git-ref", default=None)
@@ -890,7 +860,6 @@ def _build_parser() -> argparse.ArgumentParser:
                         "the agent finishes (default uat). Set per-profile so the "
                         "issue launcher tells the agent the right integration branch.")
     _add_ssh_args(pu)
-    _add_mask_args(pu)
     pu.set_defaults(func=cmd_profile_update)
 
     pd = psub.add_parser("delete", help="delete a profile (and its secrets)")
