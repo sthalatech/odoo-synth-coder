@@ -16,7 +16,7 @@ for a in "$@"; do case "$a" in --quiet) QUIET=1;; *) ;; esac; done
 
 # Space-separated list of Coder templates to publish. Override with
 # CODER_TEMPLATES="odoo-synth-env" to publish only one.
-TEMPLATES="${CODER_TEMPLATES:-odoo-synth-env odoo-synth-builder}"
+TEMPLATES="${CODER_TEMPLATES:-odoo-synth-env odoo-synth-builder odoo-synth-runner}"
 [ -n "${CODER_URL:-}" ] || { log "CODER_URL not set; run deploy/11_coder_server.sh first"; exit 1; }
 [ -n "${CODER_SESSION_TOKEN:-}" ] || { log "CODER_SESSION_TOKEN not set; run 'coder login $CODER_URL' first"; exit 1; }
 

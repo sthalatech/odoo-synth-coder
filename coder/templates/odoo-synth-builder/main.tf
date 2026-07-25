@@ -313,11 +313,17 @@ resource "coder_agent" "main" {
     trap finish EXIT
 
     # --- prerequisites (docker, awscli, curl) ------------------------------
+    # docker.io + docker-buildx: the Dockerfile uses BuildKit features
+    # (RUN --mount=type=secret for the private addons git token), and the
+    # `docker build --secret` flag needs the buildx component. The stock
+    # docker.io package doesn't always pull buildx, so install it explicitly.
     if ! command -v docker >/dev/null 2>&1; then
-      echo "[build] installing docker ..."
-      apt-get update && apt-get install -y docker.io || { ERROR="docker install failed"; exit 1; }
+      echo "[build] installing docker + buildx ..."
+      apt-get update && apt-get install -y docker.io docker-buildx || { ERROR="docker install failed"; exit 1; }
     fi
     systemctl enable --now docker 2>/dev/null || service docker start 2>/dev/null || true
+    # Ensure the buildx plugin is present even if docker.io was pre-installed.
+    dpkg -s docker-buildx >/dev/null 2>&1 || apt-get install -y docker-buildx || true
     command -v aws >/dev/null 2>&1 || apt-get install -y awscli || true
     export DOCKER_BUILDKIT=1
 
