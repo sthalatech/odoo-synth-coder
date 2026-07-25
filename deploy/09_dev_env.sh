@@ -3,10 +3,10 @@
 #
 # Provisions everything the control panel needs to launch per-issue VS Code
 # environments, and flips `environments` to "configured":
-#   * a security group (inbound code-server + odoo from your CIDR)
+#   * a security group (egress-only; Coder tunnel brokers inbound access)
 #   * an IAM role + instance profile (S3 masked-dump read, Secrets Manager read,
 #     ECR pull) attached to every environment instance
-#   * a THIN golden AMI (ubuntu + docker + code-server) baked from
+#   * a THIN golden AMI (ubuntu + docker + awscli + agent CLIs) baked from
 #     lib/environments/provision.sh  --  Odoo is NOT baked in
 #
 # Writes ENV_AMI_ID / ENV_SG_ID / ENV_SUBNET_ID / ENV_INSTANCE_PROFILE (and
@@ -21,7 +21,7 @@
 #   deploy/09_dev_env.sh --rebake        # force a fresh AMI bake
 #
 # Optional config.yaml knobs:
-#   ENV_INGRESS_CIDR    CIDR allowed to reach code-server/odoo (default: your
+#   ENV_INGRESS_CIDR    (legacy, unused -- the SG is egress-only now; Coder
 #                       current public IP /32; set 0.0.0.0/0 at your own risk)
 #   ENV_INSTANCE_TYPE   builder instance type for the bake (default t3.large)
 #   ENV_GIT_TOKEN_SECRET  Secrets Manager arn/name of a GitHub token (private
@@ -51,7 +51,7 @@ ENV_SG_NAME="$PROJECT-env-sg"
 ENV_SG_ID="$(sg_id "$ENV_SG_NAME")"
 if [ -z "$ENV_SG_ID" ] || [ "$ENV_SG_ID" = "None" ]; then
   ENV_SG_ID="$(aws ec2 create-security-group --group-name "$ENV_SG_NAME" \
-    --description "odoo-synth developer environments (code-server + odoo)" \
+    --description "odoo-synth developer environments (odoo; Coder tunnel)" \
     --vpc-id "$VPC" --region "$AWS_REGION" --query GroupId --output text)"
 fi
 
@@ -180,7 +180,7 @@ UD="$(mktemp)"; trap 'rm -f "$UD"' EXIT
 {
   echo '#!/usr/bin/env bash'
   echo 'set -euo pipefail'
-  # cloud-init runs user-data as root with no HOME; the code-server installer
+  # cloud-init runs user-data as root with no HOME; the apt/docker helpers
   # (and apt/docker helpers) need it. Export before provisioning.
   echo 'export HOME=/root'
   cat "$PROVISION"
@@ -197,7 +197,7 @@ BUILDER_ID="$(aws ec2 run-instances --region "$AWS_REGION" \
   --user-data "file://$UD" \
   --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value='"$PROJECT"'-env-builder},{Key=odoo-synth:managed,Value=true}]' \
   --query 'Instances[0].InstanceId' --output text)"
-log "builder: $BUILDER_ID -- provisioning (docker + code-server + awscli); this takes a few minutes"
+log "builder: $BUILDER_ID -- provisioning (docker + awscli + agent CLIs); this takes a few minutes"
 
 # Poll for the builder to power itself off once provision.sh completes. We can't
 # use `aws ec2 wait instance-stopped` -- that waiter treats the initial "pending"
@@ -224,7 +224,7 @@ log "builder provisioned + stopped; creating image ..."
 STAMP="$(date -u +%Y%m%d-%H%M%S)"
 ENV_AMI_ID="$(aws ec2 create-image --region "$AWS_REGION" \
   --instance-id "$BUILDER_ID" --name "$PROJECT-devenv-$STAMP" \
-  --description "odoo-synth thin dev-env AMI (ubuntu+docker+code-server)" \
+  --description "odoo-synth thin dev-env AMI (ubuntu+docker+awscli+agents)" \
   --query 'ImageId' --output text)"
 log "AMI $ENV_AMI_ID creating; waiting until available ..."
 aws ec2 wait image-available --region "$AWS_REGION" --image-ids "$ENV_AMI_ID"

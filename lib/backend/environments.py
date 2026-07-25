@@ -66,14 +66,14 @@ def _env_secret_prefix() -> str:
 
 
 def _put_password_secret(env_id: str, password: str) -> str:
-    """Create a Secrets Manager secret for the env's code-server/Odoo password;
+    """Create a Secrets Manager secret for the env's Odoo admin password;
     return its ARN."""
     import boto3
     sm = boto3.client("secretsmanager", region_name=_region())
     name = f"{_env_secret_prefix()}/{env_id}/password"
     try:
         resp = sm.create_secret(Name=name, SecretString=password,
-                                Description="odoo-synth env code-server/Odoo password")
+                                Description="odoo-synth env Odoo admin password")
         return resp["ARN"]
     except sm.exceptions.ResourceExistsException:
         sm.put_secret_value(SecretId=name, SecretString=password)
@@ -592,7 +592,7 @@ def reconcile() -> None:
 
 
 def get_password(env_id: str) -> Optional[str]:
-    """The per-workspace password (Odoo admin + code-server). The value lives in
+    """The per-workspace Odoo admin password. The value lives in
     Secrets Manager (ARN on the env record); only the ARN is on disk so the
     password isn't sitting in envs.yaml in plaintext."""
     env = store.get_environment(env_id)

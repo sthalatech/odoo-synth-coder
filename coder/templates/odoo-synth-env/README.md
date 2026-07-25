@@ -53,7 +53,7 @@ in the guide). Quick reference:
 docker logs -f env-odoo                      # Odoo logs
 docker exec -it env-db psql -U odoo -d odoo  # Postgres shell
 docker restart env-odoo                      # reload addons
-echo "$CODER_ENV_ADMIN_PASSWORD"             # Odoo admin + code-server pw
+echo "$CODER_ENV_ADMIN_PASSWORD"             # Odoo admin pw
 ```
 
 Odoo admin login is `admin`. The DB volume persists across workspace

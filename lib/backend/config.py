@@ -290,7 +290,7 @@ def dump_s3_prefix() -> str:
 
 
 # ---------------------------------------------------------------------------
-# developer environments (EC2 + code-server, seeded from a masked dump)
+# developer environments (EC2 workspaces via Coder, seeded from a masked dump)
 # ---------------------------------------------------------------------------
 
 def environments_cfg() -> dict:

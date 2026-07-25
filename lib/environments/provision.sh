@@ -4,9 +4,14 @@
 #
 # Run this ONCE on a fresh Ubuntu 22.04/24.04 instance, then bake an AMI from
 # it (aws ec2 create-image). The AMI id goes into config.yaml (environments.
-# ami_id / ami_id_env). Per-environment boot work (seed DB, start code-server)
-# is done by user-data.sh.tmpl at launch time, so this only installs the
-# static toolchain that every environment shares.
+# ami_id / ami_id_env). Per-environment boot work (seed DB, start the odoo
+# container) is done by user-data.sh.tmpl at launch time, so this only installs
+# the static toolchain that every environment shares: docker + buildx, awscli,
+# postgres-client, ttyd (web terminal served via the Coder app), the Claude
+# Code + OpenCode agent CLIs, and headless Chrome for agent UI verification.
+# (NOTE: "code-server" is NOT installed -- the developer reaches the workspace
+# through Coder's tunnel, not a code-server editor. A prior design used
+# code-server; this comment previously referenced it.)
 # ---------------------------------------------------------------------------
 set -euo pipefail
 

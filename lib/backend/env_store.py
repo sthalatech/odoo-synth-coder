@@ -3,7 +3,7 @@
 A developer environment is a Coder workspace; Coder owns its lifecycle
 (status, EC2 instance, apps, URLs). This file holds the *linkage* Coder cannot:
 which profile + which mask run + which masked dump + which addons repo seeded
-a given workspace, plus the ARN of the per-env code-server/Odoo password secret.
+a given workspace, plus the ARN of the per-env Odoo admin password secret.
 
 One file: ``lib/backend/envs.yaml`` (gitignored — contains secret
 ARNs + source hostnames). It's a dict keyed by env_id (= the Coder workspace

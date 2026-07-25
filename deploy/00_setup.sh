@@ -322,7 +322,7 @@ else
     #        Coder server (needs ENV_INSTANCE_PROFILE for iam:PassRole) ->
     #        coder login -> publish templates.
     # The golden AMI bake is a one-time ~10-15 min install cost; it moves all
-    # provisioning (docker, awscli, code-server) out of per-workspace startup.
+    # provisioning (docker, awscli, agent CLIs) out of per-workspace startup.
     if bash deploy/01_ecr.sh            && bash deploy/02_build_push.sh --quiet            && bash deploy/10_builder.sh            && bash deploy/09_dev_env.sh            && bash deploy/11_coder_server.sh; then
       ok "basic infra provisioned (ECR, IAM, Coder server, templates)"
       set -a; . "$HERE/deploy/state.env"; set +a
