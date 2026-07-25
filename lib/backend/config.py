@@ -228,11 +228,27 @@ def _resolve_conn(c: dict) -> dict:
 
 
 def destination() -> dict:
-    """The masked destination DB creds (user/password/dbname). RDS-free (Phase
-    B): the masker runs a throwaway in-task postgres and the host is supplied
-    by the task (127.0.0.1), so `host` is typically empty here. Returns an
-    empty host when no host env var is set (resilient)."""
+    """The masked destination DB creds (user/password/dbname).
+
+    RDS-free (Phase B): the masker runs a throwaway in-task postgres and the
+    host is supplied by the task (127.0.0.1), so `host` is typically empty.
+
+    The `destination:` config block was removed (DB creds are mask/run-time
+    concerns, not install-time). The creds now resolve from the TARGET_DB_*
+    env vars that the mask runner sets directly. A residual `destination:`
+    block in config.yaml (if any) is still honored for backward compat.
+    """
     d = panel().get("destination", {}) or {}
+    if not d:
+        # No config block: resolve from the env vars the mask runner exports.
+        return {
+            "label": "Masked DB (ephemeral in-task postgres)",
+            "host": get("TARGET_DB_HOST") or None,
+            "port": get("TARGET_DB_PORT") or "5432",
+            "dbname": get("TARGET_DB_NAME") or None,
+            "user": get("TARGET_DB_USER") or None,
+            "password": get_fresh("TARGET_DB_PASSWORD", "") or "",
+        }
     return _resolve_conn(d)
 
 
@@ -316,9 +332,11 @@ def environments_settings() -> dict:
         # run may override this (result.odoo_image); this is the fallback.
         "odoo_image": odoo_image(),
         # Developer addons repo cloned into the workspace + bind-mounted into the
-        # odoo container as live-dev addons. Defaults to the pipeline's custom repo.
-        "repo_url": _env_val("repo_url", "repo_url_env") or get("CUSTOM_ADDONS_GIT_URL"),
-        "repo_branch": _env_val("repo_branch", "repo_branch_env") or get("CUSTOM_ADDONS_GIT_REF"),
+        # odoo container as live-dev addons. Per-PROFILE / per-workspace: resolved
+        # from state.env (ENV_REPO_URL/BRANCH, set at env-create time) -- config.yaml
+        # no longer carries addons defaults.
+        "repo_url": _env_val("repo_url", "repo_url_env"),
+        "repo_branch": _env_val("repo_branch", "repo_branch_env"),
         # Optional Secrets Manager secret holding a GitHub token for cloning a
         # private addons repo on the instance (read by the workspace agent).
         "git_token_secret": _env_val("git_token_secret", "git_token_secret_env"),

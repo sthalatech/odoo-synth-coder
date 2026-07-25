@@ -16,61 +16,19 @@
 # and `lib/config.yml`). `deploy/lib.sh` loads it via
 # `deploy/_yaml_to_env.py` and exports the same env vars the pipeline scripts
 # expect, so no script had to change. The Python backend reads it directly.
+#
+# SCOPE: this file holds ONLY install-time + control-plane settings (AWS
+# account/project, the dumps bucket, greenmask version, Coder server, the
+# golden-AMI/workspace wiring). Odoo provenance (series/git_url/git_ref/image),
+# custom addons, and all database credentials (source/masked, admin/master
+# passwords) are NOT here -- they are per-PROFILE and per-MASK/run concerns,
+# supplied downstream via `odoo-synth profile create` and the mask/env CLI
+# commands (secrets via env vars or Secrets Manager). Do not re-add them.
 # =====================================================================
 
 aws:
   region: us-east-1
   project: odoo-synth          # all AWS resources are named <project>-*
-
-# NOTE: the odoo/addons provenance fields below are the DEFAULTS used when
-# creating a new profile (`odoo-synth profile create`). Each profile stores its
-# own odoo_series / odoo_git_url / odoo_git_ref / addons_git_url / addons_git_ref
-# / needs_enterprise, and a profile's own values OVERRIDE these at build/mask
-# time -- so one config.yaml can back multiple profiles pinned to different
-# Odoo commits or addons repos. Edit a profile's values with
-# `odoo-synth profile update <id> --odoo-git-ref ...`.
-odoo:
-  series: "17.0"               # enterprise + community + custom addons must share major
-  image: odoo:17               # base image (system + python deps); core is swapped from git
-  git_url: https://github.com/odoo/odoo
-  # Pin to the last commit on your series BEFORE the prod dump was taken, so the
-  # running code's schema matches the restored DB without a `-u all` migration.
-  git_ref: "<odoo-core-commit-sha>"
-  admin_password: { ref: env:ODOO_ADMIN_PASSWORD }
-  master_password: { ref: env:ODOO_MASTER_PASSWORD }
-
-addons:
-  # Custom addons repo, baked into the shared odoo image AND live-mounted in dev
-  # workspaces for edit-reload. Empty git_url = core modules only.
-  custom_git_url: "<https://github.com/your-org/your-addons>"
-  custom_git_ref: "<custom-addons-commit-sha>"
-  # Optional enterprise zip dropped at odoo/enterprise.zip (auto-unzipped at build).
-  enterprise_zip: odoo/enterprise.zip
-
-database:
-  pg_major: 16
-  # Source + masked live on an EPHEMERAL in-task Postgres (no managed RDS).
-  # The builder task runs a postgres:16 sidecar for the duration of build->seed
-  # ->mask, then discards it. The persistent output is the masked dump in S3.
-  ephemeral: true
-  source_name: source          # the unmasked source DB (prod dump restored here)
-  masked_name: masked          # the masked DB the masker produces
-  target_user: odoo
-  target_password: { ref: env:TARGET_DB_PASSWORD }
-  source_master_user: odoo
-  source_master_password: { ref: env:SOURCE_DB_MASTER_PASSWORD }
-
-# The masked destination DB. Phase B (RDS removal): no managed RDS -- the masker
-# runs a postgres:16 sidecar and restores into a throwaway in-task DB on
-# 127.0.0.1; host is supplied by the masker task, so it is blank here. The Coder
-# runner path ignores this (its own local runner-db). Creds resolve from the
-# database.* env vars (TARGET_DB_NAME / TARGET_DB_USER / TARGET_DB_PASSWORD).
-destination:
-  label: "Masked DB (ephemeral in-task postgres)"
-  port: 5432
-  dbname_env: TARGET_DB_NAME
-  user_env: TARGET_DB_USER
-  password_env: TARGET_DB_PASSWORD
 
 build:
   # ECR repo for the provenance-baked odoo image (<acct>.dkr.ecr.<region>/<project>/odoo)

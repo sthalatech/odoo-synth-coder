@@ -13,37 +13,24 @@ req_cfg() { # varname
 
 echo "== config source: config.yaml =="
 
-# required values (from either source)
-# Required for BASIC infrastructure. ODOO_GIT_REF + custom addons are NOT
-# here -- they're profile-level (tied to a source DB) and only needed when you
-# build a profile's provenance image (`odoo-synth profile build`). The Odoo
-# image is never built at install time; it's baked per-profile.
-for v in AWS_REGION PROJECT ODOO_SERIES ODOO_GIT_URL \
-         PG_MAJOR SOURCE_DB_NAME TARGET_DB_NAME TARGET_DB_USER DUMP_S3_BUCKET \
-         GREENMASK_VERSION; do
+# required values -- ONLY install-time / control-plane settings.
+# Odoo provenance (series/git_url/git_ref/image), custom addons, and ALL
+# database credentials (source/masked names + users + passwords, admin/master
+# passwords) are NOT checked here: they are per-PROFILE and per-MASK/run
+# concerns, supplied downstream via `odoo-synth profile create` and the
+# mask/env CLI commands. The Odoo image is never built at install time.
+for v in AWS_REGION PROJECT DUMP_S3_BUCKET GREENMASK_VERSION; do
   req_cfg "$v"
 done
 
 # placeholders left from the example? DUMP_S3_BUCKET is required and must be
-# filled. ODOO_GIT_REF + custom addons are profile-level/optional (blank = set
-# them per-profile via `odoo-synth profile create`), so they're not checked here.
+# filled (not the <your-dumps-bucket> placeholder).
 for v in DUMP_S3_BUCKET; do
   val="${!v:-}"
   case "$val" in
     \<*\>) echo "PLACEHOLDER not filled: $v=$val" >&2; err=1;;
   esac
 done
-
-# Custom addons are OPTIONAL (empty git_url = core modules only, per
-# config.example.yaml). But if one of url/ref is set, the other must be too,
-# and neither may be left as the <...> example placeholder.
-for v in CUSTOM_ADDONS_GIT_URL CUSTOM_ADDONS_GIT_REF; do
-  val="${!v:-}"
-  case "$val" in \<*\>) echo "PLACEHOLDER not filled: $v=$val" >&2; err=1;; esac
-done
-cu="${CUSTOM_ADDONS_GIT_URL:-}"; cr="${CUSTOM_ADDONS_GIT_REF:-}"
-if [ -n "$cu" ] && [ -z "$cr" ]; then echo "MISSING config: CUSTOM_ADDONS_GIT_REF (url is set)" >&2; err=1; fi
-if [ -z "$cu" ] && [ -n "$cr" ]; then echo "MISSING config: CUSTOM_ADDONS_GIT_URL (ref is set)" >&2; err=1; fi
 
 # CLI tools
 for c in aws python3; do

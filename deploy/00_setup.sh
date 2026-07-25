@@ -227,14 +227,12 @@ python3 - "$EXAMPLE" "$CFG" "$REGION" "$PROJECT" "$BUCKET" <<'PY'
 import sys, re
 ex, out, region, project, bucket = sys.argv[1:6]
 s = open(ex).read()
-s = re.sub(r'(?m)^(\s*region:\s*).*',         r'\g<1>'+region,  s, count=1)
-s = re.sub(r'(?m)^(\s*project:\s*).*',        r'\g<1>'+project, s, count=1)
-s = re.sub(r'(?m)^(\s*dumps_bucket:\s*).*',   r'\g<1>'+bucket, s, count=1)
-# blank the profile-level fields (example leaves <...> placeholders; blank =
-# "not set yet, fill at profile create"). Series stays as the example default.
-s = re.sub(r'(?m)^(\s*git_ref:\s*).*',        r'\g<1>""',       s, count=1)
-s = re.sub(r'(?m)^(\s*custom_git_url:\s*).*', r'\g<1>""',       s, count=1)
-s = re.sub(r'(?m)^(\s*custom_git_ref:\s*).*', r'\g<1>""',       s, count=1)
+# Only install-time / control-plane values are filled here. Odoo provenance,
+# addons, and DB credentials are downstream (profile/mask/env-time) and are NOT
+# in config.example.yaml anymore, so there's nothing else to substitute.
+s = re.sub(r'(?m)^(\s*region:\s*).*',       r'\g<1>'+region,  s, count=1)
+s = re.sub(r'(?m)^(\s*project:\s*).*',      r'\g<1>'+project, s, count=1)
+s = re.sub(r'(?m)^(\s*dumps_bucket:\s*).*', r'\g<1>'+bucket,  s, count=1)
 open(out,'w').write(s)
 print("wrote", out)
 PY

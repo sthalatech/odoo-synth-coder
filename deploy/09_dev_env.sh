@@ -142,9 +142,12 @@ aws iam add-role-to-instance-profile --instance-profile-name "$ENV_PROFILE" \
 put_state ENV_INSTANCE_PROFILE "$ENV_PROFILE"
 log "env instance profile: $ENV_PROFILE (role $ENV_ROLE)"
 
-# repo defaults come from the pipeline's custom addons unless overridden.
-[ -n "${CUSTOM_ADDONS_GIT_URL:-}" ] && put_state ENV_REPO_URL "$CUSTOM_ADDONS_GIT_URL"
-[ -n "${CUSTOM_ADDONS_GIT_REF:-}" ] && put_state ENV_REPO_BRANCH "$CUSTOM_ADDONS_GIT_REF"
+# The env workspace's addons repo URL/branch are NOT set here -- they are
+# per-PROFILE / per-workspace concerns, supplied at `odoo-synth env create`
+# time (the env template's repo_url/repo_branch Coder parameters have no
+# default; a profile/preset pre-fills them). Nothing in config.yaml drives
+# this anymore. ENV_GIT_TOKEN_SECRET (optional Secrets Manager ARN for a
+# private-repo clone token) is still threaded through if set.
 [ -n "${ENV_GIT_TOKEN_SECRET:-}" ] && put_state ENV_GIT_TOKEN_SECRET "$ENV_GIT_TOKEN_SECRET"
 
 if [ "$INFRA_ONLY" = 1 ]; then
