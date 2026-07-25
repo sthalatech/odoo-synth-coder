@@ -139,23 +139,23 @@
     <!-- 1: overview -->
     <div class="pane on" id="pane-0">
       <div class="overview">
-        <div class="kicker">The full-context agent thesis</div>
-        <h1>&ldquo;What if every issue shipped with<br>its own <span class="grad">prod-realistic, ready-to-run agentic environment?</span>?&rdquo;</h1>
+        <div class="kicker">The full-context agent thesis — applied to Odoo</div>
+        <h1>&ldquo;What if every issue shipped with<br>its own <span class="grad">prod-realistic, ready-to-run world</span>?&rdquo;</h1>
         <p class="lede">Running everything inside a single sandbox means the agent has the same
           low-latency access to services, files, and tools that an engineer would have locally.
-          <br><u>odoo-synth</u> builds that sandbox per issue &mdash; a masked, pruned copy of the production
+          odoo-synth builds that sandbox per issue &mdash; a masked, pruned copy of the production
           database, the addons repo, and Odoo in one isolated workspace &mdash; then hands it to an
           autonomous agent that reads the report, implements the fix, and opens the pull request.</p>
         <p class="lede" style="margin-top:14px;color:var(--ink)">The shift: stop running standups the
           old way. <b>Curate the issues, file them in GitHub, and assemble later to review the PRs</b>
           &mdash; each one ready in 45&ndash;60 minutes, all running in parallel because every agent
           already has everything it needs in its own self-contained workspace.</p>
-        <!-- <div class="stats">
+        <div class="stats">
           <div class="stat"><div class="big">1</div><div class="lbl">PII-masked prod DB / issue</div></div>
           <div class="stat"><div class="big">90d</div><div class="lbl">Transaction pruning</div></div>
           <div class="stat"><div class="big">45&ndash;60</div><div class="lbl">Min to a reviewable PR</div></div>
           <div class="stat"><div class="big">∞</div><div class="lbl">Issues in parallel</div></div>
-        </div> -->
+        </div>
         <button class="btn go" id="ovNext" style="margin-top:40px;font-size:15px;padding:11px 24px">Environment Pipeline ▶</button>
       </div>
     </div>
@@ -192,7 +192,7 @@
     <div class="pane" id="pane-3">
       <div class="closing">
         <div class="kicker">What this changes for the team</div>
-        <h2><span class="grad">Curate issues &mdash; Review PRs.</span></h2>
+        <h2>Stop running standups the old way.<br><span class="grad">Curate issues &mdash; assemble to review PRs.</span></h2>
         <p class="lede">A self-contained sandbox per issue means agents don&rsquo;t queue for an environment,
           a database, or context. They run in parallel, and a reviewable PR lands in 45&ndash;60 minutes.
           The standup becomes a curation, and the real meeting is the review.</p>
@@ -214,7 +214,7 @@
               <li>Curate the issues worth solving</li>
               <li>File them in GitHub &mdash; the webhook spins up a sandbox per issue</li>
               <li>Agents explore, fix, and open PRs in parallel</li>
-              <li>Review the PRs/Give feedback to the agents</li>
+              <li>Assemble 45&ndash;60 min later to review the PRs</li>
               <li>Approve, merge, close &mdash; done</li>
             </ul>
           </div>
@@ -223,18 +223,18 @@
           <div class="s"><div class="big g">45&ndash;60</div><div class="lbl">Min to reviewable PR</div></div>
           <div class="s"><div class="big g">∞</div><div class="lbl">Issues in parallel</div></div>
           <div class="s"><div class="big">0</div><div class="lbl">Env setup minutes</div></div>
-          <!-- <div class="s"><div class="big">1</div><div class="lbl">Meeting &mdash; the review</div></div> -->
-        <!-- </div>
+          <div class="s"><div class="big">1</div><div class="lbl">Meeting &mdash; the review</div></div>
+        </div>
         <button class="btn go" id="closeNext" style="margin-top:30px;font-size:15px;padding:11px 24px">↺ Restart walkthrough</button>
-      </div> -->
+      </div>
     </div>
   </div>
 
-  <!-- <div class="hintbar">
+  <div class="hintbar">
     <span><b>Pipeline</b>: captured run logs (discover · build · mask) + live environment creation</span>
     <span><b>Agents</b>: real session transcripts · 3 concurrent workspaces</span>
     <span style="margin-left:auto">Real run data · no merge performed</span>
-  </div> -->
+  </div>
 </div>
 
 <script>
