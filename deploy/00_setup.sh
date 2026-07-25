@@ -228,17 +228,17 @@ if [ "$aws_ok" = true ]; then
     fi
     # Try to create. us-east-1 rejects LocationConstraint.
     if [ "$REGION" = "us-east-1" ]; then
-      ERR="$(aws s3api create-bucket --bucket "$BUCKET" --region "$REGION" 2>&1 >/dev/null)"
+      ERR="$(aws s3api create-bucket --bucket "$BUCKET" --region "$REGION" 2>&1 >/dev/null || true)"
     else
       ERR="$(aws s3api create-bucket --bucket "$BUCKET" --region "$REGION" \
-        --create-bucket-configuration "LocationConstraint=$REGION" 2>&1 >/dev/null)"
+        --create-bucket-configuration "LocationConstraint=$REGION" 2>&1 >/dev/null || true)"
     fi
     if [ -z "$ERR" ]; then
       ok "created bucket s3://$BUCKET"
       break
     fi
     warn "could not create bucket s3://$BUCKET:"
-    printf '  %s\n' "$ERR" >&2
+    printf '  %s\n' "$(echo "$ERR" | sed -e '/^$/d' -e 's/^[[:space:]]*//')" >&2
     case "$ERR" in
       *BucketAlreadyExists*|"*not available*")
         warn "that name is taken by another AWS account (S3 names are global). Pick a more unique name." ;;

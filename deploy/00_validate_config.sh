@@ -53,7 +53,7 @@ fi
 if [ "$err" -eq 0 ] && command -v aws >/dev/null 2>&1    && aws sts get-caller-identity >/dev/null 2>&1; then
   B="${DUMP_S3_BUCKET:-}"
   if [ -n "$B" ]; then
-    HC="$(aws s3api head-bucket --bucket "$B" --region "${AWS_REGION:-us-east-1}" 2>&1 >/dev/null; echo $?)"
+    HC="$(aws s3api head-bucket --bucket "$B" --region "${AWS_REGION:-us-east-1}" 2>&1 >/dev/null; echo $? || true)"
     if [ "$HC" = "0" ]; then
       : # exists and you own it -- fine
     elif [ "$HC" = "254" ] || echo "$HC" | grep -qi "403\|Forbidden"; then
@@ -64,14 +64,14 @@ if [ "$err" -eq 0 ] && command -v aws >/dev/null 2>&1    && aws sts get-caller-i
       # 404 / truly absent -> create it
       echo "S3 bucket '$B' does not exist -- creating it." >&2
       if [ "${AWS_REGION:-us-east-1}" = "us-east-1" ]; then
-        CERR="$(aws s3api create-bucket --bucket "$B" --region "${AWS_REGION:-us-east-1}" 2>&1 >/dev/null)"
+        CERR="$(aws s3api create-bucket --bucket "$B" --region "${AWS_REGION:-us-east-1}" 2>&1 >/dev/null || true)"
       else
         CERR="$(aws s3api create-bucket --bucket "$B" --region "${AWS_REGION:-us-east-1}" \
-          --create-bucket-configuration "LocationConstraint=${AWS_REGION:-us-east-1}" 2>&1 >/dev/null)"
+          --create-bucket-configuration "LocationConstraint=${AWS_REGION:-us-east-1}" 2>&1 >/dev/null || true)"
       fi
       if [ -n "$CERR" ]; then
         echo "could not create bucket $B:" >&2
-        printf '  %s\n' "$CERR" >&2
+        printf '  %s\n' "$(echo "$CERR" | sed -e '/^$/d' -e 's/^[[:space:]]*//')" >&2
         err=1
       fi
     fi
