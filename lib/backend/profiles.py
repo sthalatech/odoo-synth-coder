@@ -111,10 +111,29 @@ def _put_coder_git_token(profile_id: str, token: str) -> str:
 
 
 def _delete_coder_git_token(name: Optional[str]) -> None:
+    """Best-effort delete of the profile's Coder user secret.
+
+    The field should hold a Coder secret NAME (``git-token-<profile_id>``).
+    Pre-refactor profiles may still hold an AWS Secrets Manager ARN -- those
+    are not Coder secrets, so we skip them (the AWS secret, if still present,
+    is cleaned up separately or left for manual removal). A slow/unreachable
+    Coder API must not abort the profile delete: the local profile is the
+    user's actual target; the secret cleanup is best-effort."""
     if not name:
         return
-    subprocess.run(["coder", "secret", "delete", name],
-                   env=_coder_env(), capture_output=True, text=True, timeout=30)
+    if not name.startswith("git-token-"):
+        # Legacy AWS ARN (or unknown shape) -- not a Coder secret; skip.
+        return
+    try:
+        subprocess.run(["coder", "secret", "delete", name],
+                       env=_coder_env(), capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        import sys
+        sys.stderr.write(f"WARN: coder secret delete timed out for {name}; "
+                         "secret left in place (profile still deleted)\n")
+    except Exception as exc:  # noqa: BLE001
+        import sys
+        sys.stderr.write(f"WARN: coder secret delete failed for {name}: {exc}\n")
 
 
 def _resolve_git_token_secret(payload: dict[str, Any], profile_id: str) -> str | None:
