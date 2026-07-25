@@ -45,6 +45,21 @@ if command -v aws >/dev/null 2>&1; then
   fi
 fi
 
+# DUMP_S3_BUCKET must exist (profile discover/build/mask PutObject into it).
+# Auto-create if missing (us-east-1 rejects LocationConstraint) -- catches a
+# hand-edited config.yaml that points at a bucket that was never created.
+if [ "$err" -eq 0 ] && command -v aws >/dev/null 2>&1    && aws sts get-caller-identity >/dev/null 2>&1; then
+  B="${DUMP_S3_BUCKET:-}"
+  if [ -n "$B" ] && ! aws s3api head-bucket --bucket "$B" --region "${AWS_REGION:-us-east-1}" >/dev/null 2>&1; then
+    echo "S3 bucket '$B' does not exist -- creating it." >&2
+    if [ "${AWS_REGION:-us-east-1}" = "us-east-1" ]; then
+      aws s3api create-bucket --bucket "$B" --region "${AWS_REGION:-us-east-1}" >/dev/null 2>&1         || { echo "could not create bucket $B -- create it manually" >&2; err=1; }
+    else
+      aws s3api create-bucket --bucket "$B" --region "${AWS_REGION:-us-east-1}"         --create-bucket-configuration "LocationConstraint=${AWS_REGION:-us-east-1}" >/dev/null 2>&1         || { echo "could not create bucket $B -- create it manually" >&2; err=1; }
+    fi
+  fi
+fi
+
 if [ "$err" -ne 0 ]; then
   echo "== config INVALID -- fix the above then retry ==" >&2
   exit 1

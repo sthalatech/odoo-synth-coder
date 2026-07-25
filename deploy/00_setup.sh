@@ -238,23 +238,19 @@ print("wrote", out)
 PY
 ok "wrote $CFG"
 
-# ---- create the S3 bucket if it doesn't exist (best-effort) ---------------
+# ---- create the S3 bucket if it doesn't exist (auto) ---------------------
+# The bucket holds masked pg_dump artifacts + uploaded source dumps; it must
+# exist before any profile discover/build/mask run. Auto-create it now so the
+# user never hits a NoSuchBucket later. (us-east-1 rejects LocationConstraint.)
 if [ "$aws_ok" = true ]; then
-  if ! aws s3api head-bucket --bucket "$BUCKET" --region "$REGION" >/dev/null 2>&1; then
-    if confirm "S3 bucket '$BUCKET' doesn't exist. Create it now?"; then
-      if aws s3api create-bucket --bucket "$BUCKET" --region "$REGION" \
-           --create-bucket-configuration "LocationConstraint=$REGION" >/dev/null 2>&1 \
-           2>/dev/null || aws s3api create-bucket --bucket "$BUCKET" --region "$REGION" >/dev/null 2>&1; then
-        ok "created bucket s3://$BUCKET"
-      else
-        warn "could not create bucket (region $REGION) -- create it manually:"
-        warn "    aws s3api create-bucket --bucket $BUCKET --region $REGION"
-      fi
-    else
-      warn "skipped bucket creation -- create it before running run_all.sh."
-    fi
-  else
+  if aws s3api head-bucket --bucket "$BUCKET" --region "$REGION" >/dev/null 2>&1; then
     ok "bucket s3://$BUCKET already exists"
+  else
+    if [ "$REGION" = "us-east-1" ]; then
+      aws s3api create-bucket --bucket "$BUCKET" --region "$REGION" >/dev/null 2>&1         && ok "created bucket s3://$BUCKET"         || { warn "could not create bucket $BUCKET -- create it manually:";              warn "    aws s3api create-bucket --bucket $BUCKET --region $REGION"; }
+    else
+      aws s3api create-bucket --bucket "$BUCKET" --region "$REGION"         --create-bucket-configuration "LocationConstraint=$REGION" >/dev/null 2>&1         && ok "created bucket s3://$BUCKET"         || { warn "could not create bucket $BUCKET (region $REGION) -- create it manually:";              warn "    aws s3api create-bucket --bucket $BUCKET --region $REGION \\";              warn "         --create-bucket-configuration LocationConstraint=$REGION"; }
+    fi
   fi
 else
   warn "AWS not authenticated -- skipping bucket creation. Create it later:"
