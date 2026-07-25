@@ -59,10 +59,31 @@ mint_and_persist() {
 
 # ---------------------------------------------------------------------------
 # 1. Already logged in? (persisted token or keyring session valid here)
+#    If the keyring session is valid but NO token is persisted to state.env
+#    (e.g. the operator ran `coder login` interactively after a fresh server
+#    setup, or a prior run minted one but state.env was reset), mint a named
+#    API token from that session and persist it -- otherwise step 7c (publish
+#    templates) sees no CODER_SESSION_TOKEN and silently skips publishing.
 # ---------------------------------------------------------------------------
 if coder whoami >/dev/null 2>&1; then
-  log "already logged into Coder"
-  exit 0
+  if [ -n "${CODER_SESSION_TOKEN:-}" ] &&      CODER_SESSION_TOKEN="$CODER_SESSION_TOKEN" coder whoami >/dev/null 2>&1; then
+    log "already logged into Coder (persisted token valid)"
+    exit 0
+  fi
+  log "already logged into Coder (keyring session valid); minting a persisted API token ..."
+  # The keyring session authenticates `coder tokens create` (no explicit token).
+  ADMIN_EMAIL="${CODER_ADMIN_EMAIL:-}"
+  ADMIN_PW="${CODER_ADMIN_PASSWORD:-}"
+  if mint_and_persist "keyring" "$ADMIN_EMAIL" "$ADMIN_PW"; then
+    log "minted + persisted CODER_SESSION_TOKEN to deploy/state.env"
+    exit 0
+  fi
+  # Could not mint (e.g. keyring session read-only / token-scope) -> tell the
+  # operator to mint one manually so publish does not silently skip.
+  log "could not mint an API token from the keyring session. Run on this host:"
+  log "  coder login $CODER_URL  &&  coder tokens create --name wizard"
+  log "  then add CODER_SESSION_TOKEN=<token> to deploy/state.env"
+  exit 1
 fi
 
 # ---------------------------------------------------------------------------
