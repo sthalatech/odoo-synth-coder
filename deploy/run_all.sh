@@ -24,7 +24,7 @@ bash deploy/10_builder.sh
 # no AMI bake; that happens per-profile). Creates ENV_INSTANCE_PROFILE that
 # 11_coder_server.sh grants iam:PassRole on (so the Coder server can launch
 # workspace VMs assuming the env-instance role).
-bash deploy/09_dev_env.sh --infra-only
+bash deploy/09_dev_env.sh
 # Masking now runs on demand via `odoo-synth run mask` (Coder runner workspace)
 # -- no standing ECS cluster to provision.
 # Developer-environment control plane: Coder server (one EC2) + publish the

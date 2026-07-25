@@ -67,7 +67,7 @@ data "aws_subnets" "default_vpc" {
 # account-specific AMI IDs.
 data "aws_ami" "ubuntu_2204" {
   most_recent = true
-  owners      = ["099720109477"]  # Canonical
+  owners      = ["099720109477"] # Canonical
 
   filter {
     name   = "name"
@@ -258,13 +258,12 @@ resource "coder_agent" "main" {
     }
     trap finish EXIT
 
-    # --- prerequisites (docker, awscli, curl) ------------------------------
-    if ! command -v docker >/dev/null 2>&1; then
-      echo "[runner] installing docker ..."
-      apt-get update && apt-get install -y docker.io || { ERROR="docker install failed"; exit 1; }
-    fi
-    systemctl enable --now docker 2>/dev/null || service docker start 2>/dev/null || true
-    command -v aws >/dev/null 2>&1 || apt-get install -y awscli || true
+    # --- prerequisites -----------------------------------------------------
+    # Docker + AWS CLI are baked into the golden AMI at install time
+    # (deploy/09_dev_env.sh -> lib/environments/provision.sh). A workspace
+    # launched from that AMI needs zero provisioning here; we only verify.
+    command -v docker >/dev/null 2>&1 || { ERROR="docker not found on the AMI; bake the golden AMI via deploy/09_dev_env.sh first"; exit 1; }
+    command -v aws    >/dev/null 2>&1 || { ERROR="aws cli not found on the AMI; bake the golden AMI via deploy/09_dev_env.sh first"; exit 1; }
 
     # --- ECR login (pull) --------------------------------------------------
     REGISTRY="$(echo "$IMAGE_URI" | cut -d/ -f1)"

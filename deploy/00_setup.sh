@@ -316,13 +316,16 @@ else
   echo "  ${DIM}the base Odoo image build. You can re-run it safely -- each step is idempotent.${OFF}"
   echo
   if confirm "Provision the basic infrastructure now?"; then
-    # --- 7a. ECR + base image + builder IAM + Coder server (no coder login yet) ---
-    say "7a/7c: ECR, base Odoo image, builder IAM, Coder server ..."
+    # --- 7a. ECR + base images + golden AMI + IAM + Coder server ---
+    say "7a/7c: ECR, base images, golden AMI, builder IAM, Coder server ..."
     # Order: ECR repos -> masker+discovery images -> builder IAM ->
-    #        env-instance IAM (09 --infra-only, no AMI bake) -> Coder server
-    #        (needs ENV_INSTANCE_PROFILE for iam:PassRole) -> coder login ->
-    #        publish templates.
-    if bash deploy/01_ecr.sh            && bash deploy/02_build_push.sh --quiet            && bash deploy/09_dev_env.sh --infra-only            && bash deploy/10_builder.sh            && bash deploy/11_coder_server.sh; then
+    #        env-instance IAM + golden AMI (09, full bake: docker+buildx+
+    #        awscli baked in so profile-time workspaces do zero provisioning) ->
+    #        Coder server (needs ENV_INSTANCE_PROFILE for iam:PassRole) ->
+    #        coder login -> publish templates.
+    # The golden AMI bake is a one-time ~10-15 min install cost; it moves all
+    # provisioning (docker, awscli, code-server) out of per-workspace startup.
+    if bash deploy/01_ecr.sh            && bash deploy/02_build_push.sh --quiet            && bash deploy/10_builder.sh            && bash deploy/09_dev_env.sh            && bash deploy/11_coder_server.sh; then
       ok "basic infra provisioned (ECR, IAM, Coder server, templates)"
       set -a; . "$HERE/deploy/state.env"; set +a
     else

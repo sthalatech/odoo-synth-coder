@@ -61,7 +61,7 @@ data "aws_subnets" "default_vpc" {
 # account-specific AMI IDs.
 data "aws_ami" "ubuntu_2204" {
   most_recent = true
-  owners      = ["099720109477"]  # Canonical
+  owners      = ["099720109477"] # Canonical
 
   filter {
     name   = "name"
@@ -312,19 +312,14 @@ resource "coder_agent" "main" {
     }
     trap finish EXIT
 
-    # --- prerequisites (docker, awscli, curl) ------------------------------
-    # docker.io + docker-buildx: the Dockerfile uses BuildKit features
-    # (RUN --mount=type=secret for the private addons git token), and the
-    # `docker build --secret` flag needs the buildx component. The stock
-    # docker.io package doesn't always pull buildx, so install it explicitly.
-    if ! command -v docker >/dev/null 2>&1; then
-      echo "[build] installing docker + buildx ..."
-      apt-get update && apt-get install -y docker.io docker-buildx || { ERROR="docker install failed"; exit 1; }
-    fi
-    systemctl enable --now docker 2>/dev/null || service docker start 2>/dev/null || true
-    # Ensure the buildx plugin is present even if docker.io was pre-installed.
-    dpkg -s docker-buildx >/dev/null 2>&1 || apt-get install -y docker-buildx || true
-    command -v aws >/dev/null 2>&1 || apt-get install -y awscli || true
+    # --- prerequisites -----------------------------------------------------
+    # Docker (+ buildx) and the AWS CLI are baked into the golden AMI at install
+    # time (deploy/09_dev_env.sh -> lib/environments/provision.sh), so a workspace
+    # launched from that AMI needs zero provisioning here. We only verify they're
+    # present (a non-golden AMI is a misconfiguration, not something to fix at
+    # build time -- installing docker mid-build is slow and fragile).
+    command -v docker >/dev/null 2>&1 || { ERROR="docker not found on the AMI; bake the golden AMI via deploy/09_dev_env.sh first"; exit 1; }
+    command -v aws    >/dev/null 2>&1 || { ERROR="aws cli not found on the AMI; bake the golden AMI via deploy/09_dev_env.sh first"; exit 1; }
     export DOCKER_BUILDKIT=1
 
     # --- fetch the build context ------------------------------------------
