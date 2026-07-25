@@ -366,16 +366,30 @@ else
     fi
 
     # --- 7c. Publish the Coder templates (needs coder login) ---
-    if [ -n "${CODER_URL:-}" ] && [ -n "${CODER_SESSION_TOKEN:-}" ]; then
+    # This MUST run -- profile discover/build/mask shell out to `coder create
+    # -t odoo-synth-runner`, which 404s with "template not found" if the runner
+    # template was never published. Never silently skip: if login produced no
+    # token, tell the operator explicitly (and how to recover) instead of
+    # dropping the step.
+    if [ -n "${CODER_URL:-}" ]; then
       echo
       say "7c/7c: Publish Coder templates"
-      if bash deploy/12_publish_template.sh --quiet; then
-        ok "Coder templates published (odoo-synth-env, odoo-synth-builder)"
+      if [ -z "${CODER_SESSION_TOKEN:-}" ]; then
+        warn "CODER_SESSION_TOKEN is not set -- coder login did not persist a token."
+        warn "The runner/env/builder templates will NOT be published, so"
+        warn "'odoo-synth profile discover/build/mask' will fail with"
+        warn "'template not found' until you publish them. To fix:"
+        warn "    coder login $CODER_URL   ${DIM}# or set CODER_SESSION_TOKEN in deploy/state.env${OFF}"
+        warn "    bash deploy/12_publish_template.sh"
+      elif bash deploy/12_publish_template.sh --quiet; then
+        ok "Coder templates published (odoo-synth-env, odoo-synth-builder, odoo-synth-runner)"
         PROVISIONED=1
       else
         warn "template publish failed (see above). Run 'coder login $CODER_URL' then"
         warn "    bash deploy/12_publish_template.sh"
       fi
+    else
+      warn "CODER_URL not in deploy/state.env -- did 11_coder_server.sh run? Skipping template publish."
     fi
   else
     warn "skipped provisioning. Run it later with:"
