@@ -50,7 +50,7 @@
   .step ul li{margin:2px 0}
   .step .out{margin-top:auto;padding-top:8px;font-size:12px;color:#dfe5f3}
   .step .out b{color:var(--acc)}
-  .step .check{position:absolute;top:9px;right:11px;color:var(--acc2);font-size:15px;opacity:0;transition:opacity .3s}
+  .step .check{position:absolute;top:9px;right:11px;color:var(--acc2);font-size:17px;opacity:0;transition:opacity .3s}
   .step.done .check{opacity:1}
   .tag-row{display:flex;gap:7px;flex-wrap:wrap;margin-top:14px}
   .tag{font-size:11px;padding:4px 9px;border-radius:6px;background:var(--panel2);border:1px solid var(--line);color:var(--mut)}
@@ -84,49 +84,49 @@
       <div class="flow" id="flow">
         <div class="step" data-idx="0">
           <div class="check">✓</div><div class="n">1</div><h3>Profile</h3>
-          <div class="cmd">odoo-synth profile create --source-dsn …</div>
+          <!-- <div class="cmd">odoo-synth profile create --source-dsn …</div> -->
           <ul><li>Bind a source Odoo DB (DSN)</li><li>Pin provenance: core git ref, addons repo, enterprise flag</li></ul>
           <div class="arrow"></div>
           <div class="out">→ <b>profile YAML</b> (S3-mirrored)</div>
         </div>
         <div class="step" data-idx="1">
           <div class="check">✓</div><div class="n">2</div><h3>Discover</h3>
-          <div class="cmd">odoo-synth profile discover &lt;id&gt;</div>
+          <!-- <div class="cmd">odoo-synth profile discover &lt;id&gt;</div> -->
           <ul><li>Inspect live DB + addons</li><li>Installed modules, python/apt deps</li></ul>
           <div class="arrow"></div>
           <div class="out">→ <b>discovery.json</b> folded into profile</div>
         </div>
         <div class="step" data-idx="2">
           <div class="check">✓</div><div class="n">3</div><h3>Build</h3>
-          <div class="cmd">odoo-synth profile build &lt;id&gt;</div>
+          <!-- <div class="cmd">odoo-synth profile build &lt;id&gt;</div> -->
           <ul><li>Bake image: core + addons + enterprise @ pinned ref</li><li>Provenance-tagged</li></ul>
           <div class="arrow"></div>
           <div class="out">→ <b>ECR image</b></div>
         </div>
         <div class="step" data-idx="3">
           <div class="check">✓</div><div class="n">4</div><h3>Mask</h3>
-          <div class="cmd">odoo-synth run mask --profile &lt;id&gt;</div>
+          <!-- <div class="cmd">odoo-synth run mask --profile &lt;id&gt;</div> -->
           <ul><li>Greenmask over source DB</li><li>Field→strategy rulebook</li><li>Neutralize mail/payment</li></ul>
           <div class="arrow"></div>
           <div class="out">→ <b>masked pg_dump in S3</b></div>
         </div>
         <div class="step" data-idx="4">
           <div class="check">✓</div><div class="n">5</div><h3>Ready</h3>
-          <div class="cmd">odoo-synth env create --profile-id &lt;id&gt; --issue &lt;ref&gt;</div>
+          <!-- <div class="cmd">odoo-synth env create --profile-id &lt;id&gt; --issue &lt;ref&gt;</div> -->
           <ul><li>Coder workspace from ECR image + dump</li><li>Addons repo live-mounted</li><li>Odoo ready @ :18069</li></ul>
-          <div class="out">→ <b>developer workspace</b> (per issue) · <span class="tag live">used by the agent layer</span></div>
+          <div class="out">→ <b>developer workspace</b> (per issue) · </div>
         </div>
       </div>
-      <div class="tag-row">
+      <!-- <div class="tag-row">
         <span class="tag">Profile: IRS Donation (prof_749c8a90) · Odoo 17.0</span>
         <span class="tag">Source: isha_donation@52.66.186.162 via bastion</span>
-      </div>
+      </div> -->
     </div>
 
     <div class="term-wrap">
       <div class="term-head">
         <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
-        <span class="term-title">operator@laptop — odoo-synth · real run</span>
+        <span class="term-title">kirthi.siva@sadhguru.org — odoo-synth</span>
       </div>
       <div class="term-body" id="term"></div>
     </div>

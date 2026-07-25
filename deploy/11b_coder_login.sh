@@ -121,7 +121,13 @@ fi
 
 # ---------------------------------------------------------------------------
 # 3. Admin already exists + persisted token is stale/missing. Try to re-login
-#    via the login API using persisted admin credentials (no browser).
+#    via the login API using persisted admin credentials (written by branch 2
+#    on the initial run). If no credentials are persisted (the admin was
+#    created by a pre-fix 11b that never stored the password), the operator
+#    must rebuild the Coder server (fresh DB -> new admin -> password
+#    persisted) or log in interactively. There is no reliable headless
+#    recovery path when the password is unknown and keyring access is
+#    unavailable.
 # ---------------------------------------------------------------------------
 log "this Coder server already has an admin user; the persisted session token is"
 log "stale or missing. Attempting headless re-login via the login API ..."
