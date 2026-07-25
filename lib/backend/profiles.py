@@ -92,18 +92,23 @@ def _put_coder_git_token(profile_id: str, token: str) -> str:
     Coder -- it cannot be read back via the CLI/API."""
     name = _coder_git_token_name(profile_id)
     env_target = _coder_git_token_env(profile_id)
-    # create; if it already exists, fall back to update.
+    # create; if it already exists, fall back to update. stdin=/dev/null so the
+    # CLI never blocks on an interactive prompt (e.g. if --value is somehow
+    # ignored), and a generous timeout (120s) so a slow first-call doesn't
+    # fail under network latency.
     create = subprocess.run(
         ["coder", "secret", "create", name,
          "--description", f"odoo-synth git token for profile {profile_id}",
          "--env", env_target, "--value", token],
-        env=_coder_env(), capture_output=True, text=True, timeout=30)
+        env=_coder_env(), stdin=subprocess.DEVNULL,
+        capture_output=True, text=True, timeout=120)
     if create.returncode == 0:
         return name
     # exists -> update the value + env target
     update = subprocess.run(
         ["coder", "secret", "update", name, "--env", env_target, "--value", token],
-        env=_coder_env(), capture_output=True, text=True, timeout=30)
+        env=_coder_env(), stdin=subprocess.DEVNULL,
+        capture_output=True, text=True, timeout=120)
     if update.returncode != 0:
         raise RuntimeError(
             f"could not create/update Coder secret {name!r}: "
