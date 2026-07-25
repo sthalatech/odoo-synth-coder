@@ -256,8 +256,19 @@ def _launch_runner(image_uri: str, env_file_get_url: str, env_keys: list[str],
     args = ["create", "-t", RUNNER_TEMPLATE, "-y", "--no-wait", ws_name]
     for k, v in params:
         args += ["--parameter", f"{k}={v}"]
-    subprocess.run(["coder", *args], env={**os.environ, **_coder_env()},
-                   check=True, capture_output=True, text=True, timeout=120)
+    try:
+        subprocess.run(["coder", *args], env={**os.environ, **_coder_env()},
+                       check=True, capture_output=True, text=True, timeout=120)
+    except subprocess.CalledProcessError as exc:
+        # coder create's stderr (the real AWS/Terraform/import error) is in
+        # exc.stderr; surface it instead of a bare "returned non-zero" so the
+        # operator can see *why* the runner workspace failed to launch.
+        stderr = (exc.stderr or "").strip()
+        raise RuntimeError(
+            f"coder create runner workspace {ws_name!r} failed (rc={exc.returncode}):\n"
+            f"command: coder {' '.join(args)}\n"
+            f"{stderr}"
+        ) from exc
     return ws_name
 
 
