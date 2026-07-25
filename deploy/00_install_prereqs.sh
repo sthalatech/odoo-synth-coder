@@ -10,8 +10,11 @@
 #   - python3 + pip     (if missing)
 #   - python deps: pyyaml, boto3   (for the backend / config loader)
 #   - coder CLI         (if `coder` not on PATH; needed for build/env/run)
-#   - docker            (optional, only needed to pull/inspect built images
-#                        locally; the build itself runs on a remote builder)
+#   - docker            (REQUIRED at install time: 02_build_push.sh builds
+#                        the masker + discovery images on THIS host and pushes
+#                        them to ECR. NOT optional. buildx is NOT needed here --
+#                        the only BuildKit Dockerfile (odoo/) is built inside the
+#                        builder workspace, never on the CLI host.)
 #
 # Run this first, then `bash deploy/00_validate_config.sh`.
 set -euo pipefail
@@ -147,11 +150,38 @@ else
 fi
 
 # ----------------------------------------------------------------------------
-# 5. docker (optional; only to pull/inspect built images locally)
+# 5. docker (REQUIRED: 02_build_push.sh builds masker + discovery on THIS host)
+#    Plain docker engine only -- no buildx. The only BuildKit Dockerfile (odoo/)
+#    is built inside the builder workspace (golden AMI), never on the CLI host.
 # ----------------------------------------------------------------------------
 if ! have docker; then
-  log "docker NOT found (optional -- only needed to pull/inspect images locally)"
-  log "  install from https://docs.docker.com/engine/install/ if you need it"
+  log "installing docker engine ..."
+  if have apt-get; then
+    # Official Docker repo (the distro docker.io package lags + splits buildx
+    # into a separate plugin we don't want here).
+    $need_sudo apt-get update -y
+    $need_sudo apt-get install -y ca-certificates curl gnupg
+    install -m 0755 -d /etc/apt/keyrings 2>/dev/null || $need_sudo install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg       | $need_sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg 2>/dev/null       || curl -fsSL https://download.docker.com/linux/ubuntu/gpg | $need_sudo gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg
+    $need_sudo chmod a+r /etc/apt/keyrings/docker.gpg
+    . /etc/os-release 2>/dev/null || true
+    CODENAME="${VERSION_CODENAME:-}"
+    [ -n "$CODENAME" ] && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu ${CODENAME} stable"       | $need_sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
+    $need_sudo apt-get update -y
+    # docker-ce + cli + containerd only. NO docker-buildx-plugin (not needed on
+    # the CLI host; the odoo BuildKit image is built in the builder workspace).
+    $need_sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+    $need_sudo systemctl enable --now docker 2>/dev/null || true
+    # Add the current user to the docker group so non-root docker works without
+    # a re-login (the wizard continues in the same shell).
+    $need_sudo usermod -aG docker "$(id -un)" 2>/dev/null || true
+    log "docker installed: $(docker --version 2>&1 || echo 'check /usr/bin/docker')"
+    log "  (if 'docker: permission denied', run: newgrp docker, or re-login)"
+  else
+    log "ERROR: no apt-get; install docker engine manually from https://docs.docker.com/engine/install/"
+    log "       docker is REQUIRED -- 02_build_push.sh builds masker + discovery on this host."
+    exit 1
+  fi
 else
   log "docker present: $(docker --version 2>&1)"
 fi
@@ -199,13 +229,25 @@ fi
 # ----------------------------------------------------------------------------
 log "verifying prerequisites ..."
 missing=""
-for tool in aws python3 coder odoo-synth; do
+for tool in aws python3 coder odoo-synth docker; do
   if ! have "$tool"; then missing="$missing $tool"; fi
 done
 if [ -n "$missing" ]; then
   log "ERROR: required tool(s) missing:$missing"
-  log "       the odoo-synth CLI needs aws, python3, and coder on PATH."
+  log "       the odoo-synth CLI needs aws, python3, coder, docker on PATH."
   log "       install them (or re-run this script as a user that can write /usr/local/bin) and try again."
   exit 1
 fi
-log "all prerequisites present: aws, python3, coder, odoo-synth (+ docker optional)"
+# docker is present -- but can THIS shell actually talk to the daemon? After a
+# fresh install the user is in the docker group, but the current shell doesn't
+# pick up the new group until re-login. 02_build_push.sh calls `docker build`
+# without sudo, so a permission-denied here would fail the wizard mid-build.
+# Surface it now with the exact fix instead.
+if ! docker ps >/dev/null 2>&1; then
+  log "ERROR: docker is installed but this shell can't reach the daemon:"
+  log "       $(docker ps 2>&1 | head -1)"
+  log "       fix: log out + back in (or run 'newgrp docker' in a fresh shell), then re-run:"
+  log "            bash deploy/00_setup.sh"
+  exit 1
+fi
+log "all prerequisites present: aws, python3, coder, odoo-synth, docker"
