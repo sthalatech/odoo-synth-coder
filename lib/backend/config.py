@@ -316,9 +316,14 @@ def environments_settings() -> dict:
         # Coder control plane: the server URL + a session token drive the `coder`
         # CLI shim in environments.py. The Coder server (deployed by
         # deploy/11_coder_server.sh) launches workspace VMs from the template.
-        "coder_url": _env_val("coder_url", "coder_url_env") or get("CODER_URL", ""),
-        "coder_session_token": _env_val("coder_session_token", "coder_session_token_env")
-                                or get_fresh("CODER_SESSION_TOKEN", ""),
+        # Coder URL + token: state.env (written by deploy/11_coder_server.sh +
+        # 11b_coder_login.sh) takes priority over a hardcoded value in
+        # config.yaml -- the deploy scripts write the actual server URL + a
+        # freshly-minted token there, so a stale hardcoded coder_url in
+        # config.yaml (e.g. from a prior Coder server) does not win.
+        "coder_url": get("CODER_URL", "") or _env_val("coder_url", "coder_url_env") or "",
+        "coder_session_token": get_fresh("CODER_SESSION_TOKEN", "")
+                                or _env_val("coder_session_token", "coder_session_token_env") or "",
         # Workspace VM inputs (passed as Coder template parameters). These reuse
         # the existing thin golden AMI + env instance profile + env SG + subnet
         # baked by deploy/09_dev_env.sh -- no new AWS artifacts per environment.
