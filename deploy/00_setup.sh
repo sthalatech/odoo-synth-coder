@@ -402,7 +402,7 @@ else
     if [ -n "${CODER_URL:-}" ] && [ -n "${CODER_SESSION_TOKEN:-}" ]; then
       echo
       say "7c/7c: Publish Coder templates"
-      if bash deploy/12_publish_template.sh; then
+      if bash deploy/12_publish_template.sh --quiet; then
         ok "Coder templates published (odoo-synth-env, odoo-synth-builder)"
         PROVISIONED=1
       else

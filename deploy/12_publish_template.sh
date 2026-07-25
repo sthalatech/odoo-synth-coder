@@ -11,6 +11,9 @@
 # CODER_SESSION_TOKEN (set after `coder login`).
 source "$(dirname "$0")/lib.sh"
 
+QUIET=0
+for a in "$@"; do case "$a" in --quiet) QUIET=1;; *) ;; esac; done
+
 # Space-separated list of Coder templates to publish. Override with
 # CODER_TEMPLATES="odoo-synth-env" to publish only one.
 TEMPLATES="${CODER_TEMPLATES:-odoo-synth-env odoo-synth-builder}"
@@ -24,18 +27,29 @@ TEMPLATES="${CODER_TEMPLATES:-odoo-synth-env odoo-synth-builder}"
 python3 "$HERE/deploy/_gen_presets.py" || log "WARN: preset generation failed (continuing)"
 
 rc=0
+PUSH_LOG=""
+[ "$QUIET" = 1 ] && PUSH_LOG="$(mktemp)" && trap 'rm -f "$PUSH_LOG"' EXIT
 for TPL_NAME in $TEMPLATES; do
   TPL_DIR="$HERE/coder/templates/$TPL_NAME"
   [ -d "$TPL_DIR" ] || { log "missing $TPL_DIR; skipping $TPL_NAME"; rc=1; continue; }
-  log "publishing Coder template $TPL_NAME from $TPL_DIR ..."
-  cd "$TPL_DIR"
   # --directory is required: without it the CLI uploads a 0-byte source archive
   # and the server-side import provision fails with "No configuration files".
-  if coder templates push -y --directory "$TPL_DIR" "$TPL_NAME" 2>&1 | tee "/tmp/coder-push-$TPL_NAME.log"; then
-    log "template $TPL_NAME published -> $CODER_URL/templates/$TPL_NAME"
+  if [ "$QUIET" = 1 ]; then
+    printf '  publishing %s ... ' "$TPL_NAME"
+    if cd "$TPL_DIR" && coder templates push -y --directory "$TPL_DIR" "$TPL_NAME" >"$PUSH_LOG" 2>&1; then
+      printf 'ok\n'
+    else
+      printf 'FAILED\n'; tail -n 20 "$PUSH_LOG"; rc=1
+    fi
   else
-    log "template $TPL_NAME push failed (see /tmp/coder-push-$TPL_NAME.log)"
-    rc=1
+    log "publishing Coder template $TPL_NAME from $TPL_DIR ..."
+    cd "$TPL_DIR"
+    if coder templates push -y --directory "$TPL_DIR" "$TPL_NAME" 2>&1 | tee "/tmp/coder-push-$TPL_NAME.log"; then
+      log "template $TPL_NAME published -> $CODER_URL/templates/$TPL_NAME"
+    else
+      log "template $TPL_NAME push failed (see /tmp/coder-push-$TPL_NAME.log)"
+      rc=1
+    fi
   fi
 done
 exit $rc
