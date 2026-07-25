@@ -8,8 +8,8 @@
 #
 # Secrets: any value can be written inline OR delegated to an env var / SSM
 # path so secrets never live in this file. Use the `ref:` form:
-#     password: { ref: env:ODOO_ADMIN_PASSWORD }   # read from env var
-#     password: { ref: ssm:odoo-synth/admin-password }  # read from SSM Param
+#     session_token: { ref: env:CODER_SESSION_TOKEN }   # read from env var
+#     webhook_secret: { ref: ssm:odoo-synth/webhook }   # read from SSM Param
 # A plain string is taken literally.
 #
 # This is the single source of truth (it replaces the old flat `config.env`
@@ -17,45 +17,26 @@
 # `deploy/_yaml_to_env.py` and exports the same env vars the pipeline scripts
 # expect, so no script had to change. The Python backend reads it directly.
 #
-# SCOPE: this file holds ONLY install-time + control-plane settings (AWS
-# account/project, the dumps bucket, greenmask version, Coder server, the
-# golden-AMI/workspace wiring). Odoo provenance (series/git_url/git_ref/image),
-# custom addons, and all database credentials (source/masked, admin/master
-# passwords) are NOT here -- they are per-PROFILE and per-MASK/run concerns,
-# supplied downstream via `odoo-synth profile create` and the mask/env CLI
-# commands (secrets via env vars or Secrets Manager). Do not re-add them.
+# SCOPE: this file holds ONLY install-time + control-plane settings: AWS
+# account/project, the dumps bucket + greenmask version, the Coder server, and
+# the golden-AMI/workspace wiring. Everything else is downstream:
+#   - Odoo provenance (series/git_url/git_ref/image), custom addons repo, the
+#     build ECR repo + builder instance type  -> per-PROFILE
+#   - mask profiles (PII rules), neutralize toggles, gm_jobs           -> per-MASK
+#   - all DB credentials (source/masked, admin/master passwords)       -> per-MASK/run
+#     via `odoo-synth profile create` and the mask/env CLI commands
+#     (secrets via env vars or Secrets Manager). Do not re-add them here.
 # =====================================================================
 
 aws:
   region: us-east-1
   project: odoo-synth          # all AWS resources are named <project>-*
 
-build:
-  # ECR repo for the provenance-baked odoo image (<acct>.dkr.ecr.<region>/<project>/odoo)
-  ecr_repo: odoo-synth/odoo
-  builder_instance_type: t3.large
-
 mask:
   greenmask_version: v0.2.22
   # S3 bucket for masked dump artifacts + uploaded source dumps. Per-deployment.
   dumps_bucket: "<your-dumps-bucket>"
   dumps_prefix: masked-dumps
-  # Selectable mask profiles (1:1 with masker/profiles/<id>.yml in the image).
-  profiles:
-    - id: odoo-core-pii
-      label: "Odoo core PII"
-      description: "Masks res_partner / res_company / res_users PII (names, emails, phones, address, VAT, login)."
-    - id: minimal-demo
-      label: "Minimal (demo/smoke)"
-      description: "res_partner name + email only. Fast, for demos."
-  # Default post-mask neutralize toggles + admin reset (exposed in the UI/CLI).
-  neutralize_defaults:
-    mail: true
-    fetchmail: true
-    payment: true
-    smtp_param: true
-  reset_admin_login: true
-  gm_jobs: 4
 
 coder:
   # The Coder control plane (deployed by deploy/11_coder_server.sh) launches
@@ -86,11 +67,6 @@ environments:
   subnet_id_env: ENV_SUBNET_ID                  # default-VPC subnet for workspace VMs
   security_group_id_env: ENV_SG_ID             # env SG (egress only; Coder tunnel)
   instance_profile_env: ENV_INSTANCE_PROFILE    # IAM: S3 dump read + ECR pull
-  db_name: odoo                                 # local DB name seeded from the dump
-  odoo_image_tag: latest                        # fallback tag if no profile image is set
-  repo_url_env: ENV_REPO_URL                    # addons repo (default: addons.custom_git_url)
-  repo_branch_env: ENV_REPO_BRANCH              # default: addons.custom_git_ref
-  git_token_secret_env: ENV_GIT_TOKEN_SECRET    # optional: Secrets Manager arn for private repo clone
 
 # Resolved at install time into deploy/state.env (do not hand-edit here).
 # These are written by the deploy scripts; listed for documentation only.
