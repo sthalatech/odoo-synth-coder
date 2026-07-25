@@ -48,14 +48,32 @@ fi
 # DUMP_S3_BUCKET must exist (profile discover/build/mask PutObject into it).
 # Auto-create if missing (us-east-1 rejects LocationConstraint) -- catches a
 # hand-edited config.yaml that points at a bucket that was never created.
+# head-bucket returns 0 only for a bucket you own; 403 = exists but owned by
+# another account (name collision, can't create); 404 = truly absent (creatable).
 if [ "$err" -eq 0 ] && command -v aws >/dev/null 2>&1    && aws sts get-caller-identity >/dev/null 2>&1; then
   B="${DUMP_S3_BUCKET:-}"
-  if [ -n "$B" ] && ! aws s3api head-bucket --bucket "$B" --region "${AWS_REGION:-us-east-1}" >/dev/null 2>&1; then
-    echo "S3 bucket '$B' does not exist -- creating it." >&2
-    if [ "${AWS_REGION:-us-east-1}" = "us-east-1" ]; then
-      aws s3api create-bucket --bucket "$B" --region "${AWS_REGION:-us-east-1}" >/dev/null 2>&1         || { echo "could not create bucket $B -- create it manually" >&2; err=1; }
+  if [ -n "$B" ]; then
+    HC="$(aws s3api head-bucket --bucket "$B" --region "${AWS_REGION:-us-east-1}" 2>&1 >/dev/null; echo $?)"
+    if [ "$HC" = "0" ]; then
+      : # exists and you own it -- fine
+    elif [ "$HC" = "254" ] || echo "$HC" | grep -qi "403\|Forbidden"; then
+      echo "S3 bucket '$B' exists but is owned by another AWS account (S3 names are global)." >&2
+      echo "Pick a unique name, edit dumps_bucket in config.yaml, and re-run." >&2
+      err=1
     else
-      aws s3api create-bucket --bucket "$B" --region "${AWS_REGION:-us-east-1}"         --create-bucket-configuration "LocationConstraint=${AWS_REGION:-us-east-1}" >/dev/null 2>&1         || { echo "could not create bucket $B -- create it manually" >&2; err=1; }
+      # 404 / truly absent -> create it
+      echo "S3 bucket '$B' does not exist -- creating it." >&2
+      if [ "${AWS_REGION:-us-east-1}" = "us-east-1" ]; then
+        CERR="$(aws s3api create-bucket --bucket "$B" --region "${AWS_REGION:-us-east-1}" 2>&1 >/dev/null)"
+      else
+        CERR="$(aws s3api create-bucket --bucket "$B" --region "${AWS_REGION:-us-east-1}" \
+          --create-bucket-configuration "LocationConstraint=${AWS_REGION:-us-east-1}" 2>&1 >/dev/null)"
+      fi
+      if [ -n "$CERR" ]; then
+        echo "could not create bucket $B:" >&2
+        printf '  %s\n' "$CERR" >&2
+        err=1
+      fi
     fi
   fi
 fi

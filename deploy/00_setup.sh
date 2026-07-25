@@ -212,8 +212,45 @@ PROJECT="$(prompt_default "Project name (AWS resources are named <project>-*)" "
 echo
 say "S3 bucket for masked dumps"
 echo "  ${DIM}A bucket in your AWS account to hold masked pg_dump artifacts + uploaded${OFF}"
-echo "  ${DIM}source dumps. Must be globally unique. We'll create it if it doesn't exist.${OFF}"
-BUCKET="$(prompt_required "Dumps S3 bucket name (e.g. <project>-dumps-<suffix>)")"
+echo "  ${DIM}source dumps. S3 bucket names are GLOBAL across all AWS accounts, so pick${OFF}"
+echo "  ${DIM}something unique (e.g. <project>-dumps-<account-id>). We create it if it doesn't${OFF}"
+echo "  ${DIM}exist; if the name is taken by another account, you'll be asked for another.${OFF}"
+# Resolve the bucket: re-prompt until it either exists (and you own it) or we
+# create it. Surfaces the real AWS error so a 'BucketAlreadyExists' collision
+# is explained, not swallowed.
+if [ "$aws_ok" = true ]; then
+  while true; do
+    BUCKET="$(prompt_required "Dumps S3 bucket name")"
+    [ -z "$BUCKET" ] && continue
+    if aws s3api head-bucket --bucket "$BUCKET" --region "$REGION" >/dev/null 2>&1; then
+      ok "bucket s3://$BUCKET already exists (yours) -- using it"
+      break
+    fi
+    # Try to create. us-east-1 rejects LocationConstraint.
+    if [ "$REGION" = "us-east-1" ]; then
+      ERR="$(aws s3api create-bucket --bucket "$BUCKET" --region "$REGION" 2>&1 >/dev/null)"
+    else
+      ERR="$(aws s3api create-bucket --bucket "$BUCKET" --region "$REGION" \
+        --create-bucket-configuration "LocationConstraint=$REGION" 2>&1 >/dev/null)"
+    fi
+    if [ -z "$ERR" ]; then
+      ok "created bucket s3://$BUCKET"
+      break
+    fi
+    warn "could not create bucket s3://$BUCKET:"
+    printf '  %s\n' "$ERR" >&2
+    case "$ERR" in
+      *BucketAlreadyExists*|"*not available*")
+        warn "that name is taken by another AWS account (S3 names are global). Pick a more unique name." ;;
+      *AccessDenied*|*Forbidden*)
+        warn "your IAM user lacks s3:CreateBucket permission. Use an existing bucket you own, or grant the permission." ;;
+    esac
+    warn "try again, or Ctrl-C to exit."
+  done
+else
+  BUCKET="$(prompt_required "Dumps S3 bucket name")"
+  warn "AWS not authenticated -- skipped bucket check. Ensure s3://$BUCKET exists before running run_all.sh."
+fi
 
 # ---- write config.yaml ----------------------------------------------------
 # Build it from the example, substituting only the collected non-secret values.
@@ -238,25 +275,7 @@ print("wrote", out)
 PY
 ok "wrote $CFG"
 
-# ---- create the S3 bucket if it doesn't exist (auto) ---------------------
-# The bucket holds masked pg_dump artifacts + uploaded source dumps; it must
-# exist before any profile discover/build/mask run. Auto-create it now so the
-# user never hits a NoSuchBucket later. (us-east-1 rejects LocationConstraint.)
-if [ "$aws_ok" = true ]; then
-  if aws s3api head-bucket --bucket "$BUCKET" --region "$REGION" >/dev/null 2>&1; then
-    ok "bucket s3://$BUCKET already exists"
-  else
-    if [ "$REGION" = "us-east-1" ]; then
-      aws s3api create-bucket --bucket "$BUCKET" --region "$REGION" >/dev/null 2>&1         && ok "created bucket s3://$BUCKET"         || { warn "could not create bucket $BUCKET -- create it manually:";              warn "    aws s3api create-bucket --bucket $BUCKET --region $REGION"; }
-    else
-      aws s3api create-bucket --bucket "$BUCKET" --region "$REGION"         --create-bucket-configuration "LocationConstraint=$REGION" >/dev/null 2>&1         && ok "created bucket s3://$BUCKET"         || { warn "could not create bucket $BUCKET (region $REGION) -- create it manually:";              warn "    aws s3api create-bucket --bucket $BUCKET --region $REGION \\";              warn "         --create-bucket-configuration LocationConstraint=$REGION"; }
-    fi
-  fi
-else
-  warn "AWS not authenticated -- skipping bucket creation. Create it later:"
-  warn "    aws s3api create-bucket --bucket $BUCKET --region $REGION"
-fi
-
+# (bucket creation/re-prompt handled above, before config.yaml was written)
 else  # SKIP_CONFIG
   BUCKET="$(python3 -c "import sys;sys.path.insert(0,'lib');from backend import config;print(config.get('DUMP_S3_BUCKET',''))" 2>/dev/null || echo '')"
   REGION="$(python3 -c "import sys;sys.path.insert(0,'lib');from backend import config;print(config.get('AWS_REGION',''))" 2>/dev/null || echo '')"
