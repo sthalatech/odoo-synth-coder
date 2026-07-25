@@ -32,4 +32,21 @@ bash deploy/09_dev_env.sh
 # login` once (interactive). The builder template must be republished whenever
 # coder/templates/odoo-synth-builder changes or builds run a stale user-data.
 bash deploy/11_coder_server.sh
-bash deploy/12_publish_template.sh
+set -a; . deploy/state.env; set +a
+# Coder login: headless first-admin setup + persist a session token to
+# state.env so 12_publish_template.sh (and later CLI runs) can auth. If an
+# admin already exists, reuse a persisted token or skip (re-auth manually).
+if ! coder whoami >/dev/null 2>&1; then
+  FIRST="$(curl -fsS "$CODER_URL/api/v2/users/first" </dev/null 2>/dev/null || true)"
+  if ! printf '%s' "$FIRST" | grep -q '"already been created"'; then
+    ADMIN_PW="${CODER_ADMIN_PASSWORD:-$(python3 -c 'import secrets,string as s; print("".join(secrets.choice(s.ascii_letters+s.digits) for _ in range(20)))')}"
+    CODER_FIRST_USER_EMAIL="${CODER_ADMIN_EMAIL:-acct.exedev@sthala.dev}" \
+    CODER_FIRST_USER_USERNAME="${CODER_ADMIN_USER:-admin}" \
+    CODER_FIRST_USER_PASSWORD="$ADMIN_PW" \
+    CODER_FIRST_USER_TRIAL=false \
+    coder login "$CODER_URL" </dev/null >/dev/null 2>&1
+    TOK="$(coder tokens create --name runall-$(date +%s) 2>/dev/null | tail -1)"
+    [ -n "$TOK" ] && export CODER_SESSION_TOKEN="$TOK"       && grep -q '^CODER_SESSION_TOKEN=' deploy/state.env 2>/dev/null         && sed -i "s|^CODER_SESSION_TOKEN=.*|CODER_SESSION_TOKEN=$TOK|" deploy/state.env         || printf 'CODER_SESSION_TOKEN=%s\n' "$TOK" >> deploy/state.env
+  fi
+fi
+bash deploy/12_publish_template.sh --quiet
