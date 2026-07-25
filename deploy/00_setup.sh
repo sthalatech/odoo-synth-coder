@@ -338,9 +338,11 @@ else
     #        coder login -> publish templates.
     # The golden AMI bake is a one-time ~10-15 min install cost; it moves all
     # provisioning (docker, awscli, agent CLIs) out of per-workspace startup.
+    INFRA_OK=0
     if bash deploy/01_ecr.sh            && bash deploy/02_build_push.sh --quiet            && bash deploy/10_builder.sh            && bash deploy/09_dev_env.sh            && bash deploy/11_coder_server.sh; then
       ok "basic infra provisioned (ECR, IAM, Coder server, templates)"
       set -a; . "$HERE/deploy/state.env"; set +a
+      INFRA_OK=1
     else
       warn "a provisioning step failed (see logs above)."
       warn "fix it and re-run -- completed steps are idempotent."
@@ -348,6 +350,12 @@ else
     fi
 
     # --- 7b. Coder login (headless first-admin + token persistence) ---
+    # Only attempt Coder login + template publish if 7a succeeded. If the
+    # chain failed (e.g. the golden AMI bake in 09_dev_env.sh died), CODER_URL
+    # may still be in state.env from a prior run -- but the infra is not
+    # complete, so publishing templates would give a false sense of success.
+    # The user should fix the failed step and re-run.
+    if [ "$INFRA_OK" = 1 ]; then
     echo
     say "7b/7c: Log into Coder"
     if [ -n "${CODER_URL:-}" ]; then
@@ -391,6 +399,7 @@ else
     else
       warn "CODER_URL not in deploy/state.env -- did 11_coder_server.sh run? Skipping template publish."
     fi
+    fi  # INFRA_OK
   else
     warn "skipped provisioning. Run it later with:"
     warn "    bash deploy/run_all.sh   ${DIM}# or re-run this wizard${OFF}"
