@@ -675,25 +675,29 @@ def cmd_run_logs(args) -> int:
         run = store.get_run(args.run_id) or run
 
 
-# --- env commands -----------------------------------------------------------
+# --- workspace commands ------------------------------------------------------
+# Named "workspace" (not "env") to match Coder's own vocabulary -- a
+# coder_workspace resource. Unrelated to *environment variables* (.env files,
+# ENV_* in deploy/state.env), which keep the "env" name -- that's a separate,
+# industry-standard sense of the word.
 
-def cmd_env_list(args) -> int:
+def cmd_workspace_list(args) -> int:
     environments.reconcile_booting()
-    envs = store.list_environments()
+    wss = store.list_environments()
     if args.json:
-        _print_json({"environments": envs})
+        _print_json({"workspaces": wss})
         return 0
-    if not envs:
-        print("(no environments)")
+    if not wss:
+        print("(no workspaces)")
         return 0
-    _table(envs, [("ID", "id"), ("STATUS", "status"), ("PROFILE", "profile_id"),
+    _table(wss, [("ID", "id"), ("STATUS", "status"), ("PROFILE", "profile_id"),
                   ("RUN", "source_run_id"), ("ODOO", "odoo_url")])
     return 0
 
 
-def cmd_env_create(args) -> int:
+def cmd_workspace_create(args) -> int:
     if not config.environments_configured():
-        _err("developer environments are not configured "
+        _err("developer workspaces are not configured "
              "(set CODER_URL + CODER_SESSION_TOKEN, ensure the "
              "odoo-synth-workspacer template is published)")
         return 2
@@ -720,29 +724,29 @@ def cmd_env_create(args) -> int:
         _err("a masked dump is required: pass --source-run-id <run that produced "
              "a dump> or --dump-s3-uri s3://bucket/key")
         return 2
-    env_id = environments.create(
+    workspace_id = environments.create(
         args.source_run_id, args.issue, args.dump_s3_uri,
         repo_url=args.repo_url, repo_branch=args.repo_branch,
         profile_id=args.profile_id,
         name=args.name)
-    print(f"created environment {env_id}")
+    print(f"created workspace {workspace_id}")
     return 0
 
 
-def cmd_env_wait(args) -> int:
-    ok = environments.wait_for_env(args.env_id, timeout=args.timeout, poll=args.poll)
+def cmd_workspace_wait(args) -> int:
+    ok = environments.wait_for_env(args.workspace_id, timeout=args.timeout, poll=args.poll)
     if ok:
-        print(f"environment {args.env_id} is running")
+        print(f"workspace {args.workspace_id} is running")
         return 0
-    _err(f"environment {args.env_id} did not reach running within {args.timeout}s "
+    _err(f"workspace {args.workspace_id} did not reach running within {args.timeout}s "
          "(or the build failed)")
     return 1
 
 
-def cmd_env_agent(args) -> int:
-    env = store.get_environment(args.env_id)
-    if not env:
-        _err(f"environment not found: {args.env_id}")
+def cmd_workspace_agent(args) -> int:
+    ws = store.get_environment(args.workspace_id)
+    if not ws:
+        _err(f"workspace not found: {args.workspace_id}")
         return 2
     # system prompt: explicit file wins, else the built-in project prompt shipped
     # with the repo (provisioned in the first phase; contents filled in later).
@@ -753,9 +757,9 @@ def cmd_env_agent(args) -> int:
             system_prompt = Path(sp).read_text()
     except Exception:  # noqa: BLE001
         pass
-    issue = args.issue or env.get("issue") or ""
+    issue = args.issue or ws.get("issue") or ""
     res = environments.run_agent(
-        args.env_id, args.task, agent=args.agent,
+        args.workspace_id, args.task, agent=args.agent,
         max_iterations=args.max_iterations, issue=issue,
         system_prompt=system_prompt, timeout=args.timeout)
     print(f"[agent] workspace={res['workspace']} agent={res['agent']} "
@@ -767,39 +771,39 @@ def cmd_env_agent(args) -> int:
     return 0 if res["exit_code"] == 0 else 1
 
 
-def cmd_env_show(args) -> int:
-    env = store.get_environment(args.env_id)
-    if not env:
-        _err(f"environment not found: {args.env_id}")
+def cmd_workspace_show(args) -> int:
+    ws = store.get_environment(args.workspace_id)
+    if not ws:
+        _err(f"workspace not found: {args.workspace_id}")
         return 2
-    _print_json(env)
+    _print_json(ws)
     return 0
 
 
-def cmd_env_password(args) -> int:
-    env = store.get_environment(args.env_id)
-    if not env:
-        _err(f"environment not found: {args.env_id}")
+def cmd_workspace_password(args) -> int:
+    ws = store.get_environment(args.workspace_id)
+    if not ws:
+        _err(f"workspace not found: {args.workspace_id}")
         return 2
-    pw = environments.get_password(args.env_id)
+    pw = environments.get_password(args.workspace_id)
     if pw is None:
-        _err("no password available for this environment")
+        _err("no password available for this workspace")
         return 2
     print(pw)
     return 0
 
 
-def cmd_env_delete(args) -> int:
-    env = store.get_environment(args.env_id)
-    if not env:
-        _err(f"environment not found: {args.env_id}")
+def cmd_workspace_delete(args) -> int:
+    ws = store.get_environment(args.workspace_id)
+    if not ws:
+        _err(f"workspace not found: {args.workspace_id}")
         return 2
-    environments.teardown(args.env_id)
-    print(f"terminated environment {args.env_id}")
+    environments.teardown(args.workspace_id)
+    print(f"terminated workspace {args.workspace_id}")
     return 0
 
 
-def cmd_env_config(args) -> int:
+def cmd_workspace_config(args) -> int:
     s = config.environments_settings()
     out = {
         "configured": config.environments_configured(),
@@ -989,63 +993,64 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="poll for new lines until the run finishes")
     rg.set_defaults(func=cmd_run_logs)
 
-    # env
-    penv = sub.add_parser("env", help="developer environments (Coder workspaces)")
-    esub = penv.add_subparsers(dest="env_cmd", required=True)
+    # workspace (developer environments -- named to match Coder's own
+    # vocabulary; see the "workspace commands" comment above cmd_workspace_list)
+    pws = sub.add_parser("workspace", help="developer workspaces (Coder)")
+    wssub = pws.add_subparsers(dest="workspace_cmd", required=True)
 
-    el = esub.add_parser("list", help="list environments")
-    el.add_argument("--json", action="store_true")
-    el.set_defaults(func=cmd_env_list)
+    wl = wssub.add_parser("list", help="list workspaces")
+    wl.add_argument("--json", action="store_true")
+    wl.set_defaults(func=cmd_workspace_list)
 
-    ec = esub.add_parser("create", help="launch an environment")
-    ec.add_argument("--profile-id", default=None)
-    ec.add_argument("--source-run-id", default=None)
-    ec.add_argument("--issue", default=None, help="github issue ref (optional)")
-    ec.add_argument("--dump-s3-uri", default=None,
+    wc = wssub.add_parser("create", help="launch a workspace")
+    wc.add_argument("--profile-id", default=None)
+    wc.add_argument("--source-run-id", default=None)
+    wc.add_argument("--issue", default=None, help="github issue ref (optional)")
+    wc.add_argument("--dump-s3-uri", default=None,
                     help="explicit s3:// masked dump (optional override)")
-    ec.add_argument("--repo-url", default=None)
-    ec.add_argument("--repo-branch", default=None)
-    ec.add_argument("--name", default=None,
+    wc.add_argument("--repo-url", default=None)
+    wc.add_argument("--repo-branch", default=None)
+    wc.add_argument("--name", default=None,
                     help="human-friendly Coder workspace name (e.g. iss-42-fix-login). "
-                         "Coerced to [a-z0-9-]; falls back to the random env id when empty.")
-    ec.set_defaults(func=cmd_env_create)
+                         "Coerced to [a-z0-9-]; falls back to the random workspace id when empty.")
+    wc.set_defaults(func=cmd_workspace_create)
 
-    ew = esub.add_parser("wait", help="wait for an env's workspace to reach running")
-    ew.add_argument("env_id")
-    ew.add_argument("--timeout", type=int, default=1200,
+    ww = wssub.add_parser("wait", help="wait for a workspace to reach running")
+    ww.add_argument("workspace_id")
+    ww.add_argument("--timeout", type=int, default=1200,
                     help="max seconds to wait for the build (default 1200)")
-    ew.add_argument("--poll", type=int, default=10)
-    ew.set_defaults(func=cmd_env_wait)
+    ww.add_argument("--poll", type=int, default=10)
+    ww.set_defaults(func=cmd_workspace_wait)
 
-    ea = esub.add_parser("agent", help="invoke the AI agent (opencode/claude-code) inside an env")
-    ea.add_argument("env_id")
-    ea.add_argument("task", help="task string for the agent (e.g. the issue summary)")
-    ea.add_argument("--agent", default="opencode",
+    wa = wssub.add_parser("agent", help="invoke the AI agent (opencode/claude-code) inside a workspace")
+    wa.add_argument("workspace_id")
+    wa.add_argument("task", help="task string for the agent (e.g. the issue summary)")
+    wa.add_argument("--agent", default="opencode",
                     help="agent to invoke headlessly (opencode|claude-code); superpowers drives it")
-    ea.add_argument("--max-iterations", type=int, default=15,
+    wa.add_argument("--max-iterations", type=int, default=15,
                     help="kept for compat; the agent self-drives via superpowers")
-    ea.add_argument("--timeout", type=int, default=3600,
+    wa.add_argument("--timeout", type=int, default=3600,
                     help="wall-clock cost guard in seconds (default 3600)")
-    ea.add_argument("--issue", default=None, help="github issue ref for context")
-    ea.add_argument("--system-prompt", default=None,
+    wa.add_argument("--issue", default=None, help="github issue ref for context")
+    wa.add_argument("--system-prompt", default=None,
                     help="path to a project system prompt file (default: built-in)")
-    ea.add_argument("--json", action="store_true", help="print the result as JSON")
-    ea.set_defaults(func=cmd_env_agent)
+    wa.add_argument("--json", action="store_true", help="print the result as JSON")
+    wa.set_defaults(func=cmd_workspace_agent)
 
-    es = esub.add_parser("show", help="show an environment")
-    es.add_argument("env_id")
-    es.set_defaults(func=cmd_env_show)
+    ws_show = wssub.add_parser("show", help="show a workspace")
+    ws_show.add_argument("workspace_id")
+    ws_show.set_defaults(func=cmd_workspace_show)
 
-    epw = esub.add_parser("password", help="reveal the env login password")
-    epw.add_argument("env_id")
-    epw.set_defaults(func=cmd_env_password)
+    wpw = wssub.add_parser("password", help="reveal the workspace login password")
+    wpw.add_argument("workspace_id")
+    wpw.set_defaults(func=cmd_workspace_password)
 
-    ed = esub.add_parser("delete", help="tear down an environment")
-    ed.add_argument("env_id")
-    ed.set_defaults(func=cmd_env_delete)
+    wd = wssub.add_parser("delete", help="tear down a workspace")
+    wd.add_argument("workspace_id")
+    wd.set_defaults(func=cmd_workspace_delete)
 
-    ecfg = esub.add_parser("config", help="show environment infra settings")
-    ecfg.set_defaults(func=cmd_env_config)
+    wcfg = wssub.add_parser("config", help="show workspace infra settings")
+    wcfg.set_defaults(func=cmd_workspace_config)
 
     # config
     pcfg = sub.add_parser("config", help="non-secret infra summary")
