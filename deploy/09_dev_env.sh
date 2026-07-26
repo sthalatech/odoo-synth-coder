@@ -197,20 +197,20 @@ log "builder: $BUILDER_ID -- provisioning (docker + awscli + agent CLIs); this t
 # Poll for the builder to power itself off once provision.sh completes. We can't
 # use `aws ec2 wait instance-stopped` -- that waiter treats the initial "pending"
 # state as a terminal failure. Poll manually instead (up to ~15 min).
-STATE=""
+BUILDER_STATE=""
 for i in $(seq 1 90); do
   sleep 10
-  STATE="$(aws ec2 describe-instances --region "$AWS_REGION" --instance-ids "$BUILDER_ID" \
+  BUILDER_STATE="$(aws ec2 describe-instances --region "$AWS_REGION" --instance-ids "$BUILDER_ID" \
     --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null || echo unknown)"
-  case "$STATE" in
+  case "$BUILDER_STATE" in
     stopped) break ;;
-    terminated|shutting-down) log "builder entered $STATE unexpectedly"; break ;;
+    terminated|shutting-down) log "builder entered $BUILDER_STATE unexpectedly"; break ;;
   esac
-  [ $((i % 6)) -eq 0 ] && log "  ... builder $STATE (${i}0s elapsed)"
+  [ $((i % 6)) -eq 0 ] && log "  ... builder $BUILDER_STATE (${i}0s elapsed)"
 done
 
-if [ "$STATE" != "stopped" ]; then
-  log "builder did not reach 'stopped' (last state: $STATE); check the console log:"
+if [ "$BUILDER_STATE" != "stopped" ]; then
+  log "builder did not reach 'stopped' (last state: $BUILDER_STATE); check the console log:"
   log "  aws ec2 get-console-output --instance-id $BUILDER_ID --region $AWS_REGION"
   exit 1
 fi
