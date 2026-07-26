@@ -231,7 +231,7 @@ UD_EOF
       --iam-instance-profile "Name=$CODER_PROFILE" \
       --block-device-mappings "DeviceName=/dev/sda1,Ebs={VolumeSize=$CODER_VOLUME_GB,VolumeType=gp3}" \
       --user-data "file://$UD" \
-      --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$CODER_NAME},{Key=odoo-synth:managed,Value=true}]" \
+      --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$CODER_NAME},{Key=odoo-synth:managed,Value=true},{Key=odoo-synth:control-plane,Value=true}]" \
       --query 'Instances[0].InstanceId' --output text 2>&1)" || true
     case "$I_ID" in
       i-*) break ;;                       # got an instance id -> success
