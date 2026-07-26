@@ -161,6 +161,19 @@ def _launch_builder_workspace(image_uri: str, context_get: str, result_put: str,
     import os
     import subprocess
 
+    # Fail fast when critical launch settings are missing -- same rationale as
+    # pipeline._launch_runner: an empty ami_id silently falls back to stock
+    # Ubuntu (no Docker) in the Terraform template, producing a confusing
+    # "docker not found" error minutes later.
+    missing = [k for k in ("ami_id", "security_group_id", "instance_profile", "subnet_id")
+               if not s.get(k)]
+    if missing:
+        raise RuntimeError(
+            f"builder launch settings missing from config: {', '.join(missing)}. "
+            "These come from deploy/state.env (written by deploy/09_dev_env.sh "
+            "and 11_coder_server.sh): ENV_AMI_ID, ENV_SG_ID, ENV_SUBNET_ID, "
+            "ENV_INSTANCE_PROFILE. Run the deploy pipeline first (bash deploy/00_setup.sh).")
+
     # The FROM image for the per-profile build. The public odoo:<series> image
     # is the default; odoo_image_base (from state/Coder param) can override it
     # (e.g. a pre-warmed base mirrored into ECR for airgapped builds). We no

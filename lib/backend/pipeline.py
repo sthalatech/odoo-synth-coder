@@ -223,21 +223,22 @@ def _launch_runner(image_uri: str, env_file_get_url: str, env_keys: list[str],
 
     _require_coder()
     s = config.environments_settings()
-    # The runner template coalesces an empty ami_id back to its golden default,
-    # but the SG + instance profile + subnet have no safe default for a fresh
-    # account -- an empty one yields a vague AWS error (e.g. MissingParameter:
-    # ImageId, or InvalidGroup.NotFound). Fail fast with an actionable message
-    # so the user knows to populate deploy/state.env (ENV_SG_ID / ENV_SUBNET_ID
-    # / ENV_INSTANCE_PROFILE) from the deploy scripts.
-    missing = [k for k in ("security_group_id", "instance_profile", "subnet_id")
+    # Fail fast with an actionable message when critical launch settings are
+    # missing from state.env. An empty ami_id silently falls back to stock
+    # Ubuntu 22.04 (no Docker) in the Terraform template, producing a
+    # confusing "docker not found on the AMI" error minutes later -- much
+    # better to catch it here with a clear fix-it message.
+    missing = [k for k in ("ami_id", "security_group_id", "instance_profile", "subnet_id")
                if not s.get(k)]
     if missing:
         raise RuntimeError(
             f"runner launch settings missing from config: {', '.join(missing)}. "
-            "These come from deploy/state.env (written by deploy/11_coder_server.sh "
-            "and 09_dev_env.sh): ENV_SG_ID, ENV_SUBNET_ID, ENV_INSTANCE_PROFILE. "
-            "Source deploy/state.env before running, or run the deploy pipeline "
-            "first.")
+            "These come from deploy/state.env (written by deploy/09_dev_env.sh "
+            "and 11_coder_server.sh): ENV_AMI_ID, ENV_SG_ID, ENV_SUBNET_ID, "
+            "ENV_INSTANCE_PROFILE. Source deploy/state.env before running, or "
+            "run the deploy pipeline first (bash deploy/00_setup.sh). If ENV_AMI_ID "
+            "is missing, the golden AMI was never baked -- the setup script will "
+            "do this automatically.")
     params = [
         ("ami_id", s.get("ami_id") or ""),
         ("instance_profile", s.get("instance_profile") or ""),
