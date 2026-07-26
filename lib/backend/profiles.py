@@ -16,6 +16,7 @@ Secrets:
 """
 from __future__ import annotations
 
+import re
 import subprocess
 import uuid
 from typing import Any, Optional
@@ -25,6 +26,94 @@ import boto3
 
 from . import config, store
 from .pipeline import parse_dsn
+
+# ---------------------------------------------------------------------------
+# components: multi-repo/multi-service profile support
+#
+# A profile binds ONE shared source DB to a list of *components* -- each an
+# independently versioned repo with its own build/run shape (`kind`). Today's
+# single-repo profile (odoo_series/addons_git_url/etc. as flat top-level
+# fields) is not a separate code path: components_of() synthesizes the
+# equivalent single-element [{"kind": "odoo", ...}] list for it, so every
+# caller (discover/build/mask/env-create) only ever iterates
+# `profiles.components_of(profile)` -- one component is just the N=1 case of
+# the general loop.
+# ---------------------------------------------------------------------------
+
+KNOWN_COMPONENT_KINDS = ("odoo", "docker", "process", "static")
+_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
+
+
+def components_of(profile: dict[str, Any]) -> list[dict[str, Any]]:
+    """The profile's components -- the one shape every pipeline stage
+    iterates, whether the profile is legacy single-repo or new multi-repo.
+
+    New-style profiles set ``components`` directly (validated at create/
+    update time by _validate_components). Legacy profiles have none --
+    synthesize a single kind="odoo" component from the flat odoo_*/addons_*
+    fields already on the profile, so the two are indistinguishable to
+    callers."""
+    comps = profile.get("components")
+    if comps:
+        return comps
+    return [{
+        "name": "odoo",
+        "kind": "odoo",
+        "repo_url": profile.get("addons_git_url"),
+        "repo_ref": profile.get("addons_git_ref"),
+        "port": None,
+        "odoo": {
+            "odoo_series": profile.get("odoo_series"),
+            "odoo_git_url": profile.get("odoo_git_url"),
+            "odoo_git_ref": profile.get("odoo_git_ref"),
+            "needs_enterprise": profile.get("needs_enterprise"),
+            "enterprise_source": profile.get("enterprise_source"),
+        },
+    }]
+
+
+def dependencies_of(profile: dict[str, Any]) -> list[dict[str, Any]]:
+    """Shared infra a profile's components declare needing (e.g. redis).
+    Generic and operator-declared -- never assumed/auto-provisioned."""
+    return profile.get("dependencies") or []
+
+
+def _validate_components(components: Any) -> list[dict[str, Any]]:
+    """Fail fast on malformed component lists at create/update time, rather
+    than deep inside discover/build/env-create much later. Deliberately
+    light: shape + kind + name-uniqueness checks only, not a full schema
+    validator."""
+    if not isinstance(components, list) or not components:
+        raise ValueError("components must be a non-empty list")
+    seen: set[str] = set()
+    for i, c in enumerate(components):
+        if not isinstance(c, dict):
+            raise ValueError(f"components[{i}] must be a mapping")
+        name = c.get("name")
+        if not name or not _NAME_RE.match(str(name)):
+            raise ValueError(
+                f"components[{i}].name must be a non-empty [a-z0-9-]+ string "
+                f"(got {name!r})")
+        if name in seen:
+            raise ValueError(f"duplicate component name: {name!r}")
+        seen.add(name)
+        kind = c.get("kind")
+        if kind not in KNOWN_COMPONENT_KINDS:
+            raise ValueError(
+                f"components[{i}] ({name!r}): kind must be one of "
+                f"{KNOWN_COMPONENT_KINDS} (got {kind!r})")
+        if not c.get("repo_url") and kind != "odoo":
+            raise ValueError(f"components[{i}] ({name!r}): repo_url is required")
+    return components
+
+
+def _validate_dependencies(dependencies: Any) -> list[dict[str, Any]]:
+    if not isinstance(dependencies, list):
+        raise ValueError("dependencies must be a list")
+    for i, d in enumerate(dependencies):
+        if not isinstance(d, dict) or not d.get("name") or not d.get("kind"):
+            raise ValueError(f"dependencies[{i}] must have name + kind")
+    return dependencies
 
 
 def _region() -> str:
@@ -165,17 +254,25 @@ def create(payload: dict[str, Any]) -> str:
 
     fields: dict[str, Any] = {
         "description": payload.get("description"),
-        "odoo_series": payload.get("odoo_series"),
-        "odoo_git_url": payload.get("odoo_git_url") or "https://github.com/odoo/odoo",
-        "odoo_git_ref": payload.get("odoo_git_ref"),          # manual (decision 2a)
-        "addons_git_url": payload.get("addons_git_url"),
-        "addons_git_ref": payload.get("addons_git_ref"),
-        "needs_enterprise": 1 if payload.get("needs_enterprise") else 0,
-        "enterprise_source": payload.get("enterprise_source"),
         "pr_base": payload.get("pr_base"),
         "mask_inputs": _mask_inputs(payload),
         "image_status": "draft",
     }
+    # Legacy single-repo (kind=odoo) fields: only written when the caller
+    # didn't supply `components` directly, so a multi-repo profile's YAML
+    # doesn't end up with two conflicting sources of truth for the same
+    # odoo component (components_of() already ignores these when
+    # `components` is set -- this just keeps the persisted file clean).
+    if not payload.get("components"):
+        fields.update({
+            "odoo_series": payload.get("odoo_series"),
+            "odoo_git_url": payload.get("odoo_git_url") or "https://github.com/odoo/odoo",
+            "odoo_git_ref": payload.get("odoo_git_ref"),          # manual (decision 2a)
+            "addons_git_url": payload.get("addons_git_url"),
+            "addons_git_ref": payload.get("addons_git_ref"),
+            "needs_enterprise": 1 if payload.get("needs_enterprise") else 0,
+            "enterprise_source": payload.get("enterprise_source"),
+        })
 
     # source connection: split DSN into non-secret conn + password secret
     dsn = payload.get("source_dsn")
@@ -195,6 +292,14 @@ def create(payload: dict[str, Any]) -> str:
         fields["ssh_key_secret"] = _put_secret(
             f"{_secret_prefix()}/{profile_id}/ssh-key", payload["ssh_key"])
     fields["git_token_secret"] = _resolve_git_token_secret(payload, profile_id)
+
+    # multi-repo: optional. Omitted entirely -> components_of() synthesizes
+    # the single-component odoo shape from the flat fields above, so a
+    # profile created the existing (single-repo) way is unaffected.
+    if payload.get("components") is not None:
+        fields["components"] = _validate_components(payload["components"])
+    if payload.get("dependencies") is not None:
+        fields["dependencies"] = _validate_dependencies(payload["dependencies"])
 
     store.create_profile(profile_id, label, **fields)
     return profile_id
@@ -218,6 +323,11 @@ def update(profile_id: str, payload: dict[str, Any]) -> None:
         merged = dict(existing.get("mask_inputs") or {})
         merged.update(_mask_inputs(payload))
         fields["mask_inputs"] = merged
+    # multi-repo: whole-list replace (like masking_rules), not a per-field merge.
+    if "components" in payload:
+        fields["components"] = _validate_components(payload["components"])
+    if "dependencies" in payload:
+        fields["dependencies"] = _validate_dependencies(payload["dependencies"])
 
     dsn = payload.get("source_dsn")
     if dsn:

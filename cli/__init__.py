@@ -26,6 +26,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
+import yaml
+
 # --- repo-root resolution + backend import ----------------------------------
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LIB = REPO_ROOT / "lib"
@@ -261,6 +263,21 @@ def _read_file_text(path: str) -> str:
     return Path(path).read_text()
 
 
+def _read_list_file(path: Optional[str]) -> Optional[list]:
+    """Read a --components-file/--dependencies-file argument: a YAML or JSON
+    file containing a list of mappings (`-` reads stdin). Returns None if no
+    path was given, so callers can tell "not provided" apart from "empty"."""
+    if not path:
+        return None
+    text = sys.stdin.read() if path == "-" else Path(path).read_text()
+    data = yaml.safe_load(text)  # yaml.safe_load also parses plain JSON
+    if data is None:
+        return []
+    if not isinstance(data, list):
+        raise ValueError(f"{path}: expected a YAML/JSON list, got {type(data).__name__}")
+    return data
+
+
 # --- profile commands -------------------------------------------------------
 
 def cmd_profile_create(args) -> int:
@@ -286,11 +303,21 @@ def cmd_profile_create(args) -> int:
             else args.agent_system_prompt),
         "pr_base": args.pr_base,
     }
+    try:
+        payload["components"] = _read_list_file(args.components_file)
+        payload["dependencies"] = _read_list_file(args.dependencies_file)
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        _err(str(exc))
+        return 2
     payload = {k: v for k, v in payload.items() if v is not None}
     if not payload.get("label"):
         _err("a profile label is required (--label)")
         return 2
-    pid = profiles.create(payload)
+    try:
+        pid = profiles.create(payload)
+    except ValueError as exc:
+        _err(str(exc))
+        return 2
     if args.json:
         _print_json({"profile_id": pid})
     else:
@@ -347,6 +374,14 @@ def cmd_profile_update(args) -> int:
         payload["agent_system_prompt"] = sp
     if args.pr_base is not None:
         payload["pr_base"] = args.pr_base
+    try:
+        if args.components_file is not None:
+            payload["components"] = _read_list_file(args.components_file)
+        if args.dependencies_file is not None:
+            payload["dependencies"] = _read_list_file(args.dependencies_file)
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        _err(str(exc))
+        return 2
     if not payload:
         _err("no update fields supplied")
         return 2
@@ -354,6 +389,9 @@ def cmd_profile_update(args) -> int:
         profiles.update(args.profile_id, payload)
     except KeyError:
         _err(f"profile not found: {args.profile_id}")
+        return 2
+    except ValueError as exc:
+        _err(str(exc))
         return 2
     print(f"updated profile {args.profile_id}")
     return 0
@@ -884,6 +922,13 @@ def _build_parser() -> argparse.ArgumentParser:
                         "uses this so the agent opens its PR against the right "
                         "integration branch.")
     _add_ssh_args(pc)
+    pc.add_argument("--components-file", default=None, metavar="FILE|-",
+                   help="multi-repo: YAML/JSON list of component mappings "
+                        "(name, kind, repo_url, repo_ref, port, ...). Omit for "
+                        "a single-repo (Odoo) profile using the flags above.")
+    pc.add_argument("--dependencies-file", default=None, metavar="FILE|-",
+                   help="multi-repo: YAML/JSON list of shared-infra dependency "
+                        "mappings (name, kind, e.g. {name: redis, kind: redis})")
     pc.add_argument("--json", action="store_true")
     pc.set_defaults(func=cmd_profile_create)
 
@@ -922,6 +967,11 @@ def _build_parser() -> argparse.ArgumentParser:
                         "the agent finishes (default uat). Set per-profile so the "
                         "issue launcher tells the agent the right integration branch.")
     _add_ssh_args(pu)
+    pu.add_argument("--components-file", default=None, metavar="FILE|-",
+                   help="multi-repo: replace the components list wholesale "
+                        "(YAML/JSON list, same shape as `profile create`)")
+    pu.add_argument("--dependencies-file", default=None, metavar="FILE|-",
+                   help="multi-repo: replace the dependencies list wholesale")
     pu.set_defaults(func=cmd_profile_update)
 
     pd = psub.add_parser("delete", help="delete a profile (and its secrets)")
