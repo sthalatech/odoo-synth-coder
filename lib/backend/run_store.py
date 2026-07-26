@@ -205,8 +205,10 @@ def _reconcile(run_id: str, record: dict[str, Any]) -> dict[str, Any]:
     if rr.get("error"):
         record.setdefault("result", {})
         record["result"] = {**(record.get("result") or {}), "error": rr["error"]}
-    record["result"] = {**(record.get("result") or {}), "task_arn": rr.get("task_arn"),
-                        "exit_code": exit_code, "runner_log_tail": rr.get("log_tail")}
+    # task_arn/exit_code are already persisted as their own top-level columns
+    # (the update_run() call right below) -- don't duplicate them into the
+    # nested "result" blob too.
+    record["result"] = {**(record.get("result") or {}), "runner_log_tail": rr.get("log_tail")}
     # persist the finalized record (without holding the caller's lock context)
     update_run(run_id, status=status, exit_code=exit_code,
                finished_at=record["finished_at"], result=record["result"],

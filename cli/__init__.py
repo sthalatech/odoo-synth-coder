@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 import traceback
@@ -80,6 +81,13 @@ def _emit_sink(run_id: str):
     return emit
 
 
+def _trim_result(result: dict) -> dict:
+    """task_arn/exit_code are already persisted as their own top-level columns
+    on the run record (see the update_run() calls below) -- drop them from
+    the nested "result" blob so `run show` doesn't print each value twice."""
+    return {k: v for k, v in result.items() if k not in ("task_arn", "exit_code")}
+
+
 def _run_sync(operation: str, params: dict, profile_id: Optional[str],
               stored_params: dict) -> int:
     """Mirror backend/main.py `_worker` but synchronous + foreground.
@@ -117,7 +125,8 @@ def _run_sync(operation: str, params: dict, profile_id: Optional[str],
             status = "succeeded" if exit_code == 0 else "failed"
             store.flush_logs(run_id)
             store.update_run(run_id, status=status, task_arn=result.get("task_arn"),
-                             exit_code=exit_code, result=result, finished_at=time.time())
+                             exit_code=exit_code, result=_trim_result(result),
+                             finished_at=time.time())
         return exit_code
     except Exception as exc:  # noqa: BLE001
         emit(f"[odoo-synth] ERROR: {exc}")
@@ -137,7 +146,7 @@ def _run_sync(operation: str, params: dict, profile_id: Optional[str],
         status=status,
         task_arn=result.get("task_arn"),
         exit_code=exit_code,
-        result=result,
+        result=_trim_result(result),
         finished_at=time.time(),
     )
     try:
@@ -363,8 +372,10 @@ def cmd_profile_discover(args) -> int:
         _err("profile has no source database URL; add one first")
         return 2
     params = {"profile_id": args.profile_id}
-    stored = {"operation": "discover", "profile_id": args.profile_id}
-    return _run_sync("discover", params, args.profile_id, stored)
+    # operation/profile_id are already top-level fields on the run record
+    # (store.create_run receives them explicitly) -- no need to repeat them
+    # inside "params" too.
+    return _run_sync("discover", params, args.profile_id, {})
 
 
 def cmd_profile_build(args) -> int:
@@ -373,8 +384,7 @@ def cmd_profile_build(args) -> int:
         _err("run discovery first (no discovery result yet)")
         return 2
     params = {"profile_id": args.profile_id}
-    stored = {"operation": "build", "profile_id": args.profile_id}
-    return _run_sync("build", params, args.profile_id, stored)
+    return _run_sync("build", params, args.profile_id, {})
 
 
 def cmd_profile_images(args) -> int:
@@ -494,78 +504,123 @@ def _mask_params_from_legacy(args) -> dict:
     return params
 
 
+def _refresh_env_preset(profile_id: str) -> None:
+    """Best-effort: regenerate coder/templates/odoo-synth-env/presets.tf from
+    the profile+run stores and push just that template, so a successful mask
+    immediately shows up as a one-click preset in the Coder dashboard (named
+    "<label> (masked <timestamp>)" -- one preset per profile, refreshed each
+    time, not one per run: `coder templates push` already creates a new
+    template version per call, and only the active version's presets are
+    offered for new workspaces, so historical presets would just be clutter).
+
+    Never fails the caller -- the mask run already succeeded; a push failure
+    here is reported but swallowed, same as deploy/12_publish_template.sh's
+    own WARN-and-continue behavior."""
+    try:
+        subprocess.run([sys.executable, str(REPO_ROOT / "deploy" / "_gen_presets.py")],
+                       check=True, cwd=REPO_ROOT, capture_output=True, text=True, timeout=60)
+    except subprocess.CalledProcessError as exc:
+        _err(f"[odoo-synth] WARN: preset generation failed (mask succeeded regardless): "
+             f"{(exc.stderr or '').strip()}")
+        return
+    tpl_dir = REPO_ROOT / "coder" / "templates" / "odoo-synth-env"
+    try:
+        subprocess.run(["coder", "templates", "push", "-y", "--directory", str(tpl_dir), "odoo-synth-env"],
+                       env={**os.environ, **pipeline._coder_env()}, cwd=tpl_dir,
+                       check=True, capture_output=True, text=True, timeout=180)
+        print(f"[odoo-synth] preset refreshed for profile {profile_id} -> Coder dashboard")
+    except subprocess.CalledProcessError as exc:
+        _err(f"[odoo-synth] WARN: template push failed (mask succeeded regardless): "
+             f"{(exc.stderr or '').strip()}")
+    except FileNotFoundError:
+        _err("[odoo-synth] WARN: `coder` CLI not found; skipped preset refresh")
+
+
+def _mask_profile(profile_id: str, args) -> int:
+    """Run mask for a saved profile. Shared by the standardized `profile mask
+    <id>` command and the legacy `run mask --profile <id>` form. On success,
+    refreshes that profile's Coder dashboard preset (see _refresh_env_preset)."""
+    prof = store.get_profile(profile_id)
+    if not prof:
+        _err(f"profile not found: {profile_id}")
+        return 2
+    # Bastion overrides: --ssh-enabled/--ssh-bastion/--ssh-key on the CLI
+    # override the profile's stored SSH tunnel settings. A profile may be
+    # created without a bastion and later run through one (or vice versa).
+    overrides: dict = {"produce_dump": True}
+    # Mask knobs: the profile path rebuilds params from run_params() (which
+    # starts from the profile's saved mask_inputs), so per-run CLI flags
+    # must be forwarded as overrides or they are silently dropped. Only
+    # non-None values override -- argparse leaves unset flags at None, and
+    # run_params() filters None overrides, so this is a pure override.
+    for _k in ("mask_profile", "admin_password", "gm_jobs", "subset_days",
+               "exclude_table_data", "neutralize_mail", "neutralize_fetchmail",
+               "neutralize_payment", "neutralize_smtp_param", "reset_admin_login"):
+        _v = getattr(args, _k, None)
+        if _v is not None:
+            overrides[_k] = _v
+    if args.ssh_enabled is not None:
+        overrides["ssh_enabled"] = bool(args.ssh_enabled)
+    if args.ssh_bastion is not None:
+        if args.ssh_enabled is None and not (prof.get("source_conn") or {}).get("ssh_enabled"):
+            # --ssh-bastion implies --ssh-enabled if neither was set
+            overrides["ssh_enabled"] = True
+        try:
+            pipeline.parse_bastion(args.ssh_bastion)
+        except Exception as exc:  # noqa: BLE001
+            _err(f"invalid bastion: {exc}")
+            return 2
+        overrides["ssh_bastion"] = args.ssh_bastion
+    if args.ssh_key is not None:
+        overrides["ssh_key"] = _read_ssh_key(args.ssh_key)
+    # consistency check: if SSH ends up enabled, bastion + key must be present
+    try:
+        params = profiles.run_params(profile_id, overrides=overrides)
+    except (KeyError, ValueError) as exc:
+        _err(f"cannot run profile: {exc}")
+        return 2
+    if params.get("ssh_enabled"):
+        if not params.get("ssh_bastion"):
+            _err("SSH tunnel enabled but no bastion set (use --ssh-bastion)")
+            return 2
+        if not params.get("ssh_key"):
+            _err("SSH tunnel enabled but no key set (use --ssh-key)")
+            return 2
+    # operation/profile_id are already top-level fields on the run record;
+    # odoo_image is already recorded as provenance in the result once the
+    # mask succeeds (pipeline.run_operation echoes params["odoo_image"] there),
+    # and source_present is always true on this path (run_params() already
+    # raised above if the profile had no source connection) -- so none of
+    # those need to be repeated here.
+    stored = {
+        "mask_profile": params.get("mask_profile"),
+        "ssh_enabled": bool(params.get("ssh_enabled")),
+        "ssh_bastion": params.get("ssh_bastion"),
+        "produce_dump": bool(params.get("produce_dump")),
+    }
+    exit_code = _run_sync("mask", params, profile_id, stored)
+    if exit_code == 0:
+        _refresh_env_preset(profile_id)
+    return exit_code
+
+
+def cmd_profile_mask(args) -> int:
+    return _mask_profile(args.profile_id, args)
+
+
 def cmd_run_mask(args) -> int:
     if args.profile:
-        prof = store.get_profile(args.profile)
-        if not prof:
-            _err(f"profile not found: {args.profile}")
-            return 2
-        # Bastion overrides: --ssh-enabled/--ssh-bastion/--ssh-key on the CLI
-        # override the profile's stored SSH tunnel settings. A profile may be
-        # created without a bastion and later run through one (or vice versa).
-        overrides: dict = {"produce_dump": True}
-        # Mask knobs: the profile path rebuilds params from run_params() (which
-        # starts from the profile's saved mask_inputs), so per-run CLI flags
-        # must be forwarded as overrides or they are silently dropped. Only
-        # non-None values override -- argparse leaves unset flags at None, and
-        # run_params() filters None overrides, so this is a pure override.
-        for _k in ("mask_profile", "admin_password", "gm_jobs", "subset_days",
-                   "exclude_table_data", "neutralize_mail", "neutralize_fetchmail",
-                   "neutralize_payment", "neutralize_smtp_param", "reset_admin_login"):
-            _v = getattr(args, _k, None)
-            if _v is not None:
-                overrides[_k] = _v
-        if args.ssh_enabled is not None:
-            overrides["ssh_enabled"] = bool(args.ssh_enabled)
-        if args.ssh_bastion is not None:
-            if args.ssh_enabled is None and not (prof.get("source_conn") or {}).get("ssh_enabled"):
-                # --ssh-bastion implies --ssh-enabled if neither was set
-                overrides["ssh_enabled"] = True
-            try:
-                pipeline.parse_bastion(args.ssh_bastion)
-            except Exception as exc:  # noqa: BLE001
-                _err(f"invalid bastion: {exc}")
-                return 2
-            overrides["ssh_bastion"] = args.ssh_bastion
-        if args.ssh_key is not None:
-            overrides["ssh_key"] = _read_ssh_key(args.ssh_key)
-        # consistency check: if SSH ends up enabled, bastion + key must be present
-        try:
-            params = profiles.run_params(args.profile, overrides=overrides)
-        except (KeyError, ValueError) as exc:
-            _err(f"cannot run profile: {exc}")
-            return 2
-        if params.get("ssh_enabled"):
-            if not params.get("ssh_bastion"):
-                _err("SSH tunnel enabled but no bastion set (use --ssh-bastion)")
-                return 2
-            if not params.get("ssh_key"):
-                _err("SSH tunnel enabled but no key set (use --ssh-key)")
-                return 2
-        stored = {
-            "operation": "mask",
-            "profile_id": args.profile,
-            "mask_profile": params.get("mask_profile"),
-            "source_present": True,
-            "ssh_enabled": bool(params.get("ssh_enabled")),
-            "ssh_bastion": params.get("ssh_bastion"),
-            "produce_dump": bool(params.get("produce_dump")),
-            "odoo_image": prof.get("image_uri"),
-        }
-        profile_id = args.profile
-    else:
-        params = _mask_params_from_legacy(args)
-        stored = {
-            "operation": "mask",
-            "mask_profile": params.get("mask_profile"),
-            "source_present": bool(params.get("source_dsn")),
-            "ssh_enabled": bool(params.get("ssh_enabled")),
-            "ssh_bastion": params.get("ssh_bastion"),
-            "produce_dump": bool(params.get("produce_dump")),
-            "admin_password_set": bool(params.get("admin_password")),
-        }
-        profile_id = None
-    return _run_sync("mask", params, profile_id, stored)
+        return _mask_profile(args.profile, args)
+    params = _mask_params_from_legacy(args)
+    stored = {
+        "mask_profile": params.get("mask_profile"),
+        "source_present": bool(params.get("source_dsn")),
+        "ssh_enabled": bool(params.get("ssh_enabled")),
+        "ssh_bastion": params.get("ssh_bastion"),
+        "produce_dump": bool(params.get("produce_dump")),
+        "admin_password_set": bool(params.get("admin_password")),
+    }
+    return _run_sync("mask", params, None, stored)
 
 
 def cmd_run_list(args) -> int:
@@ -877,6 +932,13 @@ def _build_parser() -> argparse.ArgumentParser:
     pbld.add_argument("profile_id")
     pbld.set_defaults(func=cmd_profile_build)
 
+    pmask = psub.add_parser("mask", help="run a mask operation (synchronous, streams logs); "
+                                          "refreshes the Coder dashboard preset on success")
+    pmask.add_argument("profile_id")
+    _add_ssh_args(pmask)
+    _add_mask_args(pmask)
+    pmask.set_defaults(func=cmd_profile_mask)
+
     pimg = psub.add_parser("images", help="profile image management")
     pimg.add_argument("--json", action="store_true")
     pimgsub = pimg.add_subparsers(dest="images_cmd")
@@ -902,10 +964,13 @@ def _build_parser() -> argparse.ArgumentParser:
     prun = sub.add_parser("run", help="mask runs")
     rsub = prun.add_subparsers(dest="run_cmd", required=True)
 
-    rm = rsub.add_parser("mask", help="run a mask operation (synchronous, streams logs)")
-    rm.add_argument("--profile", default=None, help="run from a saved profile id")
+    rm = rsub.add_parser("mask", help="run a mask operation (synchronous, streams logs). "
+                                       "Prefer `profile mask <id>` for saved profiles -- "
+                                       "this form remains for the inline --source-dsn path.")
+    rm.add_argument("--profile", default=None,
+                    help="run from a saved profile id (equivalent to `profile mask <id>`)")
     rm.add_argument("--source-dsn", default=None,
-                    help="inline source (legacy path): postgresql://…")
+                    help="inline source (legacy path, no profile): postgresql://…")
     _add_ssh_args(rm)
     _add_mask_args(rm)
     rm.set_defaults(func=cmd_run_mask)
