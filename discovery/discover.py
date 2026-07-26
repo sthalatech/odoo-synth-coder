@@ -22,6 +22,7 @@ discovery never hard-fails on a single unreadable module.
 from __future__ import annotations
 
 import ast
+import base64
 import hashlib
 import json
 import os
@@ -29,6 +30,8 @@ import subprocess
 import sys
 import urllib.request
 from pathlib import Path
+
+import component_wiring
 
 
 def log(msg: str) -> None:
@@ -287,6 +290,58 @@ def upload(payload: dict) -> None:
     log("uploaded discovery.json to S3")
 
 
+def _load_components() -> tuple[list[dict], list[dict]]:
+    """Parse COMPONENTS_JSON (base64 JSON: {"components": [...], "dependencies":
+    [...]}) written by lib/backend/discovery.py. Every profile has at least one
+    component (the odoo one) -- components_of() on the panel side already
+    synthesizes that for legacy single-repo profiles, so this is always
+    present in practice; the empty-list fallback is defensive only."""
+    raw = os.environ.get("COMPONENTS_JSON", "")
+    if not raw:
+        return [], []
+    try:
+        doc = json.loads(base64.b64decode(raw).decode())
+    except Exception as exc:  # noqa: BLE001
+        log(f"WARN: could not parse COMPONENTS_JSON: {exc}")
+        return [], []
+    return doc.get("components") or [], doc.get("dependencies") or []
+
+
+def _discover_generic_component(component: dict, git_token: str) -> dict:
+    """Non-odoo component (kind: docker/process/static): clone its repo,
+    confirm its declared kind against the actual repo shape, and classify its
+    checked-in env-sample's variable NAMES (never persisting a value -- see
+    component_wiring.classify_component_env). Never raises -- a per-component
+    failure is recorded as a warning, not a hard discovery failure, matching
+    the "best-effort, never fail on one bad piece" posture of the rest of this
+    script."""
+    name = component.get("name", "?")
+    result: dict = {"kind": component.get("kind"), "warnings": []}
+    try:
+        dest = Path(f"/tmp/component-{name}")
+        component_wiring.clone_repo(
+            component.get("repo_url", ""), component.get("repo_ref", ""),
+            dest, git_token=git_token)
+        ok, warn = component_wiring.check_kind_shape(
+            dest, component.get("kind", ""), component.get(component.get("kind", ""), {}) or {})
+        if warn:
+            result["warnings"].append(warn)
+        if component.get("kind") == "docker" and not component.get("port"):
+            docker_cfg = component.get("docker") or {}
+            proposed = component_wiring.find_dockerfile_port(
+                dest, docker_cfg.get("dockerfile") or "Dockerfile")
+            if proposed:
+                result["proposed_port"] = proposed
+        env_from_repo = (component.get("env") or {}).get("from_repo")
+        raw_env = component_wiring.read_env_sample(dest, env_from_repo)
+        result["env_keys_found"] = list(raw_env.keys())
+        result["_raw_env"] = raw_env
+    except Exception as exc:  # noqa: BLE001
+        result["warnings"].append(f"repo inspection failed: {exc}")
+        result["_raw_env"] = {}
+    return result
+
+
 def main() -> int:
     series, installed = read_source()
     installed_set = set(installed)
@@ -298,6 +353,9 @@ def main() -> int:
     req_files: list[str] = []
     heuristic: set[str] = set()
     config_keys: set[str] = set()
+
+    components, dependencies = _load_components()
+    git_token = os.environ.get("GIT_TOKEN") or ""
 
     workdir = Path("/tmp/addons")
     repo = clone_addons(workdir)
@@ -340,6 +398,48 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001
         log(f"WARN: masking plan generation failed: {exc}")
 
+    # ---- multi-component discovery (kind: docker/process/static) ----------
+    # The odoo component's own repo is already scanned above via clone_addons
+    # (unchanged, for both legacy single-repo profiles and a multi-repo
+    # profile's "odoo" component -- components_of() gives them the identical
+    # shape). Everything else here is new: clone each OTHER component's repo,
+    # confirm its declared kind, and classify its env-sample's variable names.
+    non_odoo = [c for c in components if c.get("kind") != "odoo"]
+    generic_results: dict[str, dict] = {}
+    for c in non_odoo:
+        name = c.get("name", "?")
+        log(f"inspecting component {name!r} (kind={c.get('kind')}) ...")
+        generic_results[name] = _discover_generic_component(c, git_token)
+
+    # Port table: every component's OWN assigned port (operator-declared, or
+    # this run's freshly-proposed one for a docker component with none set
+    # yet). Ports are platform configuration -- propagated to peers below,
+    # never re-derived from a developer's local env at wiring time.
+    port_table: dict[str, int] = {}
+    for c in components:
+        p = c.get("port") or generic_results.get(c.get("name", ""), {}).get("proposed_port")
+        if p:
+            port_table[c["name"]] = int(p)
+    dependency_kinds = {d["name"]: d.get("kind", d["name"]) for d in dependencies}
+
+    components_out: dict[str, dict] = {}
+    for c in non_odoo:
+        name = c["name"]
+        gr = generic_results[name]
+        raw_env = gr.pop("_raw_env", {})
+        wiring_plan = component_wiring.classify_component_env(
+            name, raw_env, port_table, dependency_kinds)
+        components_out[name] = {
+            "kind": gr["kind"],
+            "warnings": gr["warnings"],
+            "proposed_port": gr.get("proposed_port"),
+            "env_keys_found": gr["env_keys_found"],
+            "wiring_plan": wiring_plan,
+        }
+        n_wired = sum(1 for v in wiring_plan.values() if v["bucket"] != "external")
+        log(f"component {name!r}: {len(wiring_plan)} env keys "
+            f"({n_wired} auto-classified, {len(wiring_plan) - n_wired} external)")
+
     payload = {
         "profile_id": os.environ.get("PROFILE_ID", ""),
         "odoo_series": series,
@@ -354,6 +454,11 @@ def main() -> int:
         "requirements_files": req_files,
         "required_config_keys": sorted(config_keys),
         "masking_plan": masking_plan,
+        # multi-repo: {} for a today's single-repo profile (no non-odoo
+        # components), so existing single-repo discovery.json consumers see
+        # no shape change.
+        "components": components_out,
+        "port_table": port_table,
     }
     payload["discovery_hash"] = hashlib.sha256(
         json.dumps({k: payload[k] for k in (

@@ -10,6 +10,7 @@ RUN apt-get update \
 WORKDIR /work
 COPY discover.py /work/discover.py
 COPY gen_masking.py /work/gen_masking.py
+COPY component_wiring.py /work/component_wiring.py
 COPY entrypoint.sh /work/entrypoint.sh
 RUN chmod +x /work/entrypoint.sh
 

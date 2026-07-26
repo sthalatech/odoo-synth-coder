@@ -9,6 +9,7 @@ Streams live to the run-log via :mod:`pipeline` (Coder runner workspace).
 """
 from __future__ import annotations
 
+import base64
 import json
 import time
 import urllib.request
@@ -47,6 +48,15 @@ def _discovery_env_pairs(profile: dict, put_url: str) -> list[tuple[str, str]]:
     the Coder runner path (env -> S3 env-file)."""
     conn = profile.get("source_conn") or {}
     password = profiles._get_secret(profile.get("source_password_secret"))
+    # components_of()/dependencies_of() give the same shape for a legacy
+    # single-repo profile (one synthesized kind="odoo" component) and a
+    # multi-repo one -- ODOO_GIT_REF/ADDONS_GIT_URL/ADDONS_GIT_REF are derived
+    # from the "odoo" component either way, not from the flat top-level
+    # fields directly (those are unset on a new multi-repo profile).
+    components = profiles.components_of(profile)
+    dependencies = profiles.dependencies_of(profile)
+    odoo_component = next((c for c in components if c.get("kind") == "odoo"), {})
+    odoo_cfg = odoo_component.get("odoo") or {}
     env = [
         ("PROFILE_ID", profile["id"]),
         ("SOURCE_DB_HOST", conn.get("host", "")),
@@ -54,16 +64,26 @@ def _discovery_env_pairs(profile: dict, put_url: str) -> list[tuple[str, str]]:
         ("SOURCE_DB_NAME", conn.get("dbname", "")),
         ("SOURCE_DB_USER", conn.get("user", "")),
         ("SOURCE_DB_PASSWORD", password),
-        ("ODOO_GIT_REF", profile.get("odoo_git_ref") or ""),
-        ("ADDONS_GIT_URL", profile.get("addons_git_url") or ""),
-        ("ADDONS_GIT_REF", profile.get("addons_git_ref") or ""),
+        ("ODOO_GIT_REF", odoo_cfg.get("odoo_git_ref") or ""),
+        ("ADDONS_GIT_URL", odoo_component.get("repo_url") or ""),
+        ("ADDONS_GIT_REF", odoo_component.get("repo_ref") or ""),
         # The git token lives in a Coder user secret injected into the runner
         # workspace as $GH_PAT_<UPPER_ID>. Forward the *name* (not the value --
         # Coder secrets are write-only) so the runner startup re-exports it as
-        # as GIT_TOKEN for the discovery container.
+        # as GIT_TOKEN for the discovery container. One token per profile,
+        # reused to clone every component's repo (they're expected to share
+        # access scope, e.g. one GitHub org/PAT) -- per-component tokens
+        # aren't supported yet.
         ("GIT_TOKEN_ENV", profiles.git_token_env_name(profile["id"])
          if profile.get("git_token_secret") else ""),
         ("DISCOVERY_PUT_URL", put_url),
+        # Multi-repo: every OTHER component (kind: docker/process/static) +
+        # declared shared-infra dependencies, so discover.py can clone each,
+        # confirm its kind, and classify its env-sample's wiring. {} for a
+        # legacy profile (components_of() returns only the odoo component).
+        ("COMPONENTS_JSON", base64.b64encode(json.dumps({
+            "components": components, "dependencies": dependencies,
+        }).encode()).decode()),
     ]
     # dump-slimming knobs (saved per-profile in mask_inputs) -> read by
     # gen_masking.py inside the discovery container when it builds the profile.
@@ -149,6 +169,33 @@ def run_discovery(profile_id: str, emit: LogSink, run_id: str | None = None) -> 
     discovered_plan = data.get("masking_plan") or ""
     if discovered_plan and not (profile.get("masking_rules") or "").strip():
         fields["masking_rules"] = discovered_plan
+
+    # Multi-repo: merge each non-odoo component's discovered wiring plan back
+    # onto the profile's own `components` list (matched by name). Empty for a
+    # legacy single-repo profile (no non-odoo components to discover), so
+    # `fields["components"]` is simply never set and that profile's shape is
+    # unchanged -- same "components_of() gives the odoo-only shape for free"
+    # guarantee as everywhere else in this design.
+    comp_discovery = data.get("components") or {}
+    if comp_discovery:
+        merged = []
+        for c in (profile.get("components") or []):
+            c = dict(c)
+            d = comp_discovery.get(c.get("name"))
+            if d:
+                c["discovered"] = {
+                    "warnings": d.get("warnings") or [],
+                    "proposed_port": d.get("proposed_port"),
+                    "env_keys_found": d.get("env_keys_found") or [],
+                    "wiring_plan": d.get("wiring_plan") or {},
+                }
+                # Adopt a freshly-proposed port only if the operator hasn't
+                # pinned one themselves -- an explicit `port` always wins.
+                if not c.get("port") and d.get("proposed_port"):
+                    c["port"] = d["proposed_port"]
+            merged.append(c)
+        fields["components"] = merged
+
     store.update_profile(profile_id, **fields)
 
     if discovered_plan:
@@ -157,6 +204,14 @@ def run_discovery(profile_id: str, emit: LogSink, run_id: str | None = None) -> 
 
     if req_keys:
         emit(f"[panel] required odoo.conf keys discovered: {', '.join(req_keys)}")
+
+    for name, d in comp_discovery.items():
+        wp = d.get("wiring_plan") or {}
+        n_wired = sum(1 for v in wp.values() if v.get("bucket") != "external")
+        for w in d.get("warnings") or []:
+            emit(f"[panel] component {name!r}: WARN {w}")
+        emit(f"[panel] component {name!r}: {len(wp)} env keys "
+             f"({n_wired} auto-wired, {len(wp) - n_wired} need manual review)")
 
     undeclared = data.get("python_deps_undeclared") or []
     if undeclared:
