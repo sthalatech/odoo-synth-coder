@@ -15,8 +15,10 @@ prod DB ──mask──▶ masked pg_dump in S3 ──build──▶ ECR image 
 | `cli/odoo-synth` | The CLI. Calls the backend library directly (no HTTP). |
 | `lib/backend/` | Python backend: profiles, runs, builds, environments, config loader. |
 | `masker/` | Greenmask-based masking rules + profile YAMLs baked into the masker image. |
-| `coder/templates/odoo-synth-env/` | Coder template for developer workspaces. |
+| `coder/templates/odoo-synth-workspacer/` | Coder template for developer workspaces. |
 | `coder/templates/odoo-synth-builder/` | Coder template for ephemeral image-builder workspaces. |
+| `coder/templates/odoo-synth-discoverer/` | Coder template for provenance discovery workspaces. |
+| `coder/templates/odoo-synth-masker/` | Coder template for DB masking workspaces. |
 | `odoo/` | Odoo image build context (Dockerfile, odoo.conf, entrypoint) + `enterprise.zip` (gitignored). |
 | `deploy/` | Infra + provisioning scripts (ECR, base images, builder IAM, Coder server, templates). |
 | `config.example.yaml` | Annotated config template. **Copy to `config.yaml` and fill in.** |
@@ -125,7 +127,8 @@ bash deploy/run_all.sh
 
 Runs, in order: install prereqs → validate config → ECR → build+push base
 Odoo image → builder IAM → Coder server →
-publish the Coder templates (`odoo-synth-env` and `odoo-synth-builder`). It
+publish the Coder templates (`odoo-synth-workspacer`, `odoo-synth-builder`,
+`odoo-synth-discoverer`, `odoo-synth-masker`). It
 writes `deploy/state.env` along the way, so afterwards you can run the CLI
 locally using the Quick-start steps (skipping step 4 — state.env already
 exists).

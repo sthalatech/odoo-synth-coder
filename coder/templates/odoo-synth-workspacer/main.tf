@@ -36,7 +36,7 @@ data "coder_parameter" "instance_type" {
 }
 
 # Infra defaults: the panel used to pass these per-create, which made a bare
-# `coder create -t odoo-synth-env <name>` fail (aws_instance needs a non-empty
+# `coder create -t odoo-synth-workspacer <name>` fail (aws_instance needs a non-empty
 # ImageId/instance-profile/subnet/SG). They are now first-class defaults derived
 # from the shared infra (deploy/state.env: ENV_AMI_ID/ENV_INSTANCE_PROFILE/
 # ENV_SUBNET_ID/ENV_SG_ID). They can still be overridden per-workspace.
@@ -226,7 +226,7 @@ data "coder_workspace" "me" {}
 # --- infra defaults via data sources (Phase 1 of Option E) --------------------
 # When the user leaves instance_profile / security_group_id / subnet_id empty,
 # resolve them by name (SG) or as the first default-VPC subnet, so
-# `coder create -t odoo-synth-env <name>` works with no infra params. The panel
+# `coder create -t odoo-synth-workspacer <name>` works with no infra params. The panel
 # can still pass explicit values to override.
 
 # Env SG is a single named SG (odoo-synth-env-sg); look it up by name.
@@ -269,8 +269,8 @@ resource "coder_agent" "main" {
   startup_script          = <<-EOT
     #!/usr/bin/env bash
     set -euo pipefail
-    exec > >(tee -a /var/log/odoo-synth-env.log) 2>&1
-    echo "[env ${data.coder_workspace.me.id}] boot $(date -u +%FT%TZ) issue=${data.coder_parameter.issue.value}"
+    exec > >(tee -a /var/log/odoo-synth-workspacer.log) 2>&1
+    echo "[workspacer ${data.coder_workspace.me.id}] boot $(date -u +%FT%TZ) issue=${data.coder_parameter.issue.value}"
 
     REGION="${data.coder_parameter.region.value}"
     if [ -z "$REGION" ]; then
@@ -568,7 +568,7 @@ docker exec env-db psql -U odoo -d $${DB_NAME} -tAc \
 <table>
 <tr><th>what</th><th>where</th></tr>
 <tr><td>Odoo runtime log</td><td><code>docker logs env-odoo</code> (stdout, no file)</td></tr>
-<tr><td>env boot / dump restore / clone</td><td><code>/var/log/odoo-synth-env.log</code></td></tr>
+<tr><td>workspace boot / dump restore / clone</td><td><code>/var/log/odoo-synth-workspacer.log</code></td></tr>
 <tr><td>addon pip install</td><td><code>/home/dev/workspace/pip-addons.log</code> (if a repo was cloned)</td></tr>
 </table>
 
@@ -638,7 +638,7 @@ EISVC
 - Addons repo (your working copy): /home/dev/workspace/repo , bind-mounted into Odoo at /mnt/live .
 - Odoo runs in the env-odoo docker container (host port 127.0.0.1:18069).
 - Postgres runs in the env-db container (host 127.0.0.1:5432, user/db odoo, password odoo).
-- Boot log: /var/log/odoo-synth-env.log .
+- Boot log: /var/log/odoo-synth-workspacer.log .
 - Env Guide page: http://localhost:8090/ (the Env Guide app on the workspace page).
 
 ## Running / restarting Odoo
@@ -777,8 +777,8 @@ resource "aws_instance" "workspace" {
   EOT
   user_data_replace_on_change = true
   tags = {
-    Name                 = "odoo-synth-env-${data.coder_workspace.me.name}"
-    "odoo-synth:env"     = data.coder_workspace.me.id
+    Name                 = "odoo-synth-workspacer-${data.coder_workspace.me.name}"
+    "odoo-synth:workspacer" = data.coder_workspace.me.id
     "odoo-synth:managed" = "true"
     "odoo-synth:issue"   = data.coder_parameter.issue.value
   }

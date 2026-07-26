@@ -3,7 +3,7 @@ config.env
 config.yaml
 deploy/secrets.env
 # auto-generated Coder presets
-coder/templates/odoo-synth-env/presets.tf
+coder/templates/odoo-synth-workspacer/presets.tf
 __pycache__/
 *.egg-info/
 build/

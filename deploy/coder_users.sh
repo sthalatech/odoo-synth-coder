@@ -6,8 +6,8 @@
 #   - each workspace's apps default to sharing_level=owner (DB default), so
 #     ONLY the workspace's owner (and admins) can open them -- no extra config
 #   - a regular user (org member) can create their own workspaces from the
-#     org's templates (odoo-synth-env / builder / runner) and only ever see
-#     their own workspaces' apps
+#     org's templates (odoo-synth-workspacer / builder / discoverer / masker)
+#     and only ever see their own workspaces' apps
 #   - sharing is OPT-IN per app, done by the owner from the Coder dashboard:
 #     open the workspace -> click an app -> Share -> authenticated|organization|public
 #

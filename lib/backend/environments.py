@@ -1,7 +1,7 @@
 """Developer environment lifecycle via Coder (coder/coder).
 
 An *environment* is a Coder workspace: an EC2 instance launched by the Coder
-server from the `odoo-synth-env` Terraform template (existing thin golden AMI
+server from the `odoo-synth-workspacer` Terraform template (existing thin golden AMI
 + existing env instance profile, no public IP, no per-env SG rules). The Coder
 agent running inside the workspace dials out to the Coder server over the
 public internet; the developer reaches the workspace (web terminal, VS Code
@@ -30,7 +30,7 @@ from typing import Optional
 
 from . import config, profiles, store
 
-TEMPLATE_NAME = "odoo-synth-env"
+TEMPLATE_NAME = "odoo-synth-workspacer"
 
 
 def _region() -> str:
@@ -248,7 +248,7 @@ def create(source_run_id: Optional[str], issue: Optional[str],
     if not config.environments_configured():
         raise RuntimeError(
             "developer environments are not configured (set CODER_URL and "
-            "CODER_SESSION_TOKEN, and ensure the odoo-synth-env template is "
+            "CODER_SESSION_TOKEN, and ensure the odoo-synth-workspacer template is "
             "published to the Coder server)")
     s = config.environments_settings()
     profile = store.get_profile(profile_id) if profile_id else None
@@ -433,7 +433,7 @@ def ssh_exec(env_id: str, command: str, timeout: int = 600) -> tuple[int, str]:
 # Where the project-level system prompt for the AI agent lives. The hook writes
 # the first-phase placeholder here; contents are filled in later. Shipped in
 # the repo so every env loads the same project context.
-AGENT_SYSTEM_PROMPT_PATH = "coder/templates/odoo-synth-env/agent-system-prompt.md"
+AGENT_SYSTEM_PROMPT_PATH = "coder/templates/odoo-synth-workspacer/agent-system-prompt.md"
 
 
 def _stage_agent_context(env_id: str, issue: str, task: str, system_prompt: str) -> str:

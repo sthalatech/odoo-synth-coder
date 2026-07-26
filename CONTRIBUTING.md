@@ -29,9 +29,10 @@ commit in a fresh clone:
 - Python (`controlpanel/backend/`, `cli/odoo-synth`): no new third-party deps
   without a reason; keep the CLI calling the backend library in-process (no
   HTTP layer — see `controlpanel/README.md`).
-- Terraform (`coder/templates/*`): both Coder templates
-  (`odoo-synth-env`, `odoo-synth-builder`) must be re-published together when
-  shared conventions change — see `deploy/12_publish_template.sh`.
+- Terraform (`coder/templates/*`): all four Coder templates
+  (`odoo-synth-workspacer`, `odoo-synth-builder`, `odoo-synth-discoverer`,
+  `odoo-synth-masker`) must be re-published together when shared conventions
+  change — see `deploy/12_publish_template.sh`.
 
 ## Testing your change
 

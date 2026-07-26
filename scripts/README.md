@@ -67,7 +67,7 @@ into a running odoo-synth env with an AI agent working on it:
    string (step 3) makes the finish step explicit — that was the root cause of
    the agent stopping after "verify changes" with no commit/push/PR.
 5. **System prompt provision (Phase 1).**
-   `coder/templates/odoo-synth-env/agent-system-prompt.md` is the placeholder,
+   `coder/templates/odoo-synth-workspacer/agent-system-prompt.md` is the placeholder,
    staged into the env as `AGENT_CONTEXT.md` and (if the repo ships none)
    `AGENT.md` in the repo cwd so the agent follows the project context.
 6. **Post-launch module upgrade, generic for any repo.** The template's

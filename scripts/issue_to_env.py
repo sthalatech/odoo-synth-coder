@@ -296,7 +296,7 @@ def main() -> int:
         return 1
     if not config.environments_configured():
         _log("ERROR: developer environments are not configured "
-             "(CODER_URL + CODER_SESSION_TOKEN + odoo-synth-env template)")
+             "(CODER_URL + CODER_SESSION_TOKEN + odoo-synth-workspacer template)")
         return 1
 
     _log(f"issue #{issue_number}: {issue_title!r}")

@@ -25,11 +25,13 @@ bash deploy/10_builder.sh
 # 11_coder_server.sh grants iam:PassRole on (so the Coder server can launch
 # workspace VMs assuming the env-instance role).
 bash deploy/09_dev_env.sh
-# Masking now runs on demand via `odoo-synth run mask` (Coder runner workspace)
+# Discovery/masking now run on demand via `odoo-synth profile discover` /
+# `profile mask` (odoo-synth-discoverer / odoo-synth-masker Coder workspaces)
 # -- no standing ECS cluster to provision.
 # Developer-environment control plane: Coder server (one EC2) + publish the
-# odoo-synth-env and odoo-synth-builder templates to it. Requires `coder
-# login` once (interactive). The builder template must be republished whenever
+# odoo-synth-workspacer, odoo-synth-builder, odoo-synth-discoverer, and
+# odoo-synth-masker templates to it. Requires `coder login` once (interactive).
+# The builder template must be republished whenever
 # coder/templates/odoo-synth-builder changes or builds run a stale user-data.
 bash deploy/11_coder_server.sh
 set -a; . deploy/state.env; set +a

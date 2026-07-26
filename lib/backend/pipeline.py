@@ -1,16 +1,18 @@
-"""Mask orchestration: run the masker as a Coder runner workspace.
+"""Mask orchestration: run the masker as a Coder odoo-synth-masker workspace.
 
 Single operation: **mask**.
   * SOURCE      = a live Postgres DB the user points at (a connection URL/DSN).
                   greenmask dumps + masks it directly.
   * DESTINATION = the masked DB. RDS-free: the masker restores into a throwaway
-                  local postgres on the runner workspace (see odoo-synth-runner
-                  main.tf). Always dropped + recreated.
+                  local postgres on the masker workspace (see
+                  coder/templates/odoo-synth-masker/main.tf). Always dropped +
+                  recreated.
   * OUTPUT      = optionally a downloadable pg_dump of the masked DB (uploaded to
                   S3 via a presigned PUT; a presigned GET is returned to the UI).
 
-The masker runs as a Coder runner workspace; the panel tails `coder logs -f`
-live into the run log and polls S3 for the runner-result.json marker.
+The masker runs as a Coder odoo-synth-masker workspace; the panel tails
+`coder logs -f` live into the run log and polls S3 for the
+runner-result.json marker.
 """
 from __future__ import annotations
 import json
@@ -27,11 +29,14 @@ from . import config
 LogSink = Callable[[str], None]
 
 # Option E, Phase 3: the mask + discovery single-container workloads run as
-# Coder workspaces from the odoo-synth-runner template. The
-# panel keeps orchestration: it builds the same env-var dict, writes it to S3 as
-# an env-file, presigns a result PUT URL, launches the workspace, tails its
-# logs live, and polls S3 for the result marker -- exactly like the build.
-RUNNER_TEMPLATE = "odoo-synth-runner"
+# Coder workspaces, one distinct template per job (previously shared as a
+# single "odoo-synth-runner" template -- split so the Coder dashboard and
+# `coder templates` list reflect what's actually running). The panel keeps
+# orchestration: it builds the same env-var dict, writes it to S3 as an
+# env-file, presigns a result PUT URL, launches the workspace, tails its logs
+# live, and polls S3 for the result marker -- exactly like the build.
+DISCOVERER_TEMPLATE = "odoo-synth-discoverer"
+MASKER_TEMPLATE = "odoo-synth-masker"
 
 
 def _require_coder() -> None:
@@ -213,11 +218,12 @@ def _runner_image(name: str) -> str:
 
 
 def _launch_runner(image_uri: str, env_file_get_url: str, env_keys: list[str],
-                    result_put_url: str, phase: str) -> str:
-    """Launch a Coder runner workspace and return its name. The workspace pulls
-    the image, downloads the env-setup script, sources it, `docker run -e KEY`s
-    each var through (handles multi-line values like SSH keys), PUTs a
-    result.json to S3, and powers off."""
+                    result_put_url: str, phase: str, template: str) -> str:
+    """Launch a Coder workspace from `template` (DISCOVERER_TEMPLATE or
+    MASKER_TEMPLATE) and return its name. The workspace pulls the image,
+    downloads the env-setup script, sources it, `docker run -e KEY`s each var
+    through (handles multi-line values like SSH keys), PUTs a result.json to
+    S3, and powers off."""
     import os
     import subprocess
 
@@ -254,7 +260,7 @@ def _launch_runner(image_uri: str, env_file_get_url: str, env_keys: list[str],
         ("phase", phase),
     ]
     ws_name = f"{phase}-{uuid.uuid4().hex[:8]}"
-    args = ["create", "-t", RUNNER_TEMPLATE, "-y", "--no-wait", ws_name]
+    args = ["create", "-t", template, "-y", "--no-wait", ws_name]
     for k, v in params:
         args += ["--parameter", f"{k}={v}"]
     try:
@@ -345,17 +351,18 @@ def _poll_runner_result(get_url: str, emit: LogSink,
 
 
 def run_runner(image_name: str, env_pairs: list[tuple[str, object]],
-                phase: str, emit: LogSink, run_id: str | None = None) -> dict:
-    """Option E runner path: write the env-file, presign the result URL, launch
-    the Coder runner workspace, tail its logs live, poll S3 for the result.
-    Returns a dict with exit_code (0/1) + error (on failure), matching the
-    ECS path's return shape so callers (run_operation / run_discovery) are
-    unchanged."""
+                phase: str, emit: LogSink, template: str,
+                run_id: str | None = None) -> dict:
+    """Write the env-file, presign the result URL, launch a Coder workspace
+    from `template` (DISCOVERER_TEMPLATE or MASKER_TEMPLATE), tail its logs
+    live, poll S3 for the result. Returns a dict with exit_code (0/1) + error
+    (on failure), matching the ECS path's return shape so callers
+    (run_operation / run_discovery) are unchanged."""
     env_get, env_keys = _upload_env_file(env_pairs)
     put_url, get_url, _ = _presign_runner_result(phase, run_id=run_id)
     image_uri = _runner_image(image_name)
-    emit(f"[panel] launching Coder runner workspace ({image_name}, {phase}) ...")
-    ws_name = _launch_runner(image_uri, env_get, env_keys, put_url, phase)
+    emit(f"[panel] launching Coder workspace ({template}: {image_name}, {phase}) ...")
+    ws_name = _launch_runner(image_uri, env_get, env_keys, put_url, phase, template)
     emit(f"[panel] runner workspace {ws_name} launched; streaming logs ...")
     # Tail the Coder logs in a background thread while the main thread polls
     # S3 for the result.json marker. `coder logs -f` can stall after the
@@ -474,16 +481,16 @@ def run_operation(operation: str, params: dict, emit: LogSink,
     src = parse_dsn(dsn)
 
     # DESTINATION: mask restores into a THROWAWAY local postgres on the
-    # runner workspace (see odoo-synth-runner main.tf) -- no shared DB, so no
-    # two envs share one and re-masking never clobbers another env. The runner
-    # overrides TARGET_DB_* to point at its local `runner-db` container. The
-    # destination host/user/password/dbname are passed through for the masker's
-    # greenmask restore target.
+    # masker workspace (see coder/templates/odoo-synth-masker/main.tf) -- no
+    # shared DB, so no two envs share one and re-masking never clobbers another
+    # env. The masker template overrides TARGET_DB_* to point at its local
+    # `masker-db` container. The destination host/user/password/dbname are
+    # passed through for the masker's greenmask restore target.
     tgt = config.destination()
 
     # The masked pg_dump is the PRIMARY artifact: each env hydrates its own
-    # local DB from it (see odoo-synth-env main.tf). Always produce it unless
-    # the caller explicitly disabled it.
+    # local DB from it (see coder/templates/odoo-synth-workspacer/main.tf).
+    # Always produce it unless the caller explicitly disabled it.
     masked_dump_get_url = None
     masked_dump_put_url = None
     masked_dump_s3_uri = None
@@ -502,13 +509,13 @@ def run_operation(operation: str, params: dict, emit: LogSink,
     emit(f"[panel] mask source={src['user']}@{src['host']}:{src['port']}/{src['dbname']}{via} "
          f"-> {tgt['dbname']}@{tgt['host']} profile={params.get('mask_profile')}")
 
-    # ---- run the masker as a Coder runner workspace ----
+    # ---- run the masker as a Coder workspace (odoo-synth-masker template) ----
     # Env vars written to S3 as an env-file the workspace downloads. The masker
     # image is unchanged; it PUTs a runner-result.json marker to S3 on
     # completion. The panel tails `coder logs -f` live into the run log.
     env_pairs = _mask_env_pairs(src, tgt, params,
                                 masked_dump_put_url, mask_rules_url)
-    rr = run_runner("masker", env_pairs, "mask", emit, run_id=run_id)
+    rr = run_runner("masker", env_pairs, "mask", emit, template=MASKER_TEMPLATE, run_id=run_id)
     exit_code = rr.get("exit_code", 1)
     emit(f"[panel] runner exited with code {exit_code}")
     result: dict = {"task_arn": rr.get("task_arn"), "exit_code": exit_code}

@@ -3,7 +3,7 @@
 
 Emits Terraform `data "coder_workspace_preset"` blocks -- one per profile that
 has both a built Odoo image AND a successful mask run (so it has a masked dump
-to hydrate from). Written to coder/templates/odoo-synth-env/presets.tf, which
+to hydrate from). Written to coder/templates/odoo-synth-workspacer/presets.tf, which
 `coder templates push` picks up automatically.
 
 A profile becomes a one-click "Create workspace" preset in the Coder dashboard,
@@ -28,7 +28,7 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "lib"))
 from backend import profile_store, run_store  # noqa: E402
 
-OUT = REPO / "coder" / "templates" / "odoo-synth-env" / "presets.tf"
+OUT = REPO / "coder" / "templates" / "odoo-synth-workspacer" / "presets.tf"
 DEFAULT_INSTANCE = "t3.large"
 
 

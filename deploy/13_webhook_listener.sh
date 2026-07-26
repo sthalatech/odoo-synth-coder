@@ -116,8 +116,8 @@ if command -v rsync >/dev/null 2>&1; then
     --include='lib/' --include='lib/***' \
     --include='deploy/' --include='deploy/_yaml_to_env.py' --include='deploy/lib.sh' \
     --exclude='deploy/state.env' \
-    --include='coder/templates/odoo-synth-env/agent-system-prompt.md' \
-    --include='coder/templates/odoo-synth-env/' \
+    --include='coder/templates/odoo-synth-workspacer/agent-system-prompt.md' \
+    --include='coder/templates/odoo-synth-workspacer/' \
     --exclude='*' \
     "$HERE/" "$SSH_TARGET:$REMOTE_DIR/"
 else
@@ -126,7 +126,7 @@ else
     --exclude='lib/backend/profiles' \
     --exclude='lib/backend/runs.yaml' \
     deploy/_yaml_to_env.py deploy/lib.sh \
-    coder/templates/odoo-synth-env/agent-system-prompt.md \
+    coder/templates/odoo-synth-workspacer/agent-system-prompt.md \
     | ssh "${SSH_OPTS[@]}" "$SSH_TARGET" "tar -xzf - -C $REMOTE_DIR"
 fi
 

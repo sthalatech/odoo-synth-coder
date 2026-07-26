@@ -105,8 +105,9 @@ print(json.dumps({
                 "ec2:CreateTags","ec2:DeleteTags"],
      "Resource": "*"},
     # PassRole targets the ROLE the workspace VM assumes (not its instance profile).
-    # Covers BOTH the dev-env role and the builder role so the Coder server can
-    # provision workspaces from the odoo-synth-env AND odoo-synth-builder templates.
+    # Covers both the dev-env role (shared by odoo-synth-workspacer,
+    # odoo-synth-discoverer, odoo-synth-masker) and the builder role, so the
+    # Coder server can provision workspaces from all four templates.
     {"Sid": "PassWorkspaceRoles", "Effect": "Allow",
      "Action": ["iam:PassRole"],
      "Resource": pass_roles},

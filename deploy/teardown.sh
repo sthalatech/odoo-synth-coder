@@ -45,9 +45,9 @@ log(){ echo "== $* ==" >&2; }
 log "tearing down odoo-synth in $R (project=$PROJECT) ..."
 
 log "terminating Coder server + odoo-synth workspace VMs ..."
-# Workspace VMs carry the odoo-synth:env tag (set by the Coder template).
+# Workspace VMs carry the odoo-synth:workspacer tag (set by the Coder template).
 for iid in $(aws ec2 describe-instances --region "$R" \
-    --filters "Name=tag:odoo-synth:env,Values=true" \
+    --filters "Name=tag:odoo-synth:workspacer,Values=true" \
               "Name=instance-state-name,Values=running,pending,stopping,stopped" \
     --query 'Reservations[].Instances[].InstanceId' --output text 2>/dev/null); do
   aws ec2 terminate-instances --region "$R" --instance-ids "$iid" >/dev/null 2>&1 || true

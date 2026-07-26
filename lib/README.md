@@ -15,7 +15,7 @@ cache that auto-populates from S3 on read.
 > **User management** is no longer exposed here — use the native Coder CLI:
 >   `coder users create alice@example.com` / `coder users list`.
 > **Workspace creation** is via the Coder dashboard (presets) or
->   `coder create -t odoo-synth-env ...`. The CLI still launches/tears down
+>   `coder create -t odoo-synth-workspacer ...`. The CLI still launches/tears down
 >   developer environments via `odoo-synth env ...` (it calls `coder create`
 >   under the hood).
 

@@ -505,8 +505,8 @@ def _mask_params_from_legacy(args) -> dict:
 
 
 def _refresh_env_preset(profile_id: str) -> None:
-    """Best-effort: regenerate coder/templates/odoo-synth-env/presets.tf from
-    the profile+run stores and push just that template, so a successful mask
+    """Best-effort: regenerate coder/templates/odoo-synth-workspacer/presets.tf
+    from the profile+run stores and push just that template, so a successful mask
     immediately shows up as a one-click preset in the Coder dashboard (named
     "<label> (masked <timestamp>)" -- one preset per profile, refreshed each
     time, not one per run: `coder templates push` already creates a new
@@ -523,9 +523,9 @@ def _refresh_env_preset(profile_id: str) -> None:
         _err(f"[odoo-synth] WARN: preset generation failed (mask succeeded regardless): "
              f"{(exc.stderr or '').strip()}")
         return
-    tpl_dir = REPO_ROOT / "coder" / "templates" / "odoo-synth-env"
+    tpl_dir = REPO_ROOT / "coder" / "templates" / "odoo-synth-workspacer"
     try:
-        subprocess.run(["coder", "templates", "push", "-y", "--directory", str(tpl_dir), "odoo-synth-env"],
+        subprocess.run(["coder", "templates", "push", "-y", "--directory", str(tpl_dir), "odoo-synth-workspacer"],
                        env={**os.environ, **pipeline._coder_env()}, cwd=tpl_dir,
                        check=True, capture_output=True, text=True, timeout=180)
         print(f"[odoo-synth] preset refreshed for profile {profile_id} -> Coder dashboard")
@@ -695,7 +695,7 @@ def cmd_env_create(args) -> int:
     if not config.environments_configured():
         _err("developer environments are not configured "
              "(set CODER_URL + CODER_SESSION_TOKEN, ensure the "
-             "odoo-synth-env template is published)")
+             "odoo-synth-workspacer template is published)")
         return 2
     if args.profile_id:
         prof = store.get_profile(args.profile_id)

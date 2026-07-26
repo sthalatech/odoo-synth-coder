@@ -3,27 +3,32 @@
 #
 # `coder templates push` reads the Terraform in coder/templates/<name> and
 # creates/updates the named template so workspaces can be launched from it.
-# Publishes both the developer-environment template (odoo-synth-env) and the
-# ephemeral image-builder template (odoo-synth-builder) -- the panel/CLI build
-# path launches builder workspaces from the published template version, so it
-# must be republished whenever coder/templates/odoo-synth-builder changes or
-# builds will run a stale user-data script. Requires CODER_URL +
-# CODER_SESSION_TOKEN (set after `coder login`).
+# Publishes all four odoo-synth templates -- one per distinct job:
+#   odoo-synth-workspacer  developer environments (env create)
+#   odoo-synth-builder     ephemeral Odoo image builder (profile build)
+#   odoo-synth-discoverer  provenance discovery (profile discover)
+#   odoo-synth-masker      DB masking (run/profile mask)
+# The panel/CLI build path launches builder workspaces from the published
+# template version, so it must be republished whenever
+# coder/templates/odoo-synth-builder changes or builds will run a stale
+# user-data script. Requires CODER_URL + CODER_SESSION_TOKEN (set after
+# `coder login`).
 source "$(dirname "$0")/lib.sh"
 
 QUIET=0
 for a in "$@"; do case "$a" in --quiet) QUIET=1;; *) ;; esac; done
 
 # Space-separated list of Coder templates to publish. Override with
-# CODER_TEMPLATES="odoo-synth-env" to publish only one.
-TEMPLATES="${CODER_TEMPLATES:-odoo-synth-env odoo-synth-builder odoo-synth-runner}"
+# CODER_TEMPLATES="odoo-synth-workspacer" to publish only one.
+TEMPLATES="${CODER_TEMPLATES:-odoo-synth-workspacer odoo-synth-builder odoo-synth-discoverer odoo-synth-masker}"
 [ -n "${CODER_URL:-}" ] || { log "CODER_URL not set; run deploy/11_coder_server.sh first"; exit 1; }
 [ -n "${CODER_SESSION_TOKEN:-}" ] || { log "CODER_SESSION_TOKEN not set; run 'coder login $CODER_URL' first"; exit 1; }
 
 # Regenerate workspace presets from the profile store (one preset per profile
-# with a built image + a successful mask run) before pushing the env template,
-# so the Coder dashboard "Create workspace" flow shows every available masked
-# profile. (Only meaningful for odoo-synth-env; harmless for the builder.)
+# with a built image + a successful mask run) before pushing the workspacer
+# template, so the Coder dashboard "Create workspace" flow shows every
+# available masked profile. (Only meaningful for odoo-synth-workspacer;
+# harmless for the other templates.)
 python3 "$HERE/deploy/_gen_presets.py" || log "WARN: preset generation failed (continuing)"
 
 rc=0

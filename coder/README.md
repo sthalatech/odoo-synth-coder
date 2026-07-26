@@ -1,8 +1,20 @@
 # Coder — developer environments
 
-This directory holds the Coder template that replaces the project's former
-hand-rolled EC2/Secrets-Manager/SG-ingress developer-environment lifecycle
-(`lib/backend/environments.py` is now a thin CLI/API shim over Coder).
+This directory holds four Coder templates, one per distinct job:
+
+| template | job |
+|---|---|
+| `odoo-synth-workspacer` | developer environments (`env create`) -- documented below |
+| `odoo-synth-builder` | ephemeral Odoo image builder (`profile build`) |
+| `odoo-synth-discoverer` | provenance discovery (`profile discover`) |
+| `odoo-synth-masker` | DB masking (`run mask` / `profile mask`) |
+
+`odoo-synth-workspacer` replaces the project's former hand-rolled
+EC2/Secrets-Manager/SG-ingress developer-environment lifecycle
+(`lib/backend/environments.py` is now a thin CLI/API shim over Coder). The
+other three are covered inline in `lib/backend/pipeline.py` /
+`lib/backend/discovery.py` / `lib/backend/build.py` and their respective
+`main.tf` header comments.
 
 ## Architecture
 
@@ -12,7 +24,7 @@ hand-rolled EC2/Secrets-Manager/SG-ingress developer-environment lifecycle
   at `http://<coder-ip>:8943`. It has its own IAM role (`<project>-coder-role`)
   so its Terraform can launch workspace VMs (ec2 run/stop/start/terminate +
   `iam:PassRole` on the env instance role).
-- **Workspace VMs** — launched by the Coder server from the `odoo-synth-env`
+- **Workspace VMs** — launched by the Coder server from the `odoo-synth-workspacer`
   template (below). Each reuses the existing thin golden AMI
   (`ENV_AMI_ID`, baked by `deploy/09_dev_env.sh` from
   `lib/environments/provision.sh`) + the existing env instance profile
@@ -24,7 +36,7 @@ Net new AWS artifacts vs. the old design: **1 EC2 (Coder server) + 1 SG + 1 IAM
 role/profile** (control plane), and **zero** per-environment. Workspace VMs get
 a public IP for outbound reach to the Coder server, but no inbound ports.
 
-## Template: `templates/odoo-synth-env/`
+## Template: `templates/odoo-synth-workspacer/`
 
 A Terraform module (Coder v2 `coder_parameter` data sources + `coder_agent` +
 `aws_instance`) published to the Coder server by `deploy/12_publish_template.sh`.
@@ -64,7 +76,7 @@ deploy/09_dev_env.sh          # bakes the golden AMI + env SG + instance profile
 deploy/11_coder_server.sh     # launches the Coder server (one EC2)
 coder login <CODER_URL>       # create the first admin (interactive, once)
 # paste the token into config.yaml under coder.session_token
-deploy/12_publish_template.sh # publish odoo-synth-env to the server
+deploy/12_publish_template.sh # publish all four odoo-synth templates to the server
 ```
 
 `CODER_URL` + `CODER_SESSION_TOKEN` in `config.yaml` are what the panel's
